@@ -11,10 +11,9 @@ pub struct AuditEvent<'a> {
 
 pub fn sanitize_detail(input: &str) -> String {
     let bearer = Regex::new(r"Bearer\s+[^\s]+\s*").expect("valid bearer regex");
-    let windows = Regex::new(r"[A-Za-z]:\\Users\\[^\\\s]+\\[^\s,\)\]\}]+")
-        .expect("valid Windows path regex");
-    let mac = Regex::new(r"/Users/[^/\s]+/[^\s,\)\]\}]+")
-        .expect("valid macOS path regex");
+    let windows =
+        Regex::new(r"[A-Za-z]:\\Users\\[^\\\s]+\\[^\s,\)\]\}]+").expect("valid Windows path regex");
+    let mac = Regex::new(r"/Users/[^/\s]+/[^\s,\)\]\}]+").expect("valid macOS path regex");
     let value = bearer.replace_all(input, |captures: &Captures<'_>| {
         let matched = captures.get(0).expect("bearer match is present").as_str();
         let suffix = &matched[matched.trim_end().len()..];
@@ -51,7 +50,10 @@ mod tests {
     fn preserves_punctuation_adjacent_to_local_paths() {
         let input = "Open (C:\\Users\\alex\\private.docx), then (/Users/alex/private.pdf).";
 
-        assert_eq!(sanitize_detail(input), "Open ([LOCAL_PATH]), then ([LOCAL_PATH]).");
+        assert_eq!(
+            sanitize_detail(input),
+            "Open ([LOCAL_PATH]), then ([LOCAL_PATH])."
+        );
     }
 
     #[test]
