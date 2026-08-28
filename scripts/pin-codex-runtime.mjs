@@ -13,7 +13,31 @@ const RELEASE_CDN_HOST = "release-assets.githubusercontent.com";
 const LICENSE_URL = `https://raw.githubusercontent.com/openai/codex/${TAG}/LICENSE`;
 const NOTICE_URL = `https://raw.githubusercontent.com/openai/codex/${TAG}/NOTICE`;
 const USER_AGENT = "SmartCAT-Translate-Codex-Runtime-Pinner";
-const MAX_ARCHIVE_BYTES = 1024 * 1024 * 1024;
+const MAX_DOWNLOAD_BYTES = 128 * 1024 * 1024;
+const MAX_EXPANDED_BYTES = 512 * 1024 * 1024;
+const FIXED_ERROR_CODES = new Set([
+  "archive_entry_mismatch",
+  "archive_expansion_exceeded",
+  "asset_digest_invalid",
+  "asset_download_empty",
+  "asset_download_failed",
+  "asset_missing",
+  "asset_ambiguous",
+  "asset_size_invalid",
+  "asset_size_mismatch",
+  "asset_url_rejected",
+  "checksum_mismatch",
+  "content_length_rejected",
+  "download_size_exceeded",
+  "duplicate_or_missing_target",
+  "final_url_rejected",
+  "license_provenance_failed",
+  "redirect_count_rejected",
+  "redirect_host_rejected",
+  "release_identity_mismatch",
+  "release_metadata_failed",
+  "unsupported_archive_structure",
+]);
 
 const TARGETS = Object.freeze([
   Object.freeze({
@@ -56,7 +80,7 @@ export async function buildManifest(release, download) {
     if (asset.browser_download_url !== expectedUrl) {
       throw new Error("asset_url_rejected");
     }
-    if (!Number.isSafeInteger(asset.size) || asset.size < 1) {
+    if (!Number.isSafeInteger(asset.size) || asset.size < 1 || asset.size > MAX_DOWNLOAD_BYTES) {
       throw new Error("asset_size_invalid");
     }
 
@@ -79,6 +103,7 @@ export async function buildManifest(release, download) {
       target: target.target,
       url: expectedUrl,
       sha256: actual,
+      size: asset.size,
       archiveEntry: target.archiveEntry,
     });
   }
@@ -100,48 +125,72 @@ export async function buildManifest(release, download) {
   };
 }
 
-export async function downloadOfficialAsset(initialUrl, requestOnce = requestOnceWithFetch) {
+export async function downloadOfficialAsset(
+  initialUrl,
+  expectedSize,
+  requestOnce = requestOnceWithFetch,
+) {
   requireOfficialAssetUrl(initialUrl);
-  let currentUrl = initialUrl;
-
-  for (let redirects = 0; redirects <= 1; redirects += 1) {
-    const response = await requestOnce(currentUrl);
-    if (isRedirect(response.status)) {
-      if (redirects === 1 || !response.location) {
-        throw new Error("redirect_count_rejected");
-      }
-      const nextUrl = new URL(response.location, currentUrl);
-      if (nextUrl.protocol !== "https:" || nextUrl.hostname !== RELEASE_CDN_HOST) {
-        throw new Error("redirect_host_rejected");
-      }
-      currentUrl = nextUrl.href;
-      continue;
-    }
-
-    if (response.status < 200 || response.status >= 300) {
-      throw new Error("asset_download_failed");
-    }
-    const finalUrl = new URL(currentUrl);
-    const isInitialReleaseUrl = currentUrl === initialUrl;
-    const isReleaseCdn =
-      finalUrl.protocol === "https:" && finalUrl.hostname === RELEASE_CDN_HOST;
-    if (!isInitialReleaseUrl && !isReleaseCdn) {
-      throw new Error("final_url_rejected");
-    }
-    if (!response.bytes || response.bytes.length === 0) {
-      throw new Error("asset_download_empty");
-    }
-    return Buffer.from(response.bytes);
+  if (!Number.isSafeInteger(expectedSize) || expectedSize < 1 || expectedSize > MAX_DOWNLOAD_BYTES) {
+    throw new Error("asset_size_invalid");
   }
 
-  throw new Error("redirect_count_rejected");
+  const initialResponse = await requestOnce(initialUrl);
+  if (!isRedirect(initialResponse.status) || !initialResponse.location) {
+    throw new Error("redirect_count_rejected");
+  }
+  const finalUrl = new URL(initialResponse.location, initialUrl);
+  if (
+    finalUrl.origin !== `https://${RELEASE_CDN_HOST}` ||
+    finalUrl.username ||
+    finalUrl.password
+  ) {
+    throw new Error("redirect_host_rejected");
+  }
+
+  const finalResponse = await requestOnce(finalUrl.href);
+  if (isRedirect(finalResponse.status)) {
+    throw new Error("redirect_count_rejected");
+  }
+  if (finalResponse.status < 200 || finalResponse.status >= 300) {
+    throw new Error("asset_download_failed");
+  }
+  if (finalResponse.contentLength !== expectedSize) {
+    throw new Error("content_length_rejected");
+  }
+  if (!finalResponse.body || typeof finalResponse.body[Symbol.asyncIterator] !== "function") {
+    throw new Error("asset_download_empty");
+  }
+
+  const chunks = [];
+  let received = 0;
+  for await (const value of finalResponse.body) {
+    const chunk = Buffer.from(value);
+    received += chunk.length;
+    if (received > expectedSize || received > MAX_DOWNLOAD_BYTES) {
+      throw new Error("download_size_exceeded");
+    }
+    chunks.push(chunk);
+  }
+  if (received === 0) {
+    throw new Error("asset_download_empty");
+  }
+  if (received !== expectedSize) {
+    throw new Error("asset_size_mismatch");
+  }
+  return Buffer.concat(chunks, received);
 }
 
-export function inspectArchive(bytes, assetName, expectedEntry) {
+export function inspectArchive(
+  bytes,
+  assetName,
+  expectedEntry,
+  maxExpandedBytes = MAX_EXPANDED_BYTES,
+) {
   const entries = assetName.endsWith(".zip")
     ? inspectZip(bytes)
     : assetName.endsWith(".tar.gz")
-      ? inspectTarGz(bytes)
+      ? inspectTarGz(bytes, maxExpandedBytes)
       : unsupportedArchive();
   const target = TARGETS.find((candidate) => candidate.assetName === assetName);
   if (!target || target.archiveEntry !== expectedEntry) {
@@ -232,6 +281,7 @@ function inspectZip(bytes) {
   }
 
   const entries = [];
+  const localRanges = [];
   let offset = centralOffset;
   for (let index = 0; index < totalEntries; index += 1) {
     if (offset + 46 > endOffset || bytes.readUInt32LE(offset) !== 0x02014b50) {
@@ -239,15 +289,23 @@ function inspectZip(bytes) {
     }
     const flags = bytes.readUInt16LE(offset + 8);
     const method = bytes.readUInt16LE(offset + 10);
+    const crc32 = bytes.readUInt32LE(offset + 16);
+    const compressedSize = bytes.readUInt32LE(offset + 20);
+    const uncompressedSize = bytes.readUInt32LE(offset + 24);
     const nameLength = bytes.readUInt16LE(offset + 28);
     const extraLength = bytes.readUInt16LE(offset + 30);
     const entryCommentLength = bytes.readUInt16LE(offset + 32);
+    const diskStart = bytes.readUInt16LE(offset + 34);
     const localOffset = bytes.readUInt32LE(offset + 42);
     const nameStart = offset + 46;
     const nextOffset = nameStart + nameLength + extraLength + entryCommentLength;
     if (
-      flags & 1 ||
+      flags & ~0x0800 ||
       (method !== 0 && method !== 8) ||
+      compressedSize === 0xffffffff ||
+      uncompressedSize === 0xffffffff ||
+      diskStart !== 0 ||
+      localOffset === 0xffffffff ||
       nextOffset > endOffset ||
       localOffset + 30 > centralOffset ||
       bytes.readUInt32LE(localOffset) !== 0x04034b50
@@ -255,30 +313,84 @@ function inspectZip(bytes) {
       throw new Error("unsupported_archive_structure");
     }
     const name = bytes.toString("utf8", nameStart, nameStart + nameLength);
+    inspectZipExtra(bytes.subarray(nameStart + nameLength, nameStart + nameLength + extraLength));
+    const localFlags = bytes.readUInt16LE(localOffset + 6);
+    const localMethod = bytes.readUInt16LE(localOffset + 8);
+    const localCrc32 = bytes.readUInt32LE(localOffset + 14);
+    const localCompressedSize = bytes.readUInt32LE(localOffset + 18);
+    const localUncompressedSize = bytes.readUInt32LE(localOffset + 22);
     const localNameLength = bytes.readUInt16LE(localOffset + 26);
+    const localExtraLength = bytes.readUInt16LE(localOffset + 28);
+    const localNameStart = localOffset + 30;
+    const localExtraStart = localNameStart + localNameLength;
+    const dataStart = localExtraStart + localExtraLength;
+    const dataEnd = dataStart + compressedSize;
+    if (dataStart > centralOffset || dataEnd > centralOffset) {
+      throw new Error("unsupported_archive_structure");
+    }
     const localName = bytes.toString(
       "utf8",
-      localOffset + 30,
-      localOffset + 30 + localNameLength,
+      localNameStart,
+      localNameStart + localNameLength,
     );
+    inspectZipExtra(bytes.subarray(localExtraStart, dataStart));
     requireSafeEntryName(name);
-    if (name !== localName || name.endsWith("/")) {
+    if (
+      name !== localName ||
+      name.endsWith("/") ||
+      localFlags !== flags ||
+      localMethod !== method ||
+      localCrc32 !== crc32 ||
+      localCompressedSize !== compressedSize ||
+      localUncompressedSize !== uncompressedSize
+    ) {
       throw new Error("unsupported_archive_structure");
     }
     entries.push(name);
+    localRanges.push([localOffset, dataEnd]);
     offset = nextOffset;
   }
   if (offset !== endOffset) {
     throw new Error("unsupported_archive_structure");
   }
+  localRanges.sort((left, right) => left[0] - right[0]);
+  let expectedOffset = 0;
+  for (const [start, end] of localRanges) {
+    if (start !== expectedOffset || end < start) {
+      throw new Error("unsupported_archive_structure");
+    }
+    expectedOffset = end;
+  }
+  if (expectedOffset !== centralOffset) {
+    throw new Error("unsupported_archive_structure");
+  }
   return entries;
 }
 
-function inspectTarGz(bytes) {
+function inspectZipExtra(extra) {
+  let offset = 0;
+  while (offset < extra.length) {
+    if (offset + 4 > extra.length) {
+      throw new Error("unsupported_archive_structure");
+    }
+    const id = extra.readUInt16LE(offset);
+    const size = extra.readUInt16LE(offset + 2);
+    offset += 4;
+    if (id === 0x0001 || offset + size > extra.length) {
+      throw new Error("unsupported_archive_structure");
+    }
+    offset += size;
+  }
+}
+
+function inspectTarGz(bytes, maxExpandedBytes) {
   let tar;
   try {
-    tar = gunzipSync(bytes, { maxOutputLength: MAX_ARCHIVE_BYTES });
-  } catch {
+    tar = gunzipSync(bytes, { maxOutputLength: maxExpandedBytes });
+  } catch (error) {
+    if (error?.code === "ERR_BUFFER_TOO_LARGE") {
+      throw new Error("archive_expansion_exceeded");
+    }
     throw new Error("unsupported_archive_structure");
   }
   if (tar.length < 1536 || tar.length % 512 !== 0) {
@@ -367,11 +479,17 @@ async function requestOnceWithFetch(url) {
   return {
     status: response.status,
     location: response.headers.get("location") ?? undefined,
-    bytes:
-      response.status >= 200 && response.status < 300
-        ? Buffer.from(await response.arrayBuffer())
-        : undefined,
+    contentLength: parseContentLength(response.headers.get("content-length")),
+    body: response.body,
   };
+}
+
+function parseContentLength(value) {
+  if (value === null || !/^[0-9]+$/.test(value)) {
+    return undefined;
+  }
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
 }
 
 async function fetchRelease() {
@@ -411,7 +529,7 @@ function sha256(bytes) {
 async function main() {
   const release = await fetchRelease();
   const manifest = await buildManifest(release, (asset) =>
-    downloadOfficialAsset(asset.browser_download_url),
+    downloadOfficialAsset(asset.browser_download_url, asset.size),
   );
   const [license, notice] = await Promise.all([
     fetchPinnedText(LICENSE_URL),
@@ -420,17 +538,43 @@ async function main() {
 
   const resources = resolve("src-tauri", "resources");
   await mkdir(resources, { recursive: true });
-  await Promise.all([
-    writeFile(resolve(resources, "codex-runtime.json"), `${JSON.stringify(manifest, null, 2)}\n`),
-    writeFile(resolve(resources, "LICENSE"), license),
-    writeFile(resolve(resources, "NOTICE"), notice),
-  ]);
+  try {
+    await Promise.all([
+      writeFile(resolve(resources, "codex-runtime.json"), `${JSON.stringify(manifest, null, 2)}\n`),
+      writeFile(resolve(resources, "LICENSE"), license),
+      writeFile(resolve(resources, "NOTICE"), notice),
+    ]);
+  } catch (error) {
+    const wrapped = new Error("filesystem_write_failed");
+    wrapped.code = "FILESYSTEM_WRITE_FAILED";
+    throw wrapped;
+  }
   console.log("Pinned Codex rust-v0.144.4 for 3 targets; checksums and archive entries verified.");
 }
 
+export async function runCli(task = main, writeError = console.error) {
+  try {
+    await task();
+    return 0;
+  } catch (error) {
+    writeError(`pin-codex-runtime: ${safeDiagnosticCode(error)}`);
+    return 1;
+  }
+}
+
+function safeDiagnosticCode(error) {
+  if (error?.code === "FILESYSTEM_WRITE_FAILED" || isFilesystemErrorCode(error?.code)) {
+    return "filesystem_write_failed";
+  }
+  return error instanceof Error && FIXED_ERROR_CODES.has(error.message)
+    ? error.message
+    : "unknown_error";
+}
+
+function isFilesystemErrorCode(code) {
+  return code === "EACCES" || code === "EPERM" || code === "ENOSPC" || code === "EROFS";
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main().catch((error) => {
-    console.error(`pin-codex-runtime: ${error instanceof Error ? error.message : "unknown_error"}`);
-    process.exitCode = 1;
-  });
+  process.exitCode = await runCli();
 }

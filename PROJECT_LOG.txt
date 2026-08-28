@@ -126,3 +126,8 @@ SmartCAT Translate 프로젝트 기록
 - RED: `pnpm runtime:pin:test` 실패 — `ERR_MODULE_NOT_FOUND` for `scripts/pin-codex-runtime.mjs`.
 - GREEN: `pnpm runtime:pin:test` 통과 — 9/9.
 - 공식 릴리스 검증 명령: `pnpm runtime:pin` 통과 — 3개 타겟의 체크섬과 아카이브 엔트리 검증.
+
+[2026-08-28 13:39 Asia/Seoul] 변경 기록
+- 요약: security: codex-runtime-hardening
+- 변경 파일: DECISIONS.txt, scripts/pin-codex-runtime.mjs, scripts/pin-codex-runtime.test.mjs, src-tauri/Cargo.lock, src-tauri/Cargo.toml, src-tauri/resources/codex-runtime.json, src-tauri/src/codex/install.rs, src-tauri/src/codex/manifest.rs, src-tauri/src/codex/mod.rs, src-tauri/src/codex/runtime.rs, src-tauri/tests/codex_runtime.rs
+- 검증: pnpm runtime:pin:test && 17/17 passed && cargo test && 27/27 passed

@@ -12,18 +12,21 @@
       "target": "x86_64-pc-windows-msvc",
       "url": "https://github.com/openai/codex/releases/download/rust-v0.144.4/codex-x86_64-pc-windows-msvc.exe.zip",
       "sha256": "d731eee110fe287fcb8e201e9bdf39920e863bfc3c97f21e2d697a35d38c63c5",
+      "size": 114554684,
       "archiveEntry": "codex-x86_64-pc-windows-msvc.exe"
     },
     {
       "target": "aarch64-apple-darwin",
       "url": "https://github.com/openai/codex/releases/download/rust-v0.144.4/codex-aarch64-apple-darwin.tar.gz",
       "sha256": "77c8969a481302f9db1d9ea2a6c21c083abae3f1a8fc8a7275dc38323699391e",
+      "size": 98301318,
       "archiveEntry": "codex-aarch64-apple-darwin"
     },
     {
       "target": "x86_64-apple-darwin",
       "url": "https://github.com/openai/codex/releases/download/rust-v0.144.4/codex-x86_64-apple-darwin.tar.gz",
       "sha256": "274ea4931246621d477ad61d61ea3303527878e77fa910087df52153f5e6188e",
+      "size": 107353260,
       "archiveEntry": "codex-x86_64-apple-darwin"
     }
   ]

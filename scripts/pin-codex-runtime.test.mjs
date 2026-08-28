@@ -7,6 +7,7 @@ import {
   buildManifest,
   downloadOfficialAsset,
   inspectArchive,
+  runCli,
 } from "./pin-codex-runtime.mjs";
 
 const TAG = "rust-v0.144.4";
@@ -123,11 +124,11 @@ test("downloadOfficialAsset permits only the GitHub release CDN final host", asy
   const cdn = "https://release-assets.githubusercontent.com/github-production-release-asset/1/file";
   const requests = [];
   const responses = [
-    { status: 302, location: cdn, bytes: undefined },
-    { status: 200, location: undefined, bytes: Buffer.from("archive") },
+    response(302, { location: cdn }),
+    response(200, { body: Buffer.from("archive"), contentLength: 7 }),
   ];
 
-  const bytes = await downloadOfficialAsset(initial, async (url) => {
+  const bytes = await downloadOfficialAsset(initial, 7, async (url) => {
     requests.push(url);
     return responses.shift();
   });
@@ -139,36 +140,147 @@ test("downloadOfficialAsset permits only the GitHub release CDN final host", asy
 test("downloadOfficialAsset rejects any other redirect host", async () => {
   const initial = `${RELEASE_PREFIX}${TARGETS[0].asset}`;
 
-  await assert.rejects(
-    downloadOfficialAsset(initial, async () => ({
-      status: 302,
-      location: "https://downloads.example.invalid/codex.zip",
-      bytes: undefined,
-    })),
-    /redirect_host_rejected/,
-  );
+  for (const location of [
+    "https://downloads.example.invalid/codex.zip",
+    "https://release-assets.githubusercontent.com:444/codex.zip",
+    "https://attacker@release-assets.githubusercontent.com/codex.zip",
+  ]) {
+    await assert.rejects(
+      downloadOfficialAsset(initial, 7, async () => response(302, { location })),
+      /redirect_host_rejected/,
+    );
+  }
 });
 
 test("downloadOfficialAsset rejects a second redirect on the release CDN", async () => {
   const initial = `${RELEASE_PREFIX}${TARGETS[0].asset}`;
   const responses = [
-    {
-      status: 302,
+    response(302, {
       location: "https://release-assets.githubusercontent.com/github-production-release-asset/1/first",
-      bytes: undefined,
-    },
-    {
-      status: 302,
+    }),
+    response(302, {
       location: "https://release-assets.githubusercontent.com/github-production-release-asset/1/second",
-      bytes: undefined,
-    },
-    { status: 200, location: undefined, bytes: Buffer.from("archive") },
+    }),
+    response(200, { body: Buffer.from("archive"), contentLength: 7 }),
   ];
 
   await assert.rejects(
-    downloadOfficialAsset(initial, async () => responses.shift()),
+    downloadOfficialAsset(initial, 7, async () => responses.shift()),
     /redirect_count_rejected/,
   );
+});
+
+test("downloadOfficialAsset rejects a zero-redirect success", async () => {
+  const initial = `${RELEASE_PREFIX}${TARGETS[0].asset}`;
+
+  await assert.rejects(
+    downloadOfficialAsset(initial, 7, async () =>
+      response(200, { body: Buffer.from("archive"), contentLength: 7 }),
+    ),
+    /redirect_count_rejected/,
+  );
+});
+
+test("downloadOfficialAsset requires the exact final Content-Length", async () => {
+  const initial = `${RELEASE_PREFIX}${TARGETS[0].asset}`;
+  const cdn = "https://release-assets.githubusercontent.com/github-production-release-asset/1/file";
+  for (const contentLength of [undefined, 6, 8]) {
+    const responses = [
+      response(302, { location: cdn }),
+      response(200, { body: Buffer.from("archive"), contentLength }),
+    ];
+    await assert.rejects(
+      downloadOfficialAsset(initial, 7, async () => responses.shift()),
+      /content_length_rejected/,
+    );
+  }
+});
+
+test("downloadOfficialAsset aborts when streamed bytes exceed the expected size", async () => {
+  const initial = `${RELEASE_PREFIX}${TARGETS[0].asset}`;
+  const cdn = "https://release-assets.githubusercontent.com/github-production-release-asset/1/file";
+  let chunksRead = 0;
+  const body = {
+    async *[Symbol.asyncIterator]() {
+      chunksRead += 1;
+      yield Buffer.from("archives");
+      chunksRead += 1;
+      yield Buffer.from("must-not-be-read");
+    },
+  };
+  const responses = [response(302, { location: cdn }), response(200, { body, contentLength: 7 })];
+
+  await assert.rejects(
+    downloadOfficialAsset(initial, 7, async () => responses.shift()),
+    /download_size_exceeded/,
+  );
+  assert.equal(chunksRead, 1);
+});
+
+test("buildManifest rejects oversized API asset metadata before download", async () => {
+  const archives = new Map([
+    [TARGETS[0].asset, officialWindowsArchive()],
+    [TARGETS[1].asset, tarGzWithSingleEntry(TARGETS[1].entry)],
+    [TARGETS[2].asset, tarGzWithSingleEntry(TARGETS[2].entry)],
+  ]);
+  const release = releaseFixture(archives);
+  release.assets[0].size = 200 * 1024 * 1024;
+  let downloaded = false;
+
+  await assert.rejects(
+    buildManifest(release, async () => {
+      downloaded = true;
+      return Buffer.alloc(0);
+    }),
+    /asset_size_invalid/,
+  );
+  assert.equal(downloaded, false);
+});
+
+test("inspectArchive rejects a local header that disagrees with the central directory", () => {
+  const archive = officialWindowsArchive();
+  archive.writeUInt16LE(8, 8);
+
+  assert.throws(
+    () => inspectArchive(archive, TARGETS[0].asset, TARGETS[0].entry),
+    /unsupported_archive_structure/,
+  );
+});
+
+test("inspectArchive rejects ZIP64 sentinels", () => {
+  const archive = officialWindowsArchive();
+  archive.writeUInt16LE(0xffff, archive.length - 12);
+
+  assert.throws(
+    () => inspectArchive(archive, TARGETS[0].asset, TARGETS[0].entry),
+    /unsupported_archive_structure/,
+  );
+});
+
+test("inspectArchive bounds gzip expansion before accepting entries", () => {
+  const archive = tarGzWithSingleEntry(TARGETS[1].entry);
+
+  assert.throws(
+    () => inspectArchive(archive, TARGETS[1].asset, TARGETS[1].entry, 1024),
+    /archive_expansion_exceeded/,
+  );
+});
+
+test("runCli sanitizes filesystem failures without paths or arbitrary messages", async () => {
+  const output = [];
+  const error = Object.assign(new Error("access denied at C:\\Users\\private\\runtime.json"), {
+    code: "EACCES",
+  });
+
+  const exitCode = await runCli(
+    async () => {
+      throw error;
+    },
+    (message) => output.push(message),
+  );
+
+  assert.equal(exitCode, 1);
+  assert.deepEqual(output, ["pin-codex-runtime: filesystem_write_failed"]);
 });
 
 function releaseFixture(archives) {
@@ -187,6 +299,20 @@ function releaseFixture(archives) {
 
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+function response(status, { location, body, contentLength } = {}) {
+  const stream =
+    body && typeof body[Symbol.asyncIterator] === "function"
+      ? body
+      : body
+        ? {
+            async *[Symbol.asyncIterator]() {
+              yield body;
+            },
+          }
+        : undefined;
+  return { status, location, body: stream, contentLength };
 }
 
 function officialWindowsArchive() {
