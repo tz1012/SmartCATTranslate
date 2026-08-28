@@ -4,6 +4,10 @@
 
 ## 미출시
 
+### 추가
+
+- SmartCAT Translate의 Tauri 데스크톱 앱과 텍스트 번역 작업 영역 기본 화면을 추가했습니다.
+
 ### 설계
 
 - Windows와 macOS용 Tauri 2 기반 번역 앱의 전체 설계를 승인했습니다.

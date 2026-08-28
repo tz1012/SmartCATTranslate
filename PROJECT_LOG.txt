@@ -51,3 +51,17 @@ SmartCAT Translate 프로젝트 기록
 - 사용자가 작업별 구현·검토 방식(Subagent-Driven Development)을 선택함
 - main 브랜치를 보호하기 위해 구현 전용 Git worktree와 계획별 진행 원장을 사용하기로 함
 - 다음 단계: 구현 전용 worktree에서 첫 번째 기반 계획부터 테스트 주도로 구현
+
+[2026-08-28] Tauri/React 부팅 기준선
+
+구현
+- Tauri 2, React 19, TypeScript, Vitest 기반의 데스크톱 앱 골격을 추가함.
+- `SmartCAT Translate` 제목과 원문·번역문 레이블을 가진 접근 가능한 두 칸 텍스트 번역 작업 영역을 추가함.
+- `smartcat_translate::run()` Tauri 진입점과 패키지명 안정성 Rust 스모크 테스트를 추가함.
+- Windows/macOS 공통 Tauri 설정과 기본 창 권한을 추가함.
+
+테스트 및 빌드
+- RED: `pnpm install --frozen-lockfile=false && pnpm test` 후 `pnpm test`를 실행하여 `src/app/App.tsx`가 없어 `./App`을 해석할 수 없음을 확인함.
+- GREEN: `pnpm test` 통과 — 테스트 파일 1개, 테스트 1개 통과.
+- `pnpm build` 통과 — TypeScript 검사와 Vite 프로덕션 번들 생성 완료.
+- `cargo test --manifest-path src-tauri/Cargo.toml`은 이 호스트에 `cargo` 실행 파일이 없어 실행하지 못함. Rust 도구 모음이 제공된 환경에서 다시 실행해야 함.

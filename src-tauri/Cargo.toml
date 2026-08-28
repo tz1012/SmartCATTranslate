@@ -1,0 +1,16 @@
+[package]
+name = "smartcat-translate"
+version = "0.1.0"
+description = "SmartCAT Translate"
+authors = ["SmartCAT Translate"]
+edition = "2021"
+
+[lib]
+name = "smartcat_translate"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
