@@ -21,6 +21,8 @@ target/
 .local-data/
 artifacts/
 test-results/
+.worktrees/
+.superpowers/
 
 # Editor and operating-system files
 .idea/
