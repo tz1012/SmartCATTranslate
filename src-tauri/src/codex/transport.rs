@@ -23,6 +23,8 @@ type PendingMap = Arc<Mutex<HashMap<u64, PendingSender>>>;
 pub trait AppServerTransport: Send + Sync {
     async fn request(&self, method: &str, params: Value) -> Result<Value, TransportError>;
 
+    async fn terminate(&self) -> Result<(), TransportError>;
+
     fn subscribe(&self) -> broadcast::Receiver<AppServerNotification>;
 }
 
@@ -150,6 +152,27 @@ impl AppServerTransport for JsonlAppServerTransport {
             .unwrap_or(Err(TransportError::ProcessExited));
         registration.disarm();
         result
+    }
+
+    async fn terminate(&self) -> Result<(), TransportError> {
+        let _ = self.shutdown.send(true);
+        SharedExitState::new(
+            self.pending.clone(),
+            self.events.clone(),
+            self.exited.clone(),
+        )
+        .exit_once();
+        if let Some(mut session) = self.session.lock().await.take() {
+            session.abort();
+        }
+        let tasks = {
+            let mut tasks = self.tasks.lock().await;
+            std::mem::take(&mut *tasks)
+        };
+        for task in tasks {
+            task.abort();
+        }
+        Ok(())
     }
 
     fn subscribe(&self) -> broadcast::Receiver<AppServerNotification> {
@@ -343,11 +366,13 @@ fn route_inbound(frame: &[u8], exit: &SharedExitState, shutdown_signal: &watch::
         return;
     };
 
-    if object.contains_key("id") {
-        let Some(id) = object.get("id").and_then(Value::as_u64) else {
+    if let Some(method_value) = object.get("method") {
+        let Some(method) = method_value.as_str() else {
+            exit.exit_once();
+            let _ = shutdown_signal.send(true);
             return;
         };
-        if let Some(method) = object.get("method").and_then(Value::as_str) {
+        if object.contains_key("id") {
             let _ = exit.events.send(AppServerNotification {
                 method: method.to_owned(),
                 params: object.get("params").cloned().unwrap_or(Value::Null),
@@ -355,6 +380,25 @@ fn route_inbound(frame: &[u8], exit: &SharedExitState, shutdown_signal: &watch::
             });
             return;
         }
+        if method == "runtime/exited" {
+            exit.exit_once();
+            let _ = shutdown_signal.send(true);
+            return;
+        }
+        let _ = exit.events.send(AppServerNotification {
+            method: method.to_owned(),
+            params: object.get("params").cloned().unwrap_or(Value::Null),
+            server_request: false,
+        });
+        return;
+    }
+
+    if object.contains_key("id") {
+        let Some(id) = object.get("id").and_then(Value::as_u64) else {
+            exit.exit_once();
+            let _ = shutdown_signal.send(true);
+            return;
+        };
         let sender = lock_pending(&exit.pending).remove(&id);
         let Some(sender) = sender else {
             return;
@@ -376,19 +420,8 @@ fn route_inbound(frame: &[u8], exit: &SharedExitState, shutdown_signal: &watch::
         return;
     }
 
-    let Some(method) = object.get("method").and_then(Value::as_str) else {
-        return;
-    };
-    if method == "runtime/exited" {
-        exit.exit_once();
-        let _ = shutdown_signal.send(true);
-        return;
-    }
-    let _ = exit.events.send(AppServerNotification {
-        method: method.to_owned(),
-        params: object.get("params").cloned().unwrap_or(Value::Null),
-        server_request: false,
-    });
+    exit.exit_once();
+    let _ = shutdown_signal.send(true);
 }
 
 async fn read_bounded_line<R>(reader: &mut R) -> Result<Option<Vec<u8>>, ()>

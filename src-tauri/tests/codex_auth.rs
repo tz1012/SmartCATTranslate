@@ -44,6 +44,10 @@ impl AppServerTransport for ImmediateCompletionTransport {
         ))
     }
 
+    async fn terminate(&self) -> Result<(), TransportError> {
+        Ok(())
+    }
+
     fn subscribe(&self) -> broadcast::Receiver<AppServerNotification> {
         self.notifications.subscribe()
     }
@@ -84,6 +88,10 @@ impl AppServerTransport for FakeTransport {
             .unwrap()
             .pop_front()
             .expect("test response is present")
+    }
+
+    async fn terminate(&self) -> Result<(), TransportError> {
+        Ok(())
     }
 
     fn subscribe(&self) -> broadcast::Receiver<AppServerNotification> {

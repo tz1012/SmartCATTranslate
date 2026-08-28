@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
@@ -9,7 +9,8 @@ use uuid::Uuid;
 
 use crate::app_state::AppState;
 use crate::codex::translation::{
-    CodexTranslationBackend, TranslationJobPermit, TranslationObserver,
+    validate_translation_request, CodexTranslationBackend, TranslationJobPermit,
+    TranslationObserver,
 };
 use crate::core::errors::TranslationError;
 use crate::core::types::{TranslationRequest, TranslationResult};
@@ -61,14 +62,48 @@ pub trait TranslationEventSink: Send + Sync + 'static {
 
 pub struct TranslationJobManager {
     backend: Arc<CodexTranslationBackend>,
-    jobs: Mutex<HashMap<Uuid, String>>,
+    registry: Mutex<OwnerJobRegistry>,
+}
+
+#[derive(Default)]
+struct OwnerJobRegistry {
+    jobs: HashMap<Uuid, String>,
+    tombstones: HashSet<String>,
+}
+
+impl OwnerJobRegistry {
+    fn begin(&mut self, owner: String, job_id: Uuid) -> Result<(), TranslationError> {
+        if self.tombstones.contains(&owner) {
+            return Err(TranslationError::Cancelled);
+        }
+        self.jobs.insert(job_id, owner);
+        Ok(())
+    }
+
+    fn owner_is_live(&self, job_id: Uuid) -> bool {
+        self.jobs
+            .get(&job_id)
+            .is_some_and(|owner| !self.tombstones.contains(owner))
+    }
+
+    fn remove(&mut self, job_id: Uuid) {
+        self.jobs.remove(&job_id);
+    }
+
+    fn tombstone(&mut self, owner: &str) -> Vec<Uuid> {
+        self.tombstones.insert(owner.to_owned());
+        self.jobs
+            .iter()
+            .filter_map(|(job_id, job_owner)| (job_owner == owner).then_some(*job_id))
+            .collect()
+    }
 }
 
 impl TranslationJobManager {
     pub fn new(backend: Arc<CodexTranslationBackend>) -> Self {
         Self {
             backend,
-            jobs: Mutex::new(HashMap::new()),
+            registry: Mutex::new(OwnerJobRegistry::default()),
         }
     }
 
@@ -78,9 +113,21 @@ impl TranslationJobManager {
         request: TranslationRequest,
         sink: Arc<dyn TranslationEventSink>,
     ) -> Result<Uuid, TranslationError> {
+        validate_translation_request(&request)?;
         let job_id = Uuid::new_v4();
-        let permit = self.backend.reserve_job(job_id).await?;
-        self.jobs.lock().await.insert(job_id, owner.into());
+        self.registry.lock().await.begin(owner.into(), job_id)?;
+        let permit = match self.backend.reserve_job(job_id).await {
+            Ok(permit) => permit,
+            Err(error) => {
+                self.registry.lock().await.remove(job_id);
+                return Err(error);
+            }
+        };
+        if !self.registry.lock().await.owner_is_live(job_id) {
+            self.backend.discard_reserved_job(permit).await;
+            self.registry.lock().await.remove(job_id);
+            return Err(TranslationError::Cancelled);
+        }
         let manager = self.clone();
         tauri::async_runtime::spawn(async move {
             manager.run(job_id, permit, request, sink).await;
@@ -90,22 +137,17 @@ impl TranslationJobManager {
 
     pub async fn cancel(&self, owner: &str, job_id: Uuid) -> bool {
         let is_owner = self
-            .jobs
+            .registry
             .lock()
             .await
+            .jobs
             .get(&job_id)
             .is_some_and(|job_owner| job_owner == owner);
         is_owner && self.backend.cancel_job(job_id).await
     }
 
     pub async fn cancel_owner(&self, owner: &str) {
-        let job_ids: Vec<_> = self
-            .jobs
-            .lock()
-            .await
-            .iter()
-            .filter_map(|(job_id, job_owner)| (job_owner == owner).then_some(*job_id))
-            .collect();
+        let job_ids = self.registry.lock().await.tombstone(owner);
         for job_id in job_ids {
             let _ = self.backend.cancel_job(job_id).await;
         }
@@ -138,7 +180,26 @@ impl TranslationJobManager {
                 message: user_message(&error).to_owned(),
             }),
         }
-        self.jobs.lock().await.remove(&job_id);
+        self.registry.lock().await.remove(job_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OwnerJobRegistry;
+    use uuid::Uuid;
+
+    #[test]
+    fn destroy_between_reservation_and_activation_tombstones_the_job() {
+        let mut registry = OwnerJobRegistry::default();
+        let job_id = Uuid::new_v4();
+        registry.begin("main".to_owned(), job_id).unwrap();
+
+        let jobs_to_cancel = registry.tombstone("main");
+
+        assert_eq!(jobs_to_cancel, [job_id]);
+        assert!(!registry.owner_is_live(job_id));
+        assert!(registry.begin("main".to_owned(), Uuid::new_v4()).is_err());
     }
 }
 

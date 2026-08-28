@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::json;
-use smartcat_translate::codex::process::CodexAppServerConfig;
+use smartcat_translate::codex::process::{CodexAppServerConfig, CredentialStoreMode};
 use smartcat_translate::codex::translation::{
     build_translation_prompt, prepare_owned_empty_workspace, CodexTranslationBackend,
     TranslationBackend, TranslationObserver,
@@ -76,11 +76,43 @@ fn prompt_wraps_user_text_as_untrusted_data() {
 
 #[test]
 fn generated_app_server_configuration_disables_every_mcp_server() {
-    let config = CodexAppServerConfig::tool_free();
+    let config = CodexAppServerConfig::tool_free(CredentialStoreMode::File);
+    let value: toml::Value = toml::from_str(&config.to_toml().unwrap()).unwrap();
 
-    assert_eq!(config.to_override_args(), ["-c", "mcp_servers={}"]);
-    assert_eq!(config.mcp_server_count(), 0);
-    assert!(config.preserves_default_account_store());
+    assert_eq!(value["approval_policy"].as_str(), Some("never"));
+    assert_eq!(value["sandbox_mode"].as_str(), Some("read-only"));
+    assert_eq!(value["web_search"].as_str(), Some("disabled"));
+    assert_eq!(value["model_provider"].as_str(), Some("openai"));
+    assert_eq!(value["cli_auth_credentials_store"].as_str(), Some("file"));
+    assert_eq!(value["project_doc_max_bytes"].as_integer(), Some(0));
+    assert_eq!(value["agents"]["enabled"].as_bool(), Some(false));
+    for feature in [
+        "apps",
+        "goals",
+        "hooks",
+        "memories",
+        "multi_agent",
+        "personality",
+        "remote_plugin",
+        "shell_snapshot",
+        "shell_tool",
+        "skill_mcp_dependency_install",
+        "unified_exec",
+    ] {
+        assert_eq!(value["features"][feature].as_bool(), Some(false));
+    }
+    assert_eq!(value["apps"]["_default"]["enabled"].as_bool(), Some(false));
+    assert_eq!(value["tools"]["view_image"].as_bool(), Some(false));
+    assert_eq!(value["tools"]["web_search"].as_bool(), Some(false));
+    assert_eq!(value["history"]["persistence"].as_str(), Some("none"));
+    assert_eq!(value["otel"]["exporter"].as_str(), Some("none"));
+    assert_eq!(value["otel"]["trace_exporter"].as_str(), Some("none"));
+    assert_eq!(value["otel"]["metrics_exporter"].as_str(), Some("none"));
+    assert!(value["mcp_servers"].as_table().unwrap().is_empty());
+    assert!(value["hooks"].as_table().unwrap().is_empty());
+    assert!(value.get("developer_instructions").is_none());
+    assert!(value.get("model_instructions_file").is_none());
+    assert!(value.get("model_providers").is_none());
 }
 
 #[tokio::test]
@@ -91,7 +123,7 @@ async fn rejects_tool_events_without_executing_or_persisting_source_text() {
         assert!(!base.to_string().contains("private source"));
         write_json_line(
             &mut writer,
-            &json!({"id": base["id"], "result": {"thread": {"id": "base"}}}),
+            &json!({"id": base["id"], "result": {"thread": {"id": "base"}, "instructionSources": []}}),
         )
         .await;
 
@@ -168,7 +200,7 @@ async fn streams_only_the_structured_translation_and_handles_events_before_respo
         let base = read_request(&mut reader).await;
         write_json_line(
             &mut writer,
-            &json!({"id": base["id"], "result": {"thread": {"id": "base"}}}),
+            &json!({"id": base["id"], "result": {"thread": {"id": "base"}, "instructionSources": []}}),
         )
         .await;
         let fork = read_request(&mut reader).await;
@@ -313,12 +345,124 @@ async fn rejects_unowned_or_nonempty_workspaces_before_creating_a_thread() {
 }
 
 #[tokio::test]
+async fn rejects_missing_or_nonempty_base_instruction_sources() {
+    for instruction_sources in [None, Some(json!(["C:\\hostile\\AGENTS.md"]))] {
+        let harness = spawn_fake_transport(move |mut reader, mut writer| async move {
+            let base = read_request(&mut reader).await;
+            let mut result = json!({"thread": {"id": "base"}});
+            if let Some(sources) = instruction_sources {
+                result["instructionSources"] = sources;
+            }
+            write_json_line(&mut writer, &json!({"id": base["id"], "result": result})).await;
+        })
+        .await;
+        let root = tempdir().unwrap();
+        let workspace = prepare_owned_empty_workspace(root.path()).unwrap();
+
+        let error =
+            match CodexTranslationBackend::new(Arc::new(harness.transport), &workspace).await {
+                Ok(_) => panic!("unsafe instruction source response was accepted"),
+                Err(error) => error,
+            };
+
+        assert_eq!(error, TranslationError::ProtocolViolation);
+        harness.server_task.await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn an_ancestor_agents_file_cannot_enter_the_content_free_base() {
+    let harness = spawn_fake_transport(|mut reader, mut writer| async move {
+        let base = read_request(&mut reader).await;
+        assert_eq!(base["method"], "thread/start");
+        write_json_line(
+            &mut writer,
+            &json!({
+                "id": base["id"],
+                "result": {"thread": {"id": "base"}, "instructionSources": []}
+            }),
+        )
+        .await;
+    })
+    .await;
+    let root = tempdir().unwrap();
+    std::fs::write(root.path().join("AGENTS.md"), b"hostile instructions").unwrap();
+    let app_data = root.path().join("nested").join("app-data");
+    let workspace = prepare_owned_empty_workspace(&app_data).unwrap();
+
+    let backend = CodexTranslationBackend::new(Arc::new(harness.transport), &workspace)
+        .await
+        .unwrap();
+
+    drop(backend);
+    harness.server_task.await.unwrap();
+}
+
+#[tokio::test]
+async fn replacing_the_workspace_directory_invalidates_its_binding() {
+    let harness = spawn_fake_transport(|mut reader, mut writer| async move {
+        let base = read_request(&mut reader).await;
+        write_json_line(
+            &mut writer,
+            &json!({
+                "id": base["id"],
+                "result": {"thread": {"id": "base"}, "instructionSources": []}
+            }),
+        )
+        .await;
+        std::future::pending::<()>().await;
+    })
+    .await;
+    let root = tempdir().unwrap();
+    let workspace = prepare_owned_empty_workspace(root.path()).unwrap();
+    let backend = CodexTranslationBackend::new_with_timeout(
+        Arc::new(harness.transport),
+        &workspace,
+        Duration::from_millis(20),
+    )
+    .await
+    .unwrap();
+    let displaced = workspace.with_file_name("displaced-workspace");
+    std::fs::rename(&workspace, displaced).unwrap();
+    std::fs::create_dir(&workspace).unwrap();
+
+    let error = backend.translate(request("hello")).await.unwrap_err();
+
+    assert_eq!(error, TranslationError::UnsafeWorkspace);
+    harness.server_task.abort();
+}
+
+#[test]
+fn rejects_a_workspace_below_a_symlinked_ancestor() {
+    let root = tempdir().unwrap();
+    let actual = root.path().join("actual");
+    std::fs::create_dir(&actual).unwrap();
+    let linked = root.path().join("linked");
+    #[cfg(windows)]
+    {
+        let status = std::process::Command::new("cmd.exe")
+            .args(["/d", "/c", "mklink", "/J"])
+            .arg(&linked)
+            .arg(&actual)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&actual, &linked).unwrap();
+
+    let error = prepare_owned_empty_workspace(&linked).unwrap_err();
+
+    assert_eq!(error, TranslationError::UnsafeWorkspace);
+}
+
+#[tokio::test]
 async fn rejects_server_requested_actions_and_interrupts_the_matching_turn() {
     let harness = spawn_fake_transport(|mut reader, mut writer| async move {
         let base = read_request(&mut reader).await;
         write_json_line(
             &mut writer,
-            &json!({"id": base["id"], "result": {"thread": {"id": "base"}}}),
+            &json!({"id": base["id"], "result": {"thread": {"id": "base"}, "instructionSources": []}}),
         )
         .await;
         let fork = read_request(&mut reader).await;
@@ -367,6 +511,64 @@ async fn rejects_server_requested_actions_and_interrupts_the_matching_turn() {
 }
 
 #[tokio::test]
+async fn rejects_an_unrecognized_same_turn_notification_fail_closed() {
+    let harness = spawn_fake_transport(|mut reader, mut writer| async move {
+        let base = read_request(&mut reader).await;
+        write_json_line(
+            &mut writer,
+            &json!({"id": base["id"], "result": {"thread": {"id": "base"}, "instructionSources": []}}),
+        )
+        .await;
+        let fork = read_request(&mut reader).await;
+        write_json_line(
+            &mut writer,
+            &json!({"id": fork["id"], "result": {"thread": {"id": "ephemeral"}}}),
+        )
+        .await;
+        let turn = read_request(&mut reader).await;
+        write_json_line(
+            &mut writer,
+            &json!({"id": turn["id"], "result": {"turn": {"id": "turn-1"}}}),
+        )
+        .await;
+        write_json_line(
+            &mut writer,
+            &json!({
+                "method": "future/capability",
+                "params": {"threadId": "ephemeral", "turnId": "turn-1"}
+            }),
+        )
+        .await;
+
+        let interrupt = read_request(&mut reader).await;
+        assert_eq!(interrupt["method"], "turn/interrupt");
+        write_json_line(&mut writer, &json!({"id": interrupt["id"], "result": {}})).await;
+        let unsubscribe = read_request(&mut reader).await;
+        assert_eq!(unsubscribe["method"], "thread/unsubscribe");
+        write_json_line(
+            &mut writer,
+            &json!({"id": unsubscribe["id"], "result": {"status": "unsubscribed"}}),
+        )
+        .await;
+    })
+    .await;
+    let root = tempdir().unwrap();
+    let workspace = prepare_owned_empty_workspace(root.path()).unwrap();
+    let backend = CodexTranslationBackend::new_with_timeout(
+        Arc::new(harness.transport),
+        &workspace,
+        Duration::from_millis(20),
+    )
+    .await
+    .unwrap();
+
+    let error = backend.translate(request("hello")).await.unwrap_err();
+
+    assert_eq!(error, TranslationError::ProtocolViolation);
+    harness.server_task.await.unwrap();
+}
+
+#[tokio::test]
 async fn cancellation_interrupts_only_the_reserved_job() {
     let turn_seen = Arc::new(Notify::new());
     let server_signal = turn_seen.clone();
@@ -374,7 +576,7 @@ async fn cancellation_interrupts_only_the_reserved_job() {
         let base = read_request(&mut reader).await;
         write_json_line(
             &mut writer,
-            &json!({"id": base["id"], "result": {"thread": {"id": "base"}}}),
+            &json!({"id": base["id"], "result": {"thread": {"id": "base"}, "instructionSources": []}}),
         )
         .await;
         let fork = read_request(&mut reader).await;
@@ -425,12 +627,124 @@ async fn cancellation_interrupts_only_the_reserved_job() {
 }
 
 #[tokio::test]
+async fn cancellation_waits_boundedly_for_a_late_turn_id_then_interrupts_it() {
+    let turn_request_seen = Arc::new(Notify::new());
+    let release_turn_response = Arc::new(Notify::new());
+    let server_seen = turn_request_seen.clone();
+    let server_release = release_turn_response.clone();
+    let harness = spawn_fake_transport(move |mut reader, mut writer| async move {
+        let base = read_request(&mut reader).await;
+        write_json_line(
+            &mut writer,
+            &json!({"id": base["id"], "result": {"thread": {"id": "base"}, "instructionSources": []}}),
+        )
+        .await;
+        let fork = read_request(&mut reader).await;
+        write_json_line(
+            &mut writer,
+            &json!({"id": fork["id"], "result": {"thread": {"id": "ephemeral"}}}),
+        )
+        .await;
+        let turn = read_request(&mut reader).await;
+        server_seen.notify_one();
+        server_release.notified().await;
+        write_json_line(
+            &mut writer,
+            &json!({"id": turn["id"], "result": {"turn": {"id": "turn-late"}}}),
+        )
+        .await;
+        let interrupt = read_request(&mut reader).await;
+        assert_eq!(interrupt["method"], "turn/interrupt");
+        assert_eq!(interrupt["params"]["turnId"], "turn-late");
+        write_json_line(&mut writer, &json!({"id": interrupt["id"], "result": {}})).await;
+        let unsubscribe = read_request(&mut reader).await;
+        assert_eq!(unsubscribe["method"], "thread/unsubscribe");
+        write_json_line(
+            &mut writer,
+            &json!({"id": unsubscribe["id"], "result": {"status": "unsubscribed"}}),
+        )
+        .await;
+    })
+    .await;
+    let root = tempdir().unwrap();
+    let workspace = prepare_owned_empty_workspace(root.path()).unwrap();
+    let backend = Arc::new(
+        CodexTranslationBackend::new_with_timeout(
+            Arc::new(harness.transport),
+            &workspace,
+            Duration::from_millis(100),
+        )
+        .await
+        .unwrap(),
+    );
+    let job_id = Uuid::new_v4();
+    let permit = backend.reserve_job(job_id).await.unwrap();
+    let worker = backend.clone();
+    let task = tokio::spawn(async move {
+        worker
+            .translate_reserved(permit, request("hello"), &RecordingObserver::default())
+            .await
+    });
+    turn_request_seen.notified().await;
+
+    assert!(backend.cancel_job(job_id).await);
+    release_turn_response.notify_one();
+
+    assert_eq!(task.await.unwrap(), Err(TranslationError::Cancelled));
+    harness.server_task.await.unwrap();
+}
+
+#[tokio::test]
+async fn a_turn_id_that_never_arrives_taints_and_terminates_the_runtime() {
+    let harness = spawn_fake_transport(|mut reader, mut writer| async move {
+        let base = read_request(&mut reader).await;
+        write_json_line(
+            &mut writer,
+            &json!({"id": base["id"], "result": {"thread": {"id": "base"}, "instructionSources": []}}),
+        )
+        .await;
+        let fork = read_request(&mut reader).await;
+        write_json_line(
+            &mut writer,
+            &json!({"id": fork["id"], "result": {"thread": {"id": "ephemeral"}}}),
+        )
+        .await;
+        let _turn = read_request(&mut reader).await;
+        std::future::pending::<()>().await;
+    })
+    .await;
+    let aborts = harness.aborts.clone();
+    let root = tempdir().unwrap();
+    let workspace = prepare_owned_empty_workspace(root.path()).unwrap();
+    let backend = CodexTranslationBackend::new_with_timeout(
+        Arc::new(harness.transport),
+        &workspace,
+        Duration::from_millis(10),
+    )
+    .await
+    .unwrap();
+
+    let error = backend
+        .translate(request("PRIVATE SOURCE"))
+        .await
+        .unwrap_err();
+
+    assert_eq!(error, TranslationError::TimedOut);
+    assert_eq!(aborts.load(std::sync::atomic::Ordering::Acquire), 1);
+    assert_eq!(
+        backend.translate(request("another source")).await,
+        Err(TranslationError::RuntimeUnavailable)
+    );
+    harness.server_task.abort();
+}
+
+#[tokio::test]
 async fn timeout_interrupts_the_turn_and_returns_a_sanitized_error() {
     let harness = spawn_fake_transport(|mut reader, mut writer| async move {
         let base = read_request(&mut reader).await;
         write_json_line(
             &mut writer,
-            &json!({"id": base["id"], "result": {"thread": {"id": "base"}}}),
+            &json!({"id": base["id"], "result": {"thread": {"id": "base"}, "instructionSources": []}}),
         )
         .await;
         let fork = read_request(&mut reader).await;
@@ -482,7 +796,7 @@ async fn shutdown_deletes_the_content_free_base_and_rejects_new_jobs() {
         let base = read_request(&mut reader).await;
         write_json_line(
             &mut writer,
-            &json!({"id": base["id"], "result": {"thread": {"id": "base"}}}),
+            &json!({"id": base["id"], "result": {"thread": {"id": "base"}, "instructionSources": []}}),
         )
         .await;
         let delete = read_request(&mut reader).await;
@@ -506,12 +820,12 @@ async fn shutdown_deletes_the_content_free_base_and_rejects_new_jobs() {
 }
 
 #[tokio::test]
-async fn malformed_turn_response_unsubscribes_the_ephemeral_thread() {
+async fn malformed_turn_response_taints_and_terminates_the_runtime() {
     let harness = spawn_fake_transport(|mut reader, mut writer| async move {
         let base = read_request(&mut reader).await;
         write_json_line(
             &mut writer,
-            &json!({"id": base["id"], "result": {"thread": {"id": "base"}}}),
+            &json!({"id": base["id"], "result": {"thread": {"id": "base"}, "instructionSources": []}}),
         )
         .await;
         let fork = read_request(&mut reader).await;
@@ -526,17 +840,12 @@ async fn malformed_turn_response_unsubscribes_the_ephemeral_thread() {
             &json!({"id": turn["id"], "result": {"turn": {"status": "inProgress"}}}),
         )
         .await;
-        let unsubscribe = read_request(&mut reader).await;
-        assert_eq!(unsubscribe["method"], "thread/unsubscribe");
-        write_json_line(
-            &mut writer,
-            &json!({"id": unsubscribe["id"], "result": {"status": "unsubscribed"}}),
-        )
-        .await;
+        std::future::pending::<()>().await;
     })
     .await;
     let root = tempdir().unwrap();
     let workspace = prepare_owned_empty_workspace(root.path()).unwrap();
+    let aborts = harness.aborts.clone();
     let backend = CodexTranslationBackend::new(Arc::new(harness.transport), &workspace)
         .await
         .unwrap();
@@ -544,10 +853,12 @@ async fn malformed_turn_response_unsubscribes_the_ephemeral_thread() {
     let error = backend.translate(request("hello")).await.unwrap_err();
 
     assert_eq!(error, TranslationError::ProtocolViolation);
-    tokio::time::timeout(Duration::from_millis(250), harness.server_task)
-        .await
-        .expect("ephemeral cleanup request was sent")
-        .unwrap();
+    assert_eq!(aborts.load(std::sync::atomic::Ordering::Acquire), 1);
+    assert_eq!(
+        backend.translate(request("another source")).await,
+        Err(TranslationError::RuntimeUnavailable)
+    );
+    harness.server_task.abort();
 }
 
 #[tokio::test]
@@ -556,7 +867,7 @@ async fn invalid_structured_output_is_rejected_after_interrupt_and_unsubscribe()
         let base = read_request(&mut reader).await;
         write_json_line(
             &mut writer,
-            &json!({"id": base["id"], "result": {"thread": {"id": "base"}}}),
+            &json!({"id": base["id"], "result": {"thread": {"id": "base"}, "instructionSources": []}}),
         )
         .await;
         let fork = read_request(&mut reader).await;
@@ -616,7 +927,7 @@ async fn process_exit_fails_the_active_job_without_exposing_content() {
         let base = read_request(&mut reader).await;
         write_json_line(
             &mut writer,
-            &json!({"id": base["id"], "result": {"thread": {"id": "base"}}}),
+            &json!({"id": base["id"], "result": {"thread": {"id": "base"}, "instructionSources": []}}),
         )
         .await;
         let fork = read_request(&mut reader).await;
@@ -656,7 +967,7 @@ async fn input_bounds_are_enforced_before_an_ephemeral_fork_is_created() {
         let base = read_request(&mut reader).await;
         write_json_line(
             &mut writer,
-            &json!({"id": base["id"], "result": {"thread": {"id": "base"}}}),
+            &json!({"id": base["id"], "result": {"thread": {"id": "base"}, "instructionSources": []}}),
         )
         .await;
         std::future::pending::<()>().await;
@@ -664,13 +975,37 @@ async fn input_bounds_are_enforced_before_an_ephemeral_fork_is_created() {
     .await;
     let root = tempdir().unwrap();
     let workspace = prepare_owned_empty_workspace(root.path()).unwrap();
-    let backend = CodexTranslationBackend::new(Arc::new(harness.transport), &workspace)
-        .await
-        .unwrap();
+    let backend = Arc::new(
+        CodexTranslationBackend::new(Arc::new(harness.transport), &workspace)
+            .await
+            .unwrap(),
+    );
+    let manager = Arc::new(TranslationJobManager::new(backend));
+    let sink = Arc::new(RecordingEventSink::default());
+    let mut invalid_requests = Vec::new();
 
-    let error = backend.translate(request("")).await.unwrap_err();
+    invalid_requests.push(request(""));
+    let mut source_language = request("hello");
+    source_language.profile.source_language = Some("x".repeat(65));
+    invalid_requests.push(source_language);
+    let mut oversized_term = request("hello");
+    oversized_term.profile.protected_terms = vec!["x".repeat(1_025)];
+    invalid_requests.push(oversized_term);
+    let mut aggregate_terms = request("hello");
+    aggregate_terms.profile.protected_terms = vec!["x".repeat(1_024); 65];
+    invalid_requests.push(aggregate_terms);
+    invalid_requests.push(request(&"\0".repeat(200_000)));
 
-    assert_eq!(error, TranslationError::InvalidInput);
+    for invalid in invalid_requests {
+        let error = manager
+            .start("main", invalid, sink.clone())
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            TranslationError::InvalidInput | TranslationError::SizeLimitExceeded
+        ));
+    }
     harness.server_task.abort();
 }
 
@@ -680,7 +1015,7 @@ async fn refuses_a_workspace_that_stops_being_empty_after_initialization() {
         let base = read_request(&mut reader).await;
         write_json_line(
             &mut writer,
-            &json!({"id": base["id"], "result": {"thread": {"id": "base"}}}),
+            &json!({"id": base["id"], "result": {"thread": {"id": "base"}, "instructionSources": []}}),
         )
         .await;
         std::future::pending::<()>().await;
@@ -709,7 +1044,7 @@ async fn job_manager_returns_immediately_and_emits_only_sanitized_window_events(
         let base = read_request(&mut reader).await;
         write_json_line(
             &mut writer,
-            &json!({"id": base["id"], "result": {"thread": {"id": "base"}}}),
+            &json!({"id": base["id"], "result": {"thread": {"id": "base"}, "instructionSources": []}}),
         )
         .await;
         let fork = read_request(&mut reader).await;
@@ -790,12 +1125,47 @@ async fn job_manager_returns_immediately_and_emits_only_sanitized_window_events(
 }
 
 #[tokio::test]
+async fn a_destroyed_window_tombstone_prevents_a_late_job_from_starting() {
+    let harness = spawn_fake_transport(|mut reader, mut writer| async move {
+        let base = read_request(&mut reader).await;
+        write_json_line(
+            &mut writer,
+            &json!({"id": base["id"], "result": {"thread": {"id": "base"}, "instructionSources": []}}),
+        )
+        .await;
+        std::future::pending::<()>().await;
+    })
+    .await;
+    let root = tempdir().unwrap();
+    let workspace = prepare_owned_empty_workspace(root.path()).unwrap();
+    let backend = Arc::new(
+        CodexTranslationBackend::new(Arc::new(harness.transport), &workspace)
+            .await
+            .unwrap(),
+    );
+    let manager = Arc::new(TranslationJobManager::new(backend));
+    manager.cancel_owner("destroyed-window").await;
+
+    let error = manager
+        .start(
+            "destroyed-window",
+            request("PRIVATE source"),
+            Arc::new(RecordingEventSink::default()),
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(error, TranslationError::Cancelled);
+    harness.server_task.abort();
+}
+
+#[tokio::test]
 async fn completed_turn_does_not_wait_forever_for_unsubscribe() {
     let harness = spawn_fake_transport(|mut reader, mut writer| async move {
         let base = read_request(&mut reader).await;
         write_json_line(
             &mut writer,
-            &json!({"id": base["id"], "result": {"thread": {"id": "base"}}}),
+            &json!({"id": base["id"], "result": {"thread": {"id": "base"}, "instructionSources": []}}),
         )
         .await;
         let fork = read_request(&mut reader).await;
@@ -865,7 +1235,7 @@ async fn abort_attempts_unsubscribe_even_when_interrupt_does_not_answer() {
         let base = read_request(&mut reader).await;
         write_json_line(
             &mut writer,
-            &json!({"id": base["id"], "result": {"thread": {"id": "base"}}}),
+            &json!({"id": base["id"], "result": {"thread": {"id": "base"}, "instructionSources": []}}),
         )
         .await;
         let fork = read_request(&mut reader).await;
@@ -916,7 +1286,7 @@ async fn shutdown_times_out_cleanly_and_retries_base_deletion() {
         let base = read_request(&mut reader).await;
         write_json_line(
             &mut writer,
-            &json!({"id": base["id"], "result": {"thread": {"id": "base"}}}),
+            &json!({"id": base["id"], "result": {"thread": {"id": "base"}, "instructionSources": []}}),
         )
         .await;
         let first_delete = read_request(&mut reader).await;
@@ -955,7 +1325,7 @@ async fn receiver_lag_fails_closed_and_cleans_up_the_turn() {
         let base = read_request(&mut reader).await;
         write_json_line(
             &mut writer,
-            &json!({"id": base["id"], "result": {"thread": {"id": "base"}}}),
+            &json!({"id": base["id"], "result": {"thread": {"id": "base"}, "instructionSources": []}}),
         )
         .await;
         let fork = read_request(&mut reader).await;
@@ -1011,7 +1381,7 @@ async fn concurrent_jobs_share_one_base_and_keep_ephemeral_events_isolated() {
         assert_eq!(base["method"], "thread/start");
         write_json_line(
             &mut writer,
-            &json!({"id": base["id"], "result": {"thread": {"id": "base"}}}),
+            &json!({"id": base["id"], "result": {"thread": {"id": "base"}, "instructionSources": []}}),
         )
         .await;
 

@@ -84,7 +84,7 @@ async fn concurrent_requests_have_unique_ids_and_route_out_of_order_responses() 
 }
 
 #[tokio::test]
-async fn malformed_and_unknown_messages_do_not_break_the_next_response() {
+async fn an_unknown_object_terminates_the_protocol_instead_of_accepting_a_later_response() {
     let harness = spawn_fake_transport(|mut reader, mut writer| async move {
         let request = read_request(&mut reader).await;
         write_raw_line(&mut writer, b"not-json").await;
@@ -102,29 +102,31 @@ async fn malformed_and_unknown_messages_do_not_break_the_next_response() {
     })
     .await;
 
-    let response = harness
+    let error = harness
         .transport
         .request("translation/test", json!({}))
         .await
-        .unwrap();
+        .unwrap_err();
 
-    assert_eq!(response, json!({ "ok": true }));
+    assert_eq!(error, TransportError::ProcessExited);
     harness.server_task.await.unwrap();
 }
 
 #[tokio::test]
-async fn an_object_with_an_invalid_id_is_not_forwarded_as_a_notification() {
+async fn server_request_shape_is_forwarded_even_when_its_id_is_malformed() {
     let harness = spawn_fake_transport(|mut reader, mut writer| async move {
         let request = read_request(&mut reader).await;
-        write_json_line(
-            &mut writer,
-            &json!({
-                "id": "not-a-number",
-                "method": "spoofed/notification",
-                "params": { "text": "PRIVATE SPOOF" }
-            }),
-        )
-        .await;
+        for invalid_id in [json!("not-a-number"), json!(null), json!([1])] {
+            write_json_line(
+                &mut writer,
+                &json!({
+                    "id": invalid_id,
+                    "method": "item/commandExecution/requestApproval",
+                    "params": { "threadId": "ephemeral", "turnId": "turn-1" }
+                }),
+            )
+            .await;
+        }
         write_json_line(
             &mut writer,
             &json!({ "id": request["id"], "result": { "ok": true } }),
@@ -140,9 +142,15 @@ async fn an_object_with_an_invalid_id_is_not_forwarded_as_a_notification() {
         .request("translation/test", json!({}))
         .await
         .unwrap();
-    tokio::task::yield_now().await;
+    let first = events.recv().await.unwrap();
+    let second = events.recv().await.unwrap();
+    let third = events.recv().await.unwrap();
 
     assert_eq!(response, json!({ "ok": true }));
+    for event in [first, second, third] {
+        assert_eq!(event.method, "item/commandExecution/requestApproval");
+        assert!(event.server_request);
+    }
     assert!(matches!(events.try_recv(), Err(TryRecvError::Empty)));
     harness.server_task.abort();
 }

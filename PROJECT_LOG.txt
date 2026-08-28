@@ -241,3 +241,8 @@ TDD 및 검증
 - 요약: feature: restricted-codex-translation
 - 변경 파일: CHANGELOG.md, DECISIONS.txt, PROJECT_LOG.txt, src-tauri/Cargo.lock, src-tauri/Cargo.toml, src-tauri/src/app_state.rs, src-tauri/src/codex/bootstrap.rs, src-tauri/src/codex/mod.rs, src-tauri/src/codex/process.rs, src-tauri/src/codex/protocol.rs, src-tauri/src/codex/translation.rs, src-tauri/src/codex/transport.rs, src-tauri/src/commands/mod.rs, src-tauri/src/commands/translation.rs, src-tauri/src/core/errors.rs, src-tauri/src/lib.rs, src-tauri/test-support/fake_codex_process.rs, src-tauri/tests/codex_auth.rs, src-tauri/tests/codex_bootstrap.rs, src-tauri/tests/codex_transport.rs, src-tauri/tests/translation_coordinator.rs
 - 검증: pnpm test && 17/17 passed && cargo test && 91/91 passed
+
+[2026-08-29 00:42 Asia/Seoul] 변경 기록
+- 요약: security: isolated-codex-runtime
+- 변경 파일: CHANGELOG.md, DECISIONS.txt, src-tauri/Cargo.lock, src-tauri/Cargo.toml, src-tauri/src/codex/bootstrap.rs, src-tauri/src/codex/process.rs, src-tauri/src/codex/translation.rs, src-tauri/src/codex/transport.rs, src-tauri/src/commands/translation.rs, src-tauri/test-support/fake_codex_process.rs, src-tauri/tests/codex_auth.rs, src-tauri/tests/codex_bootstrap.rs, src-tauri/tests/codex_transport.rs, src-tauri/tests/translation_coordinator.rs
+- 검증: cargo test && 101/101 passed && pnpm test && 17/17 passed

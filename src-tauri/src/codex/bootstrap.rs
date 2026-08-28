@@ -33,9 +33,7 @@ pub async fn bootstrap_account_service(
     let pinned = EmbeddedRuntimeManifest::load_for_host(HostTarget::current())?;
     let downloader = Arc::new(ProductionRuntimeDownloader::new()?);
     let installer = AppLocalRuntimeInstaller::new(app_data_root.join("codex-runtime"), downloader)?;
-    let launcher = Arc::new(ProcessRuntimeLauncher::new(
-        app_data_root.join("runtime-work"),
-    ));
+    let launcher = Arc::new(ProcessRuntimeLauncher::new(app_data_root.clone()));
     let resolver = RuntimeResolver::with_verified_installer(
         &OfficialSystemDiscovery::new(),
         installer,

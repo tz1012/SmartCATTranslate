@@ -3327,8 +3327,10 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
+ "toml 0.9.12+spec-1.1.0",
  "url",
  "uuid",
+ "windows-sys 0.61.2",
  "zip",
 ]
 

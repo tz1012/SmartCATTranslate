@@ -1,7 +1,12 @@
-use std::collections::BTreeMap;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
+
+#[cfg(windows)]
+use std::ffi::OsString;
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
@@ -16,44 +21,177 @@ use crate::codex::runtime::{
 
 pub const CODEX_APP_SERVER_PROTOCOL: &str = "codex-app-server-jsonl-v2";
 const MAX_HANDSHAKE_BYTES: usize = 64 * 1024;
+const MAX_AUTH_BYTES: u64 = 1024 * 1024;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
-const CONFIG_OVERRIDE_FLAG: &str = "-c";
-const EMPTY_MCP_OVERRIDE: &str = "mcp_servers={}";
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CredentialStoreMode {
+    File,
+    Keyring,
+}
 
-/// Per-process configuration owned by SmartCAT. It deliberately changes only
-/// the MCP map, so Codex continues to use its normal ChatGPT credential store.
+impl CredentialStoreMode {
+    fn config_value(self) -> &'static str {
+        match self {
+            Self::File => "file",
+            Self::Keyring => "keyring",
+        }
+    }
+}
+
+/// Complete app-owned configuration for the translation-only App Server.
 pub struct CodexAppServerConfig {
-    mcp_servers: BTreeMap<String, Value>,
+    credential_store: CredentialStoreMode,
 }
 
 impl CodexAppServerConfig {
-    pub fn tool_free() -> Self {
-        Self {
-            mcp_servers: BTreeMap::new(),
-        }
+    pub fn tool_free(credential_store: CredentialStoreMode) -> Self {
+        Self { credential_store }
     }
 
-    pub fn to_override_args(&self) -> [&'static str; 2] {
-        [CONFIG_OVERRIDE_FLAG, EMPTY_MCP_OVERRIDE]
-    }
+    pub fn to_toml(&self) -> Result<String, RuntimeError> {
+        let rendered = format!(
+            r#"allow_login_shell = false
+approval_policy = "never"
+check_for_update_on_startup = false
+cli_auth_credentials_store = "{}"
+file_opener = "none"
+forced_login_method = "chatgpt"
+model_provider = "openai"
+notify = []
+project_doc_fallback_filenames = []
+project_doc_max_bytes = 0
+project_root_markers = []
+sandbox_mode = "read-only"
+web_search = "disabled"
 
-    pub fn mcp_server_count(&self) -> usize {
-        self.mcp_servers.len()
-    }
+[agents]
+enabled = false
 
-    pub fn preserves_default_account_store(&self) -> bool {
-        true
+[analytics]
+enabled = false
+
+[apps._default]
+destructive_enabled = false
+enabled = false
+open_world_enabled = false
+
+[computer_use.windows]
+always_allowed_app_ids = []
+
+[features]
+apps = false
+fast_mode = false
+goals = false
+hooks = false
+memories = false
+multi_agent = false
+personality = false
+remote_plugin = false
+shell_snapshot = false
+shell_tool = false
+skill_mcp_dependency_install = false
+unified_exec = false
+
+[feedback]
+enabled = false
+
+[history]
+persistence = "none"
+
+[hooks]
+
+[mcp_servers]
+
+[otel]
+exporter = "none"
+log_user_prompt = false
+metrics_exporter = "none"
+trace_exporter = "none"
+
+[shell_environment_policy]
+ignore_default_excludes = false
+inherit = "none"
+
+[skills]
+config = []
+
+[tool_suggest]
+disabled_tools = []
+discoverables = []
+
+[tools]
+view_image = false
+web_search = false
+"#,
+            self.credential_store.config_value()
+        );
+        toml::from_str::<toml::Value>(&rendered).map_err(|_| RuntimeError::FilesystemFailed)?;
+        Ok(rendered)
     }
 }
 
 pub struct ProcessRuntimeLauncher {
+    app_data_root: PathBuf,
     work_root: PathBuf,
+    codex_home: PathBuf,
+    credential_source: Option<PathBuf>,
 }
 
 impl ProcessRuntimeLauncher {
-    pub fn new(work_root: PathBuf) -> Self {
-        Self { work_root }
+    pub fn new(app_data_root: PathBuf) -> Self {
+        let credential_source = default_credential_source();
+        Self::with_credential_source(app_data_root, credential_source)
+    }
+
+    pub fn with_credential_source(
+        app_data_root: PathBuf,
+        credential_source: Option<PathBuf>,
+    ) -> Self {
+        Self {
+            work_root: app_data_root.join("runtime-work"),
+            codex_home: app_data_root.join("codex-home"),
+            app_data_root,
+            credential_source,
+        }
+    }
+
+    fn prepare_isolated_home(&self) -> Result<(), RuntimeError> {
+        create_private_directory(&self.app_data_root)?;
+        create_private_directory(&self.codex_home)?;
+        create_private_directory(&self.work_root)?;
+
+        let isolated_auth = self.codex_home.join("auth.json");
+        let credential_store = if regular_private_file_exists(&isolated_auth)? {
+            validate_auth_file(&isolated_auth)?;
+            CredentialStoreMode::File
+        } else if let Some(source_home) = &self.credential_source {
+            let source_auth = source_home.join("auth.json");
+            match std::fs::symlink_metadata(&source_auth) {
+                Ok(metadata) => {
+                    reject_link_or_reparse_ancestors(&source_auth)?;
+                    if !metadata.is_file() || is_link_or_reparse(&metadata) {
+                        return Err(RuntimeError::FilesystemFailed);
+                    }
+                    let bytes = read_bounded_auth(&source_auth, &metadata)?;
+                    atomic_write_private(&isolated_auth, &bytes, false)?;
+                    CredentialStoreMode::File
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    CredentialStoreMode::Keyring
+                }
+                Err(_) => return Err(RuntimeError::FilesystemFailed),
+            }
+        } else {
+            CredentialStoreMode::Keyring
+        };
+
+        let config = CodexAppServerConfig::tool_free(credential_store).to_toml()?;
+        atomic_write_private(
+            &self.codex_home.join("config.toml"),
+            config.as_bytes(),
+            true,
+        )
     }
 }
 
@@ -63,16 +201,14 @@ impl RuntimeLauncher for ProcessRuntimeLauncher {
         &self,
         candidate: &RuntimeCandidate,
     ) -> Result<Box<dyn LiveRuntimeSession>, RuntimeError> {
-        std::fs::create_dir_all(&self.work_root).map_err(|_| RuntimeError::FilesystemFailed)?;
+        self.prepare_isolated_home()?;
         let workdir = tempfile::Builder::new()
             .prefix("session-")
             .tempdir_in(&self.work_root)
             .map_err(|_| RuntimeError::FilesystemFailed)?;
 
-        let config = CodexAppServerConfig::tool_free();
         let mut command = Command::new(candidate.path());
         command
-            .args(config.to_override_args())
             .arg("app-server")
             .arg("--listen")
             .arg("stdio://")
@@ -82,7 +218,13 @@ impl RuntimeLauncher for ProcessRuntimeLauncher {
             .stderr(Stdio::null())
             .kill_on_drop(true)
             .env_remove("OPENAI_API_KEY")
-            .env_remove("CODEX_API_KEY");
+            .env_remove("CODEX_API_KEY")
+            .env_remove("CODEX_ACCESS_TOKEN")
+            .env_remove("CODEX_SQLITE_HOME")
+            .env_remove("OPENAI_BASE_URL")
+            .env_remove("OPENAI_ORG_ID")
+            .env_remove("OPENAI_PROJECT_ID")
+            .env("CODEX_HOME", &self.codex_home);
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -100,6 +242,236 @@ impl RuntimeLauncher for ProcessRuntimeLauncher {
             initialized: false,
         }))
     }
+}
+
+fn default_credential_source() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("CODEX_HOME") {
+        return Some(PathBuf::from(path));
+    }
+    #[cfg(windows)]
+    let home = std::env::var_os("USERPROFILE");
+    #[cfg(not(windows))]
+    let home = std::env::var_os("HOME");
+    home.map(PathBuf::from).map(|path| path.join(".codex"))
+}
+
+fn create_private_directory(path: &Path) -> Result<(), RuntimeError> {
+    reject_link_or_reparse_ancestors(path)?;
+    std::fs::create_dir_all(path).map_err(|_| RuntimeError::FilesystemFailed)?;
+    reject_link_or_reparse_ancestors(path)?;
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| RuntimeError::FilesystemFailed)?;
+    if !metadata.is_dir() || is_link_or_reparse(&metadata) {
+        return Err(RuntimeError::FilesystemFailed);
+    }
+    set_private_permissions(path, true)
+}
+
+fn regular_private_file_exists(path: &Path) -> Result<bool, RuntimeError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            reject_link_or_reparse_ancestors(path)?;
+            if !metadata.is_file() || is_link_or_reparse(&metadata) {
+                return Err(RuntimeError::FilesystemFailed);
+            }
+            set_private_permissions(path, false)?;
+            Ok(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(_) => Err(RuntimeError::FilesystemFailed),
+    }
+}
+
+fn validate_auth_file(path: &Path) -> Result<(), RuntimeError> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| RuntimeError::FilesystemFailed)?;
+    let _ = read_bounded_auth(path, &metadata)?;
+    Ok(())
+}
+
+fn read_bounded_auth(path: &Path, metadata: &std::fs::Metadata) -> Result<Vec<u8>, RuntimeError> {
+    if metadata.len() == 0 || metadata.len() > MAX_AUTH_BYTES {
+        return Err(RuntimeError::FilesystemFailed);
+    }
+    let bytes = std::fs::read(path).map_err(|_| RuntimeError::FilesystemFailed)?;
+    if bytes.len() as u64 != metadata.len()
+        || !serde_json::from_slice::<Value>(&bytes)
+            .ok()
+            .is_some_and(|value| value.is_object())
+    {
+        return Err(RuntimeError::FilesystemFailed);
+    }
+    Ok(bytes)
+}
+
+fn atomic_write_private(path: &Path, bytes: &[u8], replace: bool) -> Result<(), RuntimeError> {
+    let parent = path.parent().ok_or(RuntimeError::FilesystemFailed)?;
+    reject_link_or_reparse_ancestors(parent)?;
+    if let Ok(metadata) = std::fs::symlink_metadata(path) {
+        if !metadata.is_file() || is_link_or_reparse(&metadata) {
+            return Err(RuntimeError::FilesystemFailed);
+        }
+        if !replace {
+            return Err(RuntimeError::FilesystemFailed);
+        }
+    }
+    let temporary = parent.join(format!(".smartcat-{}.tmp", uuid::Uuid::new_v4()));
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(&temporary)
+        .map_err(|_| RuntimeError::FilesystemFailed)?;
+    let result = (|| {
+        file.write_all(bytes)
+            .map_err(|_| RuntimeError::FilesystemFailed)?;
+        file.sync_all()
+            .map_err(|_| RuntimeError::FilesystemFailed)?;
+        drop(file);
+        set_private_permissions(&temporary, false)?;
+        atomic_move(&temporary, path, replace)?;
+        set_private_permissions(path, false)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
+}
+
+#[cfg(windows)]
+fn atomic_move(source: &Path, destination: &Path, replace: bool) -> Result<(), RuntimeError> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+    let destination: Vec<u16> = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let flags = MOVEFILE_WRITE_THROUGH
+        | if replace {
+            MOVEFILE_REPLACE_EXISTING
+        } else {
+            0
+        };
+    if unsafe { MoveFileExW(source.as_ptr(), destination.as_ptr(), flags) } == 0 {
+        return Err(RuntimeError::FilesystemFailed);
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn atomic_move(source: &Path, destination: &Path, replace: bool) -> Result<(), RuntimeError> {
+    if !replace && destination.exists() {
+        return Err(RuntimeError::FilesystemFailed);
+    }
+    std::fs::rename(source, destination).map_err(|_| RuntimeError::FilesystemFailed)
+}
+
+fn reject_link_or_reparse_ancestors(path: &Path) -> Result<(), RuntimeError> {
+    for ancestor in path.ancestors() {
+        match std::fs::symlink_metadata(ancestor) {
+            Ok(metadata) if is_link_or_reparse(&metadata) => {
+                return Err(RuntimeError::FilesystemFailed)
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(RuntimeError::FilesystemFailed),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn is_link_or_reparse(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    metadata.file_type().is_symlink() || metadata.file_attributes() & 0x400 != 0
+}
+
+#[cfg(unix)]
+fn is_link_or_reparse(metadata: &std::fs::Metadata) -> bool {
+    metadata.file_type().is_symlink()
+}
+
+#[cfg(unix)]
+fn set_private_permissions(path: &Path, directory: bool) -> Result<(), RuntimeError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mode = if directory { 0o700 } else { 0o600 };
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+        .map_err(|_| RuntimeError::FilesystemFailed)
+}
+
+#[cfg(windows)]
+fn set_private_permissions(path: &Path, directory: bool) -> Result<(), RuntimeError> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SetNamedSecurityInfoW,
+        SDDL_REVISION_1, SE_FILE_OBJECT,
+    };
+    use windows_sys::Win32::Security::{
+        GetSecurityDescriptorDacl, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+        PSECURITY_DESCRIPTOR,
+    };
+
+    let descriptor_text = if directory {
+        "D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+    } else {
+        "D:P(A;;FA;;;OW)(A;;FA;;;SY)(A;;FA;;;BA)"
+    };
+    let descriptor_text: Vec<u16> = OsString::from(descriptor_text)
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    if unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            descriptor_text.as_ptr(),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            std::ptr::null_mut(),
+        )
+    } == 0
+    {
+        return Err(RuntimeError::FilesystemFailed);
+    }
+    let mut present = 0;
+    let mut defaulted = 0;
+    let mut dacl = std::ptr::null_mut();
+    let dacl_ok =
+        unsafe { GetSecurityDescriptorDacl(descriptor, &mut present, &mut dacl, &mut defaulted) }
+            != 0
+            && present != 0;
+    let mut path_wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let set_result = if dacl_ok {
+        unsafe {
+            SetNamedSecurityInfoW(
+                path_wide.as_mut_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                dacl,
+                std::ptr::null_mut(),
+            )
+        }
+    } else {
+        1
+    };
+    unsafe {
+        LocalFree(descriptor);
+    }
+    if !dacl_ok || set_result != 0 {
+        return Err(RuntimeError::FilesystemFailed);
+    }
+    Ok(())
 }
 
 struct ProcessRuntimeSession {

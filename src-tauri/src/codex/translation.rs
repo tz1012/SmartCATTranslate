@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::fs::OpenOptions;
+use std::future::Future;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -20,6 +22,14 @@ use crate::core::types::{TranslationMode, TranslationRequest, TranslationResult}
 const OWNER_MARKER: &str = ".smartcat-translation-owner";
 const OWNER_MARKER_CONTENT: &[u8] = b"smartcat-translate-v1\n";
 const MAX_SOURCE_CHARS: usize = 200_000;
+const MAX_SOURCE_BYTES: usize = 1_000_000;
+const MAX_LANGUAGE_CHARS: usize = 64;
+const MAX_LANGUAGE_BYTES: usize = 256;
+const MAX_PROTECTED_TERMS: usize = 1_000;
+const MAX_PROTECTED_TERM_CHARS: usize = 1_024;
+const MAX_PROTECTED_TERM_BYTES: usize = 4_096;
+const MAX_PROTECTED_TERMS_BYTES: usize = 64 * 1_024;
+const MAX_PROMPT_BYTES: usize = 1_024 * 1_024;
 const MAX_OUTPUT_CHARS: usize = 400_000;
 const DEFAULT_TRANSLATION_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -50,11 +60,13 @@ impl TranslationObserver for NoopObserver {
 pub struct CodexTranslationBackend {
     transport: Arc<dyn AppServerTransport>,
     workspace: PathBuf,
+    workspace_binding: WorkspaceBinding,
     base_thread_id: Mutex<Option<String>>,
     translation_timeout: Duration,
     active_jobs: Mutex<HashMap<Uuid, watch::Sender<bool>>>,
     active_jobs_changed: Notify,
     shutting_down: AtomicBool,
+    tainted: AtomicBool,
     shutdown_lock: Mutex<()>,
 }
 
@@ -74,7 +86,8 @@ impl CodexTranslationBackend {
         if translation_timeout.is_zero() {
             return Err(TranslationError::InvalidInput);
         }
-        let workspace = validate_owned_empty_workspace(workspace_path)?;
+        let workspace_binding = bind_owned_empty_workspace(workspace_path)?;
+        let workspace = workspace_binding.workspace.clone();
         let value = timeout(
             translation_timeout,
             transport.request(
@@ -90,14 +103,17 @@ impl CodexTranslationBackend {
         .map_err(|_| TranslationError::TimedOut)?
         .map_err(map_transport_error)?;
         let base_thread_id = response_id(&value, "thread")?.to_owned();
+        require_empty_instruction_sources(&value)?;
         Ok(Self {
             transport,
             workspace,
+            workspace_binding,
             base_thread_id: Mutex::new(Some(base_thread_id)),
             translation_timeout,
             active_jobs: Mutex::new(HashMap::new()),
             active_jobs_changed: Notify::new(),
             shutting_down: AtomicBool::new(false),
+            tainted: AtomicBool::new(false),
             shutdown_lock: Mutex::new(()),
         })
     }
@@ -109,9 +125,15 @@ impl CodexTranslationBackend {
         if self.shutting_down.load(Ordering::Acquire) {
             return Err(TranslationError::ShuttingDown);
         }
+        if self.tainted.load(Ordering::Acquire) {
+            return Err(TranslationError::RuntimeUnavailable);
+        }
         let mut active = self.active_jobs.lock().await;
         if self.shutting_down.load(Ordering::Acquire) {
             return Err(TranslationError::ShuttingDown);
+        }
+        if self.tainted.load(Ordering::Acquire) {
+            return Err(TranslationError::RuntimeUnavailable);
         }
         if active.contains_key(&job_id) {
             return Err(TranslationError::InvalidInput);
@@ -141,6 +163,10 @@ impl CodexTranslationBackend {
             .is_some_and(|cancel| cancel.send(true).is_ok())
     }
 
+    pub(crate) async fn discard_reserved_job(&self, permit: TranslationJobPermit) {
+        self.finish_job(permit.job_id).await;
+    }
+
     pub async fn shutdown(&self) -> Result<(), TranslationError> {
         let _shutdown_guard = self.shutdown_lock.lock().await;
         self.shutting_down.store(true, Ordering::Release);
@@ -161,6 +187,11 @@ impl CodexTranslationBackend {
         })
         .await
         .map_err(|_| TranslationError::TimedOut)?;
+
+        if self.tainted.load(Ordering::Acquire) {
+            *self.base_thread_id.lock().await = None;
+            return Ok(());
+        }
 
         let base_thread_id = self.base_thread_id.lock().await.clone();
         if let Some(base_thread_id) = base_thread_id {
@@ -190,11 +221,8 @@ impl CodexTranslationBackend {
         observer: &(dyn TranslationObserver + Sync),
         cancelled: &mut watch::Receiver<bool>,
     ) -> Result<TranslationResult, TranslationError> {
-        validate_request(&request)?;
-        let current_workspace = validate_owned_empty_workspace(&self.workspace)?;
-        if current_workspace != self.workspace {
-            return Err(TranslationError::UnsafeWorkspace);
-        }
+        let prompt = validated_translation_prompt(&request)?;
+        validate_workspace_binding(&self.workspace_binding)?;
         if *cancelled.borrow() {
             return Err(TranslationError::Cancelled);
         }
@@ -215,37 +243,40 @@ impl CodexTranslationBackend {
         )
         .await?;
         let thread_id = response_id(&fork, "thread")?.to_owned();
-        let turn = match request_before_cancel(
-            &self.transport,
-            deadline,
+        if *cancelled.borrow() {
+            let _ =
+                unsubscribe_with_timeout(&self.transport, &thread_id, self.cleanup_timeout()).await;
+            return Err(TranslationError::Cancelled);
+        }
+        let mut turn_request = Box::pin(self.transport.request(
             "turn/start",
             json!({
                 "threadId": thread_id,
-                "input": [{ "type": "text", "text": build_translation_prompt(&request) }],
+                "input": [{ "type": "text", "text": prompt }],
                 "cwd": self.workspace,
                 "approvalPolicy": "never",
                 "sandboxPolicy": restricted_sandbox(&self.workspace),
                 "effort": effort_for(&request),
                 "outputSchema": translation_output_schema()
             }),
-            cancelled,
-        )
-        .await
-        {
-            Ok(turn) => turn,
-            Err(error) => {
-                let _ =
-                    unsubscribe_with_timeout(&self.transport, &thread_id, self.cleanup_timeout())
-                        .await;
-                return Err(error);
+        ));
+        let turn = tokio::select! {
+            biased;
+            changed = cancelled.changed() => {
+                let _ = changed;
+                self.cleanup_pending_turn(&thread_id, turn_request.as_mut()).await;
+                return Err(TranslationError::Cancelled);
             }
+            _ = sleep_until(deadline) => {
+                self.cleanup_pending_turn(&thread_id, turn_request.as_mut()).await;
+                return Err(TranslationError::TimedOut);
+            }
+            result = turn_request.as_mut() => result.map_err(map_transport_error)?,
         };
         let turn_id = match response_id(&turn, "turn") {
             Ok(turn_id) => turn_id.to_owned(),
             Err(error) => {
-                let _ =
-                    unsubscribe_with_timeout(&self.transport, &thread_id, self.cleanup_timeout())
-                        .await;
+                self.taint_runtime().await;
                 return Err(error);
             }
         };
@@ -324,6 +355,33 @@ impl CodexTranslationBackend {
         self.active_jobs.lock().await.remove(&job_id);
         self.active_jobs_changed.notify_waiters();
     }
+
+    async fn cleanup_pending_turn<F>(&self, thread_id: &str, pending: Pin<&mut F>)
+    where
+        F: Future<Output = Result<Value, TransportError>>,
+    {
+        match timeout(self.cleanup_timeout(), pending).await {
+            Ok(Ok(turn)) => match response_id(&turn, "turn") {
+                Ok(turn_id) => {
+                    abort_turn(&self.transport, thread_id, turn_id, self.cleanup_timeout()).await;
+                }
+                Err(_) => self.taint_runtime().await,
+            },
+            Ok(Err(_)) | Err(_) => self.taint_runtime().await,
+        }
+    }
+
+    async fn taint_runtime(&self) {
+        if self.tainted.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let active = self.active_jobs.lock().await;
+        for cancel in active.values() {
+            let _ = cancel.send(true);
+        }
+        drop(active);
+        let _ = self.transport.terminate().await;
+    }
 }
 
 pub struct TranslationJobPermit {
@@ -337,6 +395,7 @@ impl TranslationBackend for CodexTranslationBackend {
         &self,
         request: TranslationRequest,
     ) -> Result<TranslationResult, TranslationError> {
+        validate_translation_request(&request)?;
         let permit = self.reserve_job(Uuid::new_v4()).await?;
         self.translate_reserved(permit, request, &NoopObserver)
             .await
@@ -347,6 +406,7 @@ impl TranslationBackend for CodexTranslationBackend {
         request: TranslationRequest,
         observer: &(dyn TranslationObserver + Sync),
     ) -> Result<TranslationResult, TranslationError> {
+        validate_translation_request(&request)?;
         let permit = self.reserve_job(Uuid::new_v4()).await?;
         self.translate_reserved(permit, request, observer).await
     }
@@ -374,6 +434,7 @@ pub fn build_translation_prompt(request: &TranslationRequest) -> String {
 }
 
 pub fn prepare_owned_empty_workspace(app_data_root: &Path) -> Result<PathBuf, TranslationError> {
+    reject_link_or_reparse_ancestors(app_data_root)?;
     std::fs::create_dir_all(app_data_root).map_err(|_| TranslationError::UnsafeWorkspace)?;
     let owned_root = app_data_root.join("translation-context");
     std::fs::create_dir_all(&owned_root).map_err(|_| TranslationError::UnsafeWorkspace)?;
@@ -395,13 +456,36 @@ pub fn prepare_owned_empty_workspace(app_data_root: &Path) -> Result<PathBuf, Tr
     }
     let workspace = owned_root.join("empty-workspace");
     std::fs::create_dir_all(&workspace).map_err(|_| TranslationError::UnsafeWorkspace)?;
-    validate_owned_empty_workspace(&workspace)
+    Ok(bind_owned_empty_workspace(&workspace)?.workspace)
 }
 
-fn validate_owned_empty_workspace(workspace: &Path) -> Result<PathBuf, TranslationError> {
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct WorkspaceBinding {
+    workspace: PathBuf,
+    app_data_root: PathBuf,
+    workspace_identity: FileIdentity,
+    app_data_identity: FileIdentity,
+}
+
+#[cfg(windows)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FileIdentity {
+    volume_serial: Option<u32>,
+    file_index: Option<u64>,
+}
+
+#[cfg(unix)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FileIdentity {
+    device: u64,
+    inode: u64,
+}
+
+fn bind_owned_empty_workspace(workspace: &Path) -> Result<WorkspaceBinding, TranslationError> {
+    reject_link_or_reparse_ancestors(workspace)?;
     let metadata =
         std::fs::symlink_metadata(workspace).map_err(|_| TranslationError::UnsafeWorkspace)?;
-    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+    if !metadata.is_dir() || is_link_or_reparse(&metadata) {
         return Err(TranslationError::UnsafeWorkspace);
     }
     if std::fs::read_dir(workspace)
@@ -422,7 +506,109 @@ fn validate_owned_empty_workspace(workspace: &Path) -> Result<PathBuf, Translati
     {
         return Err(TranslationError::UnsafeWorkspace);
     }
-    Ok(canonical)
+    let app_data_root = parent
+        .parent()
+        .ok_or(TranslationError::UnsafeWorkspace)?
+        .canonicalize()
+        .map_err(|_| TranslationError::UnsafeWorkspace)?;
+    if parent.parent() != Some(app_data_root.as_path()) {
+        return Err(TranslationError::UnsafeWorkspace);
+    }
+    reject_link_or_reparse_ancestors(&app_data_root)?;
+    Ok(WorkspaceBinding {
+        workspace_identity: file_identity(&canonical)?,
+        app_data_identity: file_identity(&app_data_root)?,
+        workspace: canonical,
+        app_data_root,
+    })
+}
+
+fn validate_workspace_binding(binding: &WorkspaceBinding) -> Result<(), TranslationError> {
+    let current = bind_owned_empty_workspace(&binding.workspace)?;
+    if current != *binding {
+        return Err(TranslationError::UnsafeWorkspace);
+    }
+    Ok(())
+}
+
+fn reject_link_or_reparse_ancestors(path: &Path) -> Result<(), TranslationError> {
+    for ancestor in path.ancestors() {
+        match std::fs::symlink_metadata(ancestor) {
+            Ok(metadata) if is_link_or_reparse(&metadata) => {
+                return Err(TranslationError::UnsafeWorkspace)
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(TranslationError::UnsafeWorkspace),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn is_link_or_reparse(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    metadata.file_type().is_symlink() || metadata.file_attributes() & 0x400 != 0
+}
+
+#[cfg(unix)]
+fn is_link_or_reparse(metadata: &std::fs::Metadata) -> bool {
+    metadata.file_type().is_symlink()
+}
+
+#[cfg(windows)]
+fn file_identity(path: &Path) -> Result<FileIdentity, TranslationError> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(TranslationError::UnsafeWorkspace);
+    }
+    let mut information = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
+    let succeeded = unsafe { GetFileInformationByHandle(handle, information.as_mut_ptr()) } != 0;
+    unsafe {
+        CloseHandle(handle);
+    }
+    if !succeeded {
+        return Err(TranslationError::UnsafeWorkspace);
+    }
+    let information = unsafe { information.assume_init() };
+    Ok(FileIdentity {
+        volume_serial: Some(information.dwVolumeSerialNumber),
+        file_index: Some(
+            (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow),
+        ),
+    })
+}
+
+#[cfg(unix)]
+fn file_identity(path: &Path) -> Result<FileIdentity, TranslationError> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata =
+        std::fs::symlink_metadata(path).map_err(|_| TranslationError::UnsafeWorkspace)?;
+    Ok(FileIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    })
 }
 
 fn restricted_sandbox(workspace: &Path) -> Value {
@@ -454,6 +640,17 @@ fn response_id<'a>(value: &'a Value, object: &str) -> Result<&'a str, Translatio
         .ok_or(TranslationError::ProtocolViolation)
 }
 
+fn require_empty_instruction_sources(value: &Value) -> Result<(), TranslationError> {
+    let sources = value
+        .get("instructionSources")
+        .and_then(Value::as_array)
+        .ok_or(TranslationError::ProtocolViolation)?;
+    if !sources.is_empty() {
+        return Err(TranslationError::ProtocolViolation);
+    }
+    Ok(())
+}
+
 fn effort_for(request: &TranslationRequest) -> &'static str {
     match request.profile.quality {
         crate::core::types::Quality::Fast => "low",
@@ -462,14 +659,52 @@ fn effort_for(request: &TranslationRequest) -> &'static str {
     }
 }
 
-fn validate_request(request: &TranslationRequest) -> Result<(), TranslationError> {
-    if request.text.is_empty()
-        || request.text.chars().count() > MAX_SOURCE_CHARS
-        || request.profile.target_language.is_empty()
-        || request.profile.target_language.len() > 64
-        || request.profile.protected_terms.len() > 1_000
+pub fn validate_translation_request(request: &TranslationRequest) -> Result<(), TranslationError> {
+    validated_translation_prompt(request).map(|_| ())
+}
+
+fn validated_translation_prompt(request: &TranslationRequest) -> Result<String, TranslationError> {
+    if request.text.is_empty() {
+        return Err(TranslationError::InvalidInput);
+    }
+    if request.text.chars().count() > MAX_SOURCE_CHARS
+        || request.text.len() > MAX_SOURCE_BYTES
+        || request.profile.protected_terms.len() > MAX_PROTECTED_TERMS
+    {
+        return Err(TranslationError::SizeLimitExceeded);
+    }
+    validate_language(&request.profile.target_language)?;
+    if let Some(source_language) = &request.profile.source_language {
+        validate_language(source_language)?;
+    }
+    let mut protected_bytes = 0_usize;
+    for term in &request.profile.protected_terms {
+        if term.is_empty() {
+            return Err(TranslationError::InvalidInput);
+        }
+        if term.chars().count() > MAX_PROTECTED_TERM_CHARS || term.len() > MAX_PROTECTED_TERM_BYTES
+        {
+            return Err(TranslationError::SizeLimitExceeded);
+        }
+        protected_bytes = protected_bytes.saturating_add(term.len());
+        if protected_bytes > MAX_PROTECTED_TERMS_BYTES {
+            return Err(TranslationError::SizeLimitExceeded);
+        }
+    }
+    let prompt = build_translation_prompt(request);
+    if prompt.len() > MAX_PROMPT_BYTES {
+        return Err(TranslationError::SizeLimitExceeded);
+    }
+    Ok(prompt)
+}
+
+fn validate_language(language: &str) -> Result<(), TranslationError> {
+    if language.is_empty() || language.trim() != language || language.chars().any(char::is_control)
     {
         return Err(TranslationError::InvalidInput);
+    }
+    if language.chars().count() > MAX_LANGUAGE_CHARS || language.len() > MAX_LANGUAGE_BYTES {
+        return Err(TranslationError::SizeLimitExceeded);
     }
     Ok(())
 }
@@ -569,21 +804,36 @@ fn handle_event(
     if event.method == "runtime/exited" {
         return Err(TranslationError::RuntimeUnavailable);
     }
+    if event.server_request {
+        return Err(TranslationError::ToolUseRejected);
+    }
+    if matches!(
+        event.method.as_str(),
+        "thread/started" | "thread/status/changed"
+    ) {
+        return match thread_event_scope(event) {
+            Some(event_thread) if event_thread == thread_id => Ok(EventOutcome::Continue),
+            Some(_) => Ok(EventOutcome::Continue),
+            None => Err(TranslationError::ProtocolViolation),
+        };
+    }
+    if matches!(
+        event.method.as_str(),
+        "account/updated" | "account/login/completed"
+    ) {
+        return Ok(EventOutcome::Continue);
+    }
     let scope = event_scope(event);
     match scope {
         Some((event_thread, event_turn)) if event_thread != thread_id || event_turn != turn_id => {
             return Ok(EventOutcome::Continue)
         }
-        None if is_turn_event_family(event) => return Err(TranslationError::ProtocolViolation),
-        None => return Ok(EventOutcome::Continue),
+        None => return Err(TranslationError::ProtocolViolation),
         Some(_) => {}
     }
 
-    if event.server_request || is_action_method(&event.method) {
-        return Err(TranslationError::ToolUseRejected);
-    }
     match event.method.as_str() {
-        "turn/started" | "serverRequest/resolved" => Ok(EventOutcome::Continue),
+        "turn/started" => Ok(EventOutcome::Continue),
         "item/started" => match item_type(event) {
             Some("userMessage" | "agentMessage") => Ok(EventOutcome::Continue),
             Some(_) => Err(TranslationError::ToolUseRejected),
@@ -633,11 +883,22 @@ fn handle_event(
             }
         }
         "error" => Err(TranslationError::RuntimeUnavailable),
-        method if method.starts_with("item/") || method.starts_with("turn/") => {
-            Err(TranslationError::ProtocolViolation)
-        }
-        _ => Ok(EventOutcome::Continue),
+        _ => Err(TranslationError::ProtocolViolation),
     }
+}
+
+fn thread_event_scope(event: &AppServerNotification) -> Option<&str> {
+    event
+        .params
+        .get("threadId")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            event
+                .params
+                .get("thread")
+                .and_then(|thread| thread.get("id"))
+                .and_then(Value::as_str)
+        })
 }
 
 fn event_scope(event: &AppServerNotification) -> Option<(&str, &str)> {
@@ -662,40 +923,6 @@ fn item_type(event: &AppServerNotification) -> Option<&str> {
         .get("item")
         .and_then(|item| item.get("type"))
         .and_then(Value::as_str)
-}
-
-fn is_turn_event_family(event: &AppServerNotification) -> bool {
-    event.server_request
-        || event.method == "error"
-        || event.method.starts_with("item/")
-        || event.method.starts_with("turn/")
-        || is_action_method(&event.method)
-}
-
-fn is_action_method(method: &str) -> bool {
-    const ACTION_PREFIXES: &[&str] = &[
-        "command/",
-        "process/",
-        "mcpServer/",
-        "app/",
-        "fs/",
-        "tool/",
-        "collaboration/",
-        "subagent/",
-    ];
-    ACTION_PREFIXES
-        .iter()
-        .any(|prefix| method.starts_with(prefix))
-        || method.contains("requestApproval")
-        || method.contains("requestUserInput")
-        || method.contains("commandExecution")
-        || method.contains("fileChange")
-        || method.contains("mcpTool")
-        || method.contains("dynamicTool")
-        || method.contains("collabTool")
-        || method.contains("webSearch")
-        || method.contains("imageView")
-        || method.contains("shellCommand")
 }
 
 #[derive(Deserialize)]
