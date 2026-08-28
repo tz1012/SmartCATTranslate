@@ -1,3 +1,5 @@
+import { AccountPanel } from '../features/account/AccountPanel';
+
 export type AppLocale = 'ko' | 'en';
 
 const copy = {
@@ -21,6 +23,7 @@ export function App({ locale = 'ko' }: { locale?: AppLocale }) {
       <header>
         <h1>SmartCAT Translate</h1>
       </header>
+      <AccountPanel />
       <section className="translation-grid" aria-label={labels.workspace}>
         <label>
           {labels.source}
