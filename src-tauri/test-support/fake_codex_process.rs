@@ -1,7 +1,22 @@
 use std::io::{self, BufRead, Write};
 
 fn main() {
-    let arguments: Vec<_> = std::env::args().skip(1).collect();
+    let mut arguments: Vec<_> = std::env::args().skip(1).collect();
+    if arguments.first().map(String::as_str) == Some("sandbox") {
+        let delimiter = arguments
+            .iter()
+            .position(|value| value == "--")
+            .unwrap_or(usize::MAX);
+        if delimiter < 5
+            || arguments.get(1).map(String::as_str) != Some("--permission-profile")
+            || arguments.get(2).map(String::as_str) != Some("smartcat-translation")
+            || arguments.get(3).map(String::as_str) != Some("--cd")
+            || delimiter + 1 >= arguments.len()
+        {
+            std::process::exit(9);
+        }
+        arguments = arguments[(delimiter + 2)..].to_vec();
+    }
     if arguments != ["app-server", "--listen", "stdio://"] {
         std::process::exit(10);
     }
@@ -72,6 +87,18 @@ fn validate_isolated_home() {
     {
         std::process::exit(20);
     }
+    if std::env::vars_os().any(|(name, _)| {
+        let name = name.to_string_lossy().to_ascii_uppercase();
+        (name.starts_with("CODEX_") && name != "CODEX_HOME")
+            || name.starts_with("OPENAI_")
+            || name.starts_with("CHATGPT_")
+            || matches!(
+                name.as_str(),
+                "HTTP_PROXY" | "HTTPS_PROXY" | "ALL_PROXY" | "NO_PROXY"
+            )
+    }) {
+        std::process::exit(22);
+    }
     let config = std::fs::read_to_string(std::path::PathBuf::from(home).join("config.toml"))
         .unwrap_or_default();
     let Ok(value) = toml::from_str::<toml::Value>(&config) else {
@@ -80,11 +107,14 @@ fn validate_isolated_home() {
     if value["approval_policy"].as_str() != Some("never")
         || value["sandbox_mode"].as_str() != Some("read-only")
         || value["web_search"].as_str() != Some("disabled")
-        || value["agents"]["enabled"].as_bool() != Some(false)
         || value["features"]["apps"].as_bool() != Some(false)
         || value["features"]["shell_tool"].as_bool() != Some(false)
         || value["features"]["multi_agent"].as_bool() != Some(false)
-        || value["tools"]["web_search"].as_bool() != Some(false)
+        || value["default_permissions"].as_str() != Some("smartcat-translation")
+        || value["permissions"]["smartcat-translation"]["filesystem"][":minimal"].as_str()
+            != Some("read")
+        || value.get("agents").is_some()
+        || value.get("tools").is_some()
         || !value["mcp_servers"]
             .as_table()
             .is_some_and(toml::Table::is_empty)

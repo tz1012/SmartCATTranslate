@@ -287,46 +287,24 @@ impl CodexTranslationBackend {
                 biased;
                 changed = cancelled.changed() => {
                     if changed.is_err() || *cancelled.borrow() {
-                        abort_turn(
-                            &self.transport,
-                            &thread_id,
-                            &turn_id,
-                            self.cleanup_timeout(),
-                        ).await;
+                        self.abort_turn_safely(&thread_id, &turn_id).await;
                         return Err(TranslationError::Cancelled);
                     }
                     continue;
                 }
                 _ = sleep_until(deadline) => {
-                    abort_turn(
-                        &self.transport,
-                        &thread_id,
-                        &turn_id,
-                        self.cleanup_timeout(),
-                    ).await;
+                    self.abort_turn_safely(&thread_id, &turn_id).await;
                     return Err(TranslationError::TimedOut);
                 }
                 event = events.recv() => event,
             };
             let event = match event {
                 Err(broadcast::error::RecvError::Lagged(_)) => {
-                    abort_turn(
-                        &self.transport,
-                        &thread_id,
-                        &turn_id,
-                        self.cleanup_timeout(),
-                    )
-                    .await;
+                    self.abort_turn_safely(&thread_id, &turn_id).await;
                     return Err(TranslationError::ProtocolViolation);
                 }
                 Err(broadcast::error::RecvError::Closed) => {
-                    abort_turn(
-                        &self.transport,
-                        &thread_id,
-                        &turn_id,
-                        self.cleanup_timeout(),
-                    )
-                    .await;
+                    self.abort_turn_safely(&thread_id, &turn_id).await;
                     return Err(TranslationError::RuntimeUnavailable);
                 }
                 Ok(event) => event,
@@ -338,13 +316,7 @@ impl CodexTranslationBackend {
                     return Ok(result);
                 }
                 Err(error) => {
-                    abort_turn(
-                        &self.transport,
-                        &thread_id,
-                        &turn_id,
-                        self.cleanup_timeout(),
-                    )
-                    .await;
+                    self.abort_turn_safely(&thread_id, &turn_id).await;
                     return Err(error);
                 }
             }
@@ -363,7 +335,7 @@ impl CodexTranslationBackend {
         match timeout(self.cleanup_timeout(), pending).await {
             Ok(Ok(turn)) => match response_id(&turn, "turn") {
                 Ok(turn_id) => {
-                    abort_turn(&self.transport, thread_id, turn_id, self.cleanup_timeout()).await;
+                    self.abort_turn_safely(thread_id, turn_id).await;
                 }
                 Err(_) => self.taint_runtime().await,
             },
@@ -381,6 +353,15 @@ impl CodexTranslationBackend {
         }
         drop(active);
         let _ = self.transport.terminate().await;
+    }
+
+    async fn abort_turn_safely(&self, thread_id: &str, turn_id: &str) {
+        if abort_turn(&self.transport, thread_id, turn_id, self.cleanup_timeout())
+            .await
+            .is_err()
+        {
+            self.taint_runtime().await;
+        }
     }
 }
 
@@ -611,14 +592,10 @@ fn file_identity(path: &Path) -> Result<FileIdentity, TranslationError> {
     })
 }
 
-fn restricted_sandbox(workspace: &Path) -> Value {
+fn restricted_sandbox(_workspace: &Path) -> Value {
     json!({
         "type": "readOnly",
-        "access": {
-            "type": "restricted",
-            "includePlatformDefaults": true,
-            "readableRoots": [workspace]
-        }
+        "networkAccess": false
     })
 }
 
@@ -777,16 +754,21 @@ async fn abort_turn(
     thread_id: &str,
     turn_id: &str,
     cleanup_timeout: Duration,
-) {
-    let _ = timeout(
+) -> Result<(), TranslationError> {
+    let response = timeout(
         cleanup_timeout,
         transport.request(
             "turn/interrupt",
             json!({ "threadId": thread_id, "turnId": turn_id }),
         ),
     )
-    .await;
-    let _ = unsubscribe_with_timeout(transport, thread_id, cleanup_timeout).await;
+    .await
+    .map_err(|_| TranslationError::TimedOut)?
+    .map_err(map_transport_error)?;
+    if !response.is_object() {
+        return Err(TranslationError::ProtocolViolation);
+    }
+    unsubscribe_with_timeout(transport, thread_id, cleanup_timeout).await
 }
 
 enum EventOutcome {

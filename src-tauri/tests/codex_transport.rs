@@ -113,50 +113,68 @@ async fn an_unknown_object_terminates_the_protocol_instead_of_accepting_a_later_
 }
 
 #[tokio::test]
-async fn server_request_shape_is_forwarded_even_when_its_id_is_malformed() {
+async fn any_server_request_shape_terminates_transport_without_a_subscriber() {
     let harness = spawn_fake_transport(|mut reader, mut writer| async move {
         let request = read_request(&mut reader).await;
-        for invalid_id in [json!("not-a-number"), json!(null), json!([1])] {
-            write_json_line(
-                &mut writer,
-                &json!({
-                    "id": invalid_id,
-                    "method": "item/commandExecution/requestApproval",
-                    "params": { "threadId": "ephemeral", "turnId": "turn-1" }
-                }),
-            )
-            .await;
-        }
         write_json_line(
             &mut writer,
-            &json!({ "id": request["id"], "result": { "ok": true } }),
+            &json!({
+                "id": "not-a-number",
+                "method": "item/commandExecution/requestApproval",
+                "params": { "threadId": "ephemeral", "turnId": "turn-1" }
+            }),
         )
         .await;
+        let _ = request;
         std::future::pending::<()>().await;
     })
     .await;
-    let mut events = harness.transport.subscribe();
 
-    let response = harness
-        .transport
-        .request("translation/test", json!({}))
-        .await
-        .unwrap();
-    let first = events.recv().await.unwrap();
-    let second = events.recv().await.unwrap();
-    let third = events.recv().await.unwrap();
+    let error = tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        harness.transport.request("translation/test", json!({})),
+    )
+    .await
+    .expect("a server request must terminate transport immediately")
+    .unwrap_err();
 
-    assert_eq!(response, json!({ "ok": true }));
-    for event in [first, second, third] {
-        assert_eq!(event.method, "item/commandExecution/requestApproval");
-        assert!(event.server_request);
-    }
-    assert!(matches!(events.try_recv(), Err(TryRecvError::Empty)));
+    assert_eq!(error, TransportError::ProcessExited);
     harness.server_task.abort();
 }
 
 #[tokio::test]
-async fn forwards_well_formed_server_requests_to_the_security_monitor() {
+async fn numeric_and_null_server_request_ids_are_also_fatal() {
+    for server_id in [json!(91), json!(null)] {
+        let harness = spawn_fake_transport(move |mut reader, mut writer| async move {
+            let _request = read_request(&mut reader).await;
+            write_json_line(
+                &mut writer,
+                &json!({
+                    "id": server_id,
+                    "method": "future/serverRequest",
+                    "params": {}
+                }),
+            )
+            .await;
+            std::future::pending::<()>().await;
+        })
+        .await;
+
+        let error = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            harness.transport.request("translation/test", json!({})),
+        )
+        .await
+        .expect("every request ID shape must terminate transport")
+        .unwrap_err();
+
+        assert_eq!(error, TransportError::ProcessExited);
+        harness.server_task.abort();
+    }
+}
+
+#[tokio::test]
+async fn a_well_formed_server_request_is_fatal_before_its_id_can_match_a_response() {
     let harness = spawn_fake_transport(|mut reader, mut writer| async move {
         let request = read_request(&mut reader).await;
         write_json_line(
@@ -172,26 +190,20 @@ async fn forwards_well_formed_server_requests_to_the_security_monitor() {
             }),
         )
         .await;
-        write_json_line(
-            &mut writer,
-            &json!({ "id": request["id"], "result": { "ok": true } }),
-        )
-        .await;
+        std::future::pending::<()>().await;
     })
     .await;
-    let mut events = harness.transport.subscribe();
 
-    let response = harness
-        .transport
-        .request("translation/test", json!({}))
-        .await
-        .unwrap();
-    let event = events.recv().await.unwrap();
+    let error = tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        harness.transport.request("translation/test", json!({})),
+    )
+    .await
+    .expect("a numeric request ID must still be recognized as a server request")
+    .unwrap_err();
 
-    assert_eq!(response, json!({ "ok": true }));
-    assert_eq!(event.method, "item/commandExecution/requestApproval");
-    assert!(event.server_request);
-    harness.server_task.await.unwrap();
+    assert_eq!(error, TransportError::ProcessExited);
+    harness.server_task.abort();
 }
 
 #[tokio::test]

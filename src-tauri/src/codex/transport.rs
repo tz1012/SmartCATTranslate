@@ -373,11 +373,13 @@ fn route_inbound(frame: &[u8], exit: &SharedExitState, shutdown_signal: &watch::
             return;
         };
         if object.contains_key("id") {
-            let _ = exit.events.send(AppServerNotification {
-                method: method.to_owned(),
-                params: object.get("params").cloned().unwrap_or(Value::Null),
-                server_request: true,
-            });
+            // SmartCAT does not implement any App Server callback. A request from the
+            // server is therefore an executable capability crossing the trust boundary,
+            // regardless of method name or JSON-RPC id shape. Terminate before an event
+            // subscriber (which may not exist during bootstrap) could become the guard.
+            let _ = method;
+            exit.exit_once();
+            let _ = shutdown_signal.send(true);
             return;
         }
         if method == "runtime/exited" {

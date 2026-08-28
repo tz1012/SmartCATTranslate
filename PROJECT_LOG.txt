@@ -246,3 +246,25 @@ TDD 및 검증
 - 요약: security: isolated-codex-runtime
 - 변경 파일: CHANGELOG.md, DECISIONS.txt, src-tauri/Cargo.lock, src-tauri/Cargo.toml, src-tauri/src/codex/bootstrap.rs, src-tauri/src/codex/process.rs, src-tauri/src/codex/translation.rs, src-tauri/src/codex/transport.rs, src-tauri/src/commands/translation.rs, src-tauri/test-support/fake_codex_process.rs, src-tauri/tests/codex_auth.rs, src-tauri/tests/codex_bootstrap.rs, src-tauri/tests/codex_transport.rs, src-tauri/tests/translation_coordinator.rs
 - 검증: cargo test && 101/101 passed && pnpm test && 17/17 passed
+
+[2026-08-29] Task 7 보안 검토 수정 2 — 고정 스키마, 선실행 격리와 실패 폐쇄
+
+구현
+- Codex 0.144.4 태그의 실제 구성 스키마를 리소스로 고정하고 그 버전이 지원하는 키만으로 최소 허용 구성을 생성한다. 사용자 환경은 전부 지우고 앱 전용 홈만 전달하며 셸·웹·앱·MCP·훅·에이전트·기술·기록·분석 표면을 지원되는 범위에서 명시적으로 끈다.
+- 자격 증명은 문서화된 ChatGPT `auth_mode`, 토큰 세 필드, 선택적 계정 ID와 갱신 시각만 허용한다. 추가 필드, API 키 방식, 링크·정션·재분석 지점, 과대 파일과 잘못된 토큰 형식을 거부하고 전용 홈에 비공개 원자 쓰기한다.
+- Windows App Server 실행을 별도 AppContainer에 넣고 앱 전용 패키지 저장소로 원자 복사한 실행 파일, 빈 작업공간과 최소 Windows 런타임만 접근시키며 격리 실패 시 실행하지 않는다. 원래 시스템 실행 파일의 ACL은 변경하지 않는다. macOS는 고정 Codex의 Seatbelt 권한 프로필 실행 경로를 사용하고 다른 플랫폼은 실패 폐쇄한다.
+- 번역 턴 정책에서 안정판이 무시하는 `readableRoots` 주장을 제거하고 실제 지원되는 `readOnly`, `networkAccess: false`만 전송한다.
+- 턴 중단 응답이 제한시간 초과·원격 오류·잘못된 형식이면 런타임을 오염 상태로 표시하고 소유 전송 계층을 종료해 새 원문 작업을 막는다.
+- 창 파괴 콜백은 비동기 정리 작업을 만들기 전에 동기적으로 영구 tombstone을 설치한다. 명령의 예약과 같은 잠금을 사용하므로 파괴된 창은 작업을 시작할 수 없다.
+- JSONL 전송 계층은 구독자 유무와 ID 형식에 관계없이 모든 서버 요청을 수신 즉시 치명적 보안 사건으로 처리하고 전송을 종료한다.
+
+TDD 및 검증
+- RED: 실제 Windows AppContainer 보조 프로세스의 외부 비밀 파일 읽기와 허용 루트 쓰기 시험, 고정 스키마 구성 검증, 중단 실패 오염, 창 파괴 예약 경합, 구독자 없는 문자열·null ID 서버 요청 테스트를 먼저 추가해 누락된 구현/동작을 재현했다.
+- GREEN: 구성·자격 증명·Windows 격리 단위 시험 7/7, JSONL 전송 17/17, 번역 코디네이터 29/29, 운영 부트스트랩 3/3 통과. 고정 Codex 0.144.4 실제 파서가 생성 구성을 수락한다.
+- 열린 Windows acceptance: AppContainer 자체는 외부 비밀 읽기 차단과 허용 루트 쓰기를 실제로 강제하지만, 고정 Codex 0.144.4 App Server가 허용된 `CODEX_HOME`을 경로 정규화하는 단계에서 오류 5로 종료한다. 이 시험은 차단 사유를 적은 무시 테스트로 보존하며 제품에는 격리 없는 폴백이 없다.
+- 원문·번역문·원시 JSON·인증 정보·전체 경로를 출력하던 임시 진단은 모두 제거했다. `sources/`는 변경하지 않았다.
+
+[2026-08-29 04:08 Asia/Seoul] 변경 기록
+- 요약: security: appcontainer-codex-isolation
+- 변경 파일: DECISIONS.txt, docs/superpowers/plans/2026-08-29-task-7-security-fix-round-2.md, PROJECT_LOG.txt, src-tauri/Cargo.lock, src-tauri/Cargo.toml, src-tauri/resources/codex-0.144.4-config.schema.json, src-tauri/src/app_state.rs, src-tauri/src/codex/bootstrap.rs, src-tauri/src/codex/process.rs, src-tauri/src/codex/runtime.rs, src-tauri/src/codex/translation.rs, src-tauri/src/codex/transport.rs, src-tauri/src/commands/translation.rs, src-tauri/src/lib.rs, src-tauri/test-support/fake_codex_process.rs, src-tauri/tests/codex_bootstrap.rs, src-tauri/tests/codex_transport.rs, src-tauri/tests/translation_coordinator.rs
+- 검증: cargo test && 110/110 passed && pnpm test && 17/17 passed

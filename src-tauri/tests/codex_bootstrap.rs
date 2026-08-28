@@ -6,9 +6,12 @@ use semver::Version;
 use smartcat_translate::app_state::{AppState, AppStateError};
 use smartcat_translate::codex::auth::{AccountChangeReason, AccountEventSink, AccountState};
 use smartcat_translate::codex::bootstrap::{bootstrap_with_resolver, BootstrapError};
-use smartcat_translate::codex::process::{ProcessRuntimeLauncher, CODEX_APP_SERVER_PROTOCOL};
+use smartcat_translate::codex::process::{
+    sandboxed_app_data_root, ProcessRuntimeLauncher, CODEX_APP_SERVER_PROTOCOL,
+};
 use smartcat_translate::codex::runtime::{
-    RuntimeCandidate, RuntimeError, RuntimeFailureRecord, RuntimeFailureRecorder, RuntimeResolver,
+    RuntimeCandidate, RuntimeError, RuntimeFailureRecord, RuntimeFailureRecorder, RuntimeLauncher,
+    RuntimeResolver,
 };
 use tempfile::tempdir;
 
@@ -24,20 +27,52 @@ impl RuntimeFailureRecorder for NoopRecorder {
     fn record(&self, _record: RuntimeFailureRecord) {}
 }
 
+async fn lock_appcontainer_integration() -> tokio::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await
+}
+
+#[cfg(windows)]
+#[tokio::test]
+#[ignore = "blocked: pinned Codex 0.144.4 cannot canonicalize CODEX_HOME inside an otherwise functioning AppContainer"]
+async fn pinned_0_144_4_binary_accepts_the_isolated_config_inside_the_os_sandbox() {
+    let _serial = lock_appcontainer_integration().await;
+    let Some(binary) = std::env::var_os("SMARTCAT_PINNED_CODEX_0_144_4") else {
+        return;
+    };
+    let binary = std::path::PathBuf::from(binary);
+    assert!(binary.is_absolute());
+    let app_data = tempdir().unwrap();
+    let launcher =
+        ProcessRuntimeLauncher::with_credential_source(app_data.path().to_path_buf(), None);
+    let candidate = RuntimeCandidate::system(binary, Version::parse("0.144.4").unwrap());
+
+    let mut session = launcher.start(&candidate).await.unwrap();
+    assert_eq!(
+        session.initialize().await.unwrap(),
+        CODEX_APP_SERVER_PROTOCOL
+    );
+    session.stop().await.unwrap();
+}
+
 #[tokio::test]
 async fn production_wiring_hands_the_initialized_process_to_account_commands_and_cleans_up() {
+    let _serial = lock_appcontainer_integration().await;
     let app_data = tempdir().unwrap();
-    let work_root = app_data.path().join("runtime-work");
+    let sandbox_root = sandboxed_app_data_root(app_data.path()).unwrap();
+    let work_root = sandbox_root.join("runtime-work");
     let source_home = tempdir().unwrap();
     std::fs::write(
         source_home.path().join("config.toml"),
         "developer_instructions = 'HOSTILE_USER_CONFIG'\n[features]\nshell_tool = true\n",
     )
     .unwrap();
-    let account_state = br#"{"tokens":{"access_token":"PRIVATE_TEST_TOKEN"}}"#;
+    let account_state = br#"{"auth_mode":"chatgpt","tokens":{"id_token":"header.payload.signature","access_token":"PRIVATE_TEST_TOKEN","refresh_token":"PRIVATE_REFRESH","account_id":"account-1"},"last_refresh":"2026-08-28T12:00:00Z"}"#;
     std::fs::write(source_home.path().join("auth.json"), account_state).unwrap();
-    let isolated_home = app_data.path().join("codex-home");
-    std::fs::create_dir(&isolated_home).unwrap();
+    let isolated_home = sandbox_root.join("codex-home");
+    std::fs::create_dir_all(&isolated_home).unwrap();
     std::fs::write(
         isolated_home.join("config.toml"),
         "developer_instructions = 'HOSTILE_USER_CONFIG'\n",
@@ -47,10 +82,11 @@ async fn production_wiring_hands_the_initialized_process_to_account_commands_and
         app_data.path().to_path_buf(),
         Some(source_home.path().to_path_buf()),
     ));
-    let candidate = RuntimeCandidate::system(
-        env!("CARGO_BIN_EXE_smartcat-fake-codex"),
-        Version::parse("0.144.4").unwrap(),
-    );
+    let sandbox_bin = sandbox_root.join("bin");
+    std::fs::create_dir_all(&sandbox_bin).unwrap();
+    let fake_binary = sandbox_bin.join("smartcat-fake-codex.exe");
+    std::fs::copy(env!("CARGO_BIN_EXE_smartcat-fake-codex"), &fake_binary).unwrap();
+    let candidate = RuntimeCandidate::system(fake_binary, Version::parse("0.144.4").unwrap());
     let resolver = RuntimeResolver::system_only(
         vec![candidate],
         "0.144.4",
@@ -86,8 +122,11 @@ async fn production_wiring_hands_the_initialized_process_to_account_commands_and
     let isolated_config = std::fs::read_to_string(isolated_home.join("config.toml")).unwrap();
     assert!(!isolated_config.contains("HOSTILE_USER_CONFIG"));
     assert_eq!(
-        std::fs::read(isolated_home.join("auth.json")).unwrap(),
-        account_state
+        serde_json::from_slice::<serde_json::Value>(
+            &std::fs::read(isolated_home.join("auth.json")).unwrap()
+        )
+        .unwrap(),
+        serde_json::from_slice::<serde_json::Value>(account_state).unwrap()
     );
     assert!(
         std::fs::read_to_string(source_home.path().join("config.toml"))
@@ -104,16 +143,19 @@ async fn production_wiring_hands_the_initialized_process_to_account_commands_and
 
 #[tokio::test]
 async fn shutdown_wins_a_race_with_late_bootstrap_and_leaves_no_process_or_workdir() {
+    let _serial = lock_appcontainer_integration().await;
     let app_data = tempdir().unwrap();
-    let work_root = app_data.path().join("runtime-work");
+    let sandbox_root = sandboxed_app_data_root(app_data.path()).unwrap();
+    let work_root = sandbox_root.join("runtime-work");
     let launcher = Arc::new(ProcessRuntimeLauncher::with_credential_source(
         app_data.path().to_path_buf(),
         None,
     ));
-    let candidate = RuntimeCandidate::system(
-        env!("CARGO_BIN_EXE_smartcat-fake-codex"),
-        Version::parse("0.144.4").unwrap(),
-    );
+    let sandbox_bin = sandbox_root.join("bin");
+    std::fs::create_dir_all(&sandbox_bin).unwrap();
+    let fake_binary = sandbox_bin.join("smartcat-fake-codex.exe");
+    std::fs::copy(env!("CARGO_BIN_EXE_smartcat-fake-codex"), &fake_binary).unwrap();
+    let candidate = RuntimeCandidate::system(fake_binary, Version::parse("0.144.4").unwrap());
     let resolver = RuntimeResolver::system_only(
         vec![candidate],
         "0.144.4",
@@ -137,19 +179,20 @@ async fn shutdown_wins_a_race_with_late_bootstrap_and_leaves_no_process_or_workd
     assert!(state.account_service().await.is_none());
     assert!(work_root.read_dir().unwrap().next().is_none());
     let isolated_config =
-        std::fs::read_to_string(app_data.path().join("codex-home").join("config.toml")).unwrap();
+        std::fs::read_to_string(sandbox_root.join("codex-home").join("config.toml")).unwrap();
     assert!(isolated_config.contains("cli_auth_credentials_store = \"keyring\""));
 }
 
 #[tokio::test]
 async fn refuses_to_import_credentials_through_a_reparse_point() {
+    let _serial = lock_appcontainer_integration().await;
     let app_data = tempdir().unwrap();
     let source_root = tempdir().unwrap();
     let actual = source_root.path().join("actual-codex-home");
     std::fs::create_dir(&actual).unwrap();
     std::fs::write(
         actual.join("auth.json"),
-        br#"{"tokens":{"access_token":"PRIVATE"}}"#,
+        br#"{"auth_mode":"chatgpt","tokens":{"id_token":"header.payload.signature","access_token":"PRIVATE","refresh_token":"PRIVATE_REFRESH"}}"#,
     )
     .unwrap();
     let linked = source_root.path().join("linked-codex-home");

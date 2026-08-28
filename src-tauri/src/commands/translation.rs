@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use serde::Serialize;
 use tauri::{Emitter, State};
-use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::app_state::AppState;
@@ -62,17 +61,29 @@ pub trait TranslationEventSink: Send + Sync + 'static {
 
 pub struct TranslationJobManager {
     backend: Arc<CodexTranslationBackend>,
-    registry: Mutex<OwnerJobRegistry>,
+    registry: SharedOwnerJobRegistry,
 }
 
 #[derive(Default)]
-struct OwnerJobRegistry {
+pub(crate) struct OwnerJobRegistry {
     jobs: HashMap<Uuid, String>,
     tombstones: HashSet<String>,
 }
 
+pub(crate) type SharedOwnerJobRegistry = Arc<std::sync::Mutex<OwnerJobRegistry>>;
+
+pub(crate) fn new_owner_job_registry() -> SharedOwnerJobRegistry {
+    Arc::new(std::sync::Mutex::new(OwnerJobRegistry::default()))
+}
+
+fn lock_registry(registry: &SharedOwnerJobRegistry) -> std::sync::MutexGuard<'_, OwnerJobRegistry> {
+    registry
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 impl OwnerJobRegistry {
-    fn begin(&mut self, owner: String, job_id: Uuid) -> Result<(), TranslationError> {
+    pub(crate) fn begin(&mut self, owner: String, job_id: Uuid) -> Result<(), TranslationError> {
         if self.tombstones.contains(&owner) {
             return Err(TranslationError::Cancelled);
         }
@@ -86,11 +97,11 @@ impl OwnerJobRegistry {
             .is_some_and(|owner| !self.tombstones.contains(owner))
     }
 
-    fn remove(&mut self, job_id: Uuid) {
+    pub(crate) fn remove(&mut self, job_id: Uuid) {
         self.jobs.remove(&job_id);
     }
 
-    fn tombstone(&mut self, owner: &str) -> Vec<Uuid> {
+    pub(crate) fn tombstone(&mut self, owner: &str) -> Vec<Uuid> {
         self.tombstones.insert(owner.to_owned());
         self.jobs
             .iter()
@@ -101,10 +112,14 @@ impl OwnerJobRegistry {
 
 impl TranslationJobManager {
     pub fn new(backend: Arc<CodexTranslationBackend>) -> Self {
-        Self {
-            backend,
-            registry: Mutex::new(OwnerJobRegistry::default()),
-        }
+        Self::with_registry(backend, new_owner_job_registry())
+    }
+
+    pub(crate) fn with_registry(
+        backend: Arc<CodexTranslationBackend>,
+        registry: SharedOwnerJobRegistry,
+    ) -> Self {
+        Self { backend, registry }
     }
 
     pub async fn start(
@@ -115,17 +130,27 @@ impl TranslationJobManager {
     ) -> Result<Uuid, TranslationError> {
         validate_translation_request(&request)?;
         let job_id = Uuid::new_v4();
-        self.registry.lock().await.begin(owner.into(), job_id)?;
+        lock_registry(&self.registry).begin(owner.into(), job_id)?;
+        self.start_reserved(job_id, request, sink).await
+    }
+
+    pub(crate) async fn start_reserved(
+        self: &Arc<Self>,
+        job_id: Uuid,
+        request: TranslationRequest,
+        sink: Arc<dyn TranslationEventSink>,
+    ) -> Result<Uuid, TranslationError> {
+        validate_translation_request(&request)?;
         let permit = match self.backend.reserve_job(job_id).await {
             Ok(permit) => permit,
             Err(error) => {
-                self.registry.lock().await.remove(job_id);
+                lock_registry(&self.registry).remove(job_id);
                 return Err(error);
             }
         };
-        if !self.registry.lock().await.owner_is_live(job_id) {
+        if !lock_registry(&self.registry).owner_is_live(job_id) {
             self.backend.discard_reserved_job(permit).await;
-            self.registry.lock().await.remove(job_id);
+            lock_registry(&self.registry).remove(job_id);
             return Err(TranslationError::Cancelled);
         }
         let manager = self.clone();
@@ -139,7 +164,7 @@ impl TranslationJobManager {
         let is_owner = self
             .registry
             .lock()
-            .await
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .jobs
             .get(&job_id)
             .is_some_and(|job_owner| job_owner == owner);
@@ -147,9 +172,13 @@ impl TranslationJobManager {
     }
 
     pub async fn cancel_owner(&self, owner: &str) {
-        let job_ids = self.registry.lock().await.tombstone(owner);
+        let job_ids = lock_registry(&self.registry).tombstone(owner);
+        self.cancel_job_ids(&job_ids).await;
+    }
+
+    pub(crate) async fn cancel_job_ids(&self, job_ids: &[Uuid]) {
         for job_id in job_ids {
-            let _ = self.backend.cancel_job(job_id).await;
+            let _ = self.backend.cancel_job(*job_id).await;
         }
     }
 
@@ -180,7 +209,7 @@ impl TranslationJobManager {
                 message: user_message(&error).to_owned(),
             }),
         }
-        self.registry.lock().await.remove(job_id);
+        lock_registry(&self.registry).remove(job_id);
     }
 }
 
@@ -231,13 +260,20 @@ pub async fn translate_text(
     state: State<'_, AppState>,
     request: TranslationRequest,
 ) -> Result<Uuid, String> {
-    let manager = state
-        .translation_jobs()
-        .await
-        .ok_or_else(|| TRANSLATION_SERVICE_UNAVAILABLE.to_owned())?;
     let owner = window.label().to_owned();
+    validate_translation_request(&request).map_err(|error| error_code(&error).to_owned())?;
+    let job_id = state
+        .reserve_window_translation_job(&owner)
+        .map_err(|error| error_code(&error).to_owned())?;
+    let manager = match state.translation_jobs().await {
+        Some(manager) => manager,
+        None => {
+            state.release_window_translation_job(job_id);
+            return Err(TRANSLATION_SERVICE_UNAVAILABLE.to_owned());
+        }
+    };
     manager
-        .start(owner, request, Arc::new(TauriWindowEventSink(window)))
+        .start_reserved(job_id, request, Arc::new(TauriWindowEventSink(window)))
         .await
         .map_err(|error| error_code(&error).to_owned())
 }

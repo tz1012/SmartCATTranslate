@@ -44,11 +44,12 @@ pub fn run() {
     app.run(|app_handle, event| {
         if let tauri::RunEvent::WindowEvent { label, event, .. } = &event {
             if matches!(event, tauri::WindowEvent::Destroyed) {
+                let state = app_handle.state::<app_state::AppState>();
+                let job_ids = state.tombstone_window_translation_jobs(label);
                 let app_handle = app_handle.clone();
-                let label = label.clone();
                 tauri::async_runtime::spawn(async move {
                     let state = app_handle.state::<app_state::AppState>();
-                    state.cancel_window_translation_jobs(&label).await;
+                    state.cancel_tombstoned_translation_jobs(&job_ids).await;
                 });
             }
         }

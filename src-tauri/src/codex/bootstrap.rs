@@ -5,7 +5,9 @@ use crate::app_state::{AppState, AppStateError};
 use crate::codex::auth::{AccountEventSink, AccountService};
 use crate::codex::install::{AppLocalRuntimeInstaller, ProductionRuntimeDownloader};
 use crate::codex::manifest::{EmbeddedRuntimeManifest, HostTarget};
-use crate::codex::process::{ProcessRuntimeLauncher, CODEX_APP_SERVER_PROTOCOL};
+use crate::codex::process::{
+    sandboxed_app_data_root, ProcessRuntimeLauncher, CODEX_APP_SERVER_PROTOCOL,
+};
 use crate::codex::runtime::{
     OfficialSystemDiscovery, ResolvedRuntime, RuntimeError, RuntimeFailureRecord,
     RuntimeFailureRecorder, RuntimeResolver,
@@ -59,7 +61,15 @@ pub async fn install_resolved_account_service(
 ) -> Result<(), BootstrapError> {
     let transport = Arc::new(JsonlAppServerTransport::from_resolved_runtime(runtime)?);
     let service = Arc::new(AccountService::new(transport.clone(), event_sink));
-    let workspace = match prepare_owned_empty_workspace(&app_data_root) {
+    let sandbox_root = match sandboxed_app_data_root(&app_data_root) {
+        Ok(root) => root,
+        Err(error) => {
+            drop(service);
+            let _ = transport.shutdown().await;
+            return Err(error.into());
+        }
+    };
+    let workspace = match prepare_owned_empty_workspace(&sandbox_root) {
         Ok(workspace) => workspace,
         Err(error) => {
             drop(service);
@@ -75,7 +85,10 @@ pub async fn install_resolved_account_service(
             return Err(error.into());
         }
     };
-    let translation_jobs = Arc::new(TranslationJobManager::new(backend));
+    let translation_jobs = Arc::new(TranslationJobManager::with_registry(
+        backend,
+        state.translation_owner_registry(),
+    ));
     if let Err(error) = state
         .install_account_runtime(service.clone(), transport.clone(), translation_jobs.clone())
         .await

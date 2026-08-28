@@ -491,6 +491,8 @@ pub enum RuntimeError {
     TransportUnavailable,
     #[error("the Codex App Server process could not be started")]
     SpawnFailed,
+    #[error("the operating-system sandbox is unavailable")]
+    SandboxUnavailable,
     #[error("the Codex App Server initialization handshake failed")]
     HandshakeFailed,
 }
@@ -515,6 +517,7 @@ impl RuntimeError {
             Self::VersionProbeFailed => "version_probe_failed",
             Self::TransportUnavailable => "runtime_transport_unavailable",
             Self::SpawnFailed => "runtime_spawn_failed",
+            Self::SandboxUnavailable => "sandbox_unavailable",
             Self::HandshakeFailed => "runtime_handshake_failed",
         }
     }

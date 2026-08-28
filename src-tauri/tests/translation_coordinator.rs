@@ -85,14 +85,14 @@ fn generated_app_server_configuration_disables_every_mcp_server() {
     assert_eq!(value["model_provider"].as_str(), Some("openai"));
     assert_eq!(value["cli_auth_credentials_store"].as_str(), Some("file"));
     assert_eq!(value["project_doc_max_bytes"].as_integer(), Some(0));
-    assert_eq!(value["agents"]["enabled"].as_bool(), Some(false));
+    assert!(value.get("agents").is_none());
+    assert!(value.get("tools").is_none());
     for feature in [
         "apps",
         "goals",
         "hooks",
         "memories",
         "multi_agent",
-        "personality",
         "remote_plugin",
         "shell_snapshot",
         "shell_tool",
@@ -102,15 +102,21 @@ fn generated_app_server_configuration_disables_every_mcp_server() {
         assert_eq!(value["features"][feature].as_bool(), Some(false));
     }
     assert_eq!(value["apps"]["_default"]["enabled"].as_bool(), Some(false));
-    assert_eq!(value["tools"]["view_image"].as_bool(), Some(false));
-    assert_eq!(value["tools"]["web_search"].as_bool(), Some(false));
+    assert!(value["mcp_servers"].as_table().unwrap().is_empty());
+    assert!(value["plugins"].as_table().unwrap().is_empty());
+    assert!(value["skills"]["config"].as_array().unwrap().is_empty());
+    assert_eq!(
+        value["skills"]["include_instructions"].as_bool(),
+        Some(false)
+    );
     assert_eq!(value["history"]["persistence"].as_str(), Some("none"));
     assert_eq!(value["otel"]["exporter"].as_str(), Some("none"));
     assert_eq!(value["otel"]["trace_exporter"].as_str(), Some("none"));
     assert_eq!(value["otel"]["metrics_exporter"].as_str(), Some("none"));
     assert!(value["mcp_servers"].as_table().unwrap().is_empty());
     assert!(value["hooks"].as_table().unwrap().is_empty());
-    assert!(value.get("developer_instructions").is_none());
+    assert_eq!(value["developer_instructions"].as_str(), Some(""));
+    assert_eq!(value["instructions"].as_str(), Some(""));
     assert!(value.get("model_instructions_file").is_none());
     assert!(value.get("model_providers").is_none());
 }
@@ -215,11 +221,7 @@ async fn streams_only_the_structured_translation_and_handles_events_before_respo
             turn["params"]["sandboxPolicy"],
             json!({
                 "type": "readOnly",
-                "access": {
-                    "type": "restricted",
-                    "includePlatformDefaults": true,
-                    "readableRoots": [turn["params"]["cwd"].clone()]
-                }
+                "networkAccess": false
             })
         );
         assert_eq!(
@@ -457,7 +459,7 @@ fn rejects_a_workspace_below_a_symlinked_ancestor() {
 }
 
 #[tokio::test]
-async fn rejects_server_requested_actions_and_interrupts_the_matching_turn() {
+async fn a_server_request_terminates_the_runtime_before_translation_can_handle_it() {
     let harness = spawn_fake_transport(|mut reader, mut writer| async move {
         let base = read_request(&mut reader).await;
         write_json_line(
@@ -486,18 +488,10 @@ async fn rejects_server_requested_actions_and_interrupts_the_matching_turn() {
             }),
         )
         .await;
-        let interrupt = read_request(&mut reader).await;
-        assert_eq!(interrupt["method"], "turn/interrupt");
-        write_json_line(&mut writer, &json!({"id": interrupt["id"], "result": {}})).await;
-        let unsubscribe = read_request(&mut reader).await;
-        assert_eq!(unsubscribe["method"], "thread/unsubscribe");
-        write_json_line(
-            &mut writer,
-            &json!({"id": unsubscribe["id"], "result": {"status": "unsubscribed"}}),
-        )
-        .await;
+        std::future::pending::<()>().await;
     })
     .await;
+    let aborts = harness.aborts.clone();
     let root = tempdir().unwrap();
     let workspace = prepare_owned_empty_workspace(root.path()).unwrap();
     let backend = CodexTranslationBackend::new(Arc::new(harness.transport), &workspace)
@@ -506,8 +500,9 @@ async fn rejects_server_requested_actions_and_interrupts_the_matching_turn() {
 
     let error = backend.translate(request("hello")).await.unwrap_err();
 
-    assert_eq!(error, TranslationError::ToolUseRejected);
-    harness.server_task.await.unwrap();
+    assert_eq!(error, TranslationError::RuntimeUnavailable);
+    assert_eq!(aborts.load(std::sync::atomic::Ordering::SeqCst), 1);
+    harness.server_task.abort();
 }
 
 #[tokio::test]
@@ -1230,7 +1225,7 @@ async fn completed_turn_does_not_wait_forever_for_unsubscribe() {
 }
 
 #[tokio::test]
-async fn abort_attempts_unsubscribe_even_when_interrupt_does_not_answer() {
+async fn an_unanswered_interrupt_taints_and_terminates_the_runtime() {
     let harness = spawn_fake_transport(|mut reader, mut writer| async move {
         let base = read_request(&mut reader).await;
         write_json_line(
@@ -1252,18 +1247,10 @@ async fn abort_attempts_unsubscribe_even_when_interrupt_does_not_answer() {
         .await;
         let interrupt = read_request(&mut reader).await;
         assert_eq!(interrupt["method"], "turn/interrupt");
-        let unsubscribe =
-            tokio::time::timeout(Duration::from_millis(100), read_request(&mut reader))
-                .await
-                .expect("unsubscribe must not depend on an interrupt response");
-        assert_eq!(unsubscribe["method"], "thread/unsubscribe");
-        write_json_line(
-            &mut writer,
-            &json!({"id": unsubscribe["id"], "result": {"status": "unsubscribed"}}),
-        )
-        .await;
+        std::future::pending::<()>().await;
     })
     .await;
+    let aborts = harness.aborts.clone();
     let root = tempdir().unwrap();
     let workspace = prepare_owned_empty_workspace(root.path()).unwrap();
     let backend = CodexTranslationBackend::new_with_timeout(
@@ -1277,7 +1264,61 @@ async fn abort_attempts_unsubscribe_even_when_interrupt_does_not_answer() {
     let error = backend.translate(request("hello")).await.unwrap_err();
 
     assert_eq!(error, TranslationError::TimedOut);
-    harness.server_task.await.unwrap();
+    assert_eq!(aborts.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(
+        backend.translate(request("later")).await.unwrap_err(),
+        TranslationError::RuntimeUnavailable
+    );
+    harness.server_task.abort();
+}
+
+#[tokio::test]
+async fn a_malformed_interrupt_response_taints_and_terminates_the_runtime() {
+    let harness = spawn_fake_transport(|mut reader, mut writer| async move {
+        let base = read_request(&mut reader).await;
+        write_json_line(
+            &mut writer,
+            &json!({"id": base["id"], "result": {"thread": {"id": "base"}, "instructionSources": []}}),
+        )
+        .await;
+        let fork = read_request(&mut reader).await;
+        write_json_line(
+            &mut writer,
+            &json!({"id": fork["id"], "result": {"thread": {"id": "ephemeral"}}}),
+        )
+        .await;
+        let turn = read_request(&mut reader).await;
+        write_json_line(
+            &mut writer,
+            &json!({"id": turn["id"], "result": {"turn": {"id": "turn-1"}}}),
+        )
+        .await;
+        let interrupt = read_request(&mut reader).await;
+        write_json_line(&mut writer, &json!({"id": interrupt["id"]})).await;
+        std::future::pending::<()>().await;
+    })
+    .await;
+    let aborts = harness.aborts.clone();
+    let root = tempdir().unwrap();
+    let workspace = prepare_owned_empty_workspace(root.path()).unwrap();
+    let backend = CodexTranslationBackend::new_with_timeout(
+        Arc::new(harness.transport),
+        &workspace,
+        Duration::from_millis(20),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        backend.translate(request("hello")).await.unwrap_err(),
+        TranslationError::TimedOut
+    );
+    assert_eq!(aborts.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(
+        backend.translate(request("later")).await.unwrap_err(),
+        TranslationError::RuntimeUnavailable
+    );
+    harness.server_task.abort();
 }
 
 #[tokio::test]
