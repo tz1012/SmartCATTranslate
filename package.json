@@ -10,6 +10,8 @@
     "records:add": "node scripts/record-change.mjs",
     "records:check": "node scripts/check-records.mjs",
     "records:test": "node --test scripts/check-records.test.mjs scripts/record-change.test.mjs",
+    "runtime:pin": "node scripts/pin-codex-runtime.mjs",
+    "runtime:pin:test": "node --test scripts/pin-codex-runtime.test.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "tauri": "tauri"

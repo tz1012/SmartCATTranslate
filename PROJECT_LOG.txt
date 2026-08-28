@@ -99,3 +99,30 @@ SmartCAT Translate 프로젝트 기록
 - 요약: fix: secure-audit-events
 - 변경 파일: src-tauri/src/core/audit.rs
 - 검증: cargo test --manifest-path src-tauri/Cargo.toml && 13/13 passed
+
+[2026-08-28] Codex 실행 환경 탐색과 검증된 앱 전용 폴백
+
+구현
+- 버전 하한과 시스템 → 앱 전용 → 번들 우선순위를 적용하는 Codex 실행 환경 선택기를 추가함.
+- 선택은 임시적이며, App Server 초기화와 고정 프로토콜 핸드셰이크에 성공한 후보만 확정함. 실패 후보는 중지하고 경로 없이 버전·출처·고정 오류 코드만 기록한 뒤 다음 후보로 폴백함.
+- 다운로더 트레잇 뒤에 SHA-256 검증을 둔 앱 전용 바이트 경계를 추가함.
+- `rust-v0.144.4`의 공식 GitHub API 메타데이터에서 정확히 3개의 타겟 자산을 선택하고 다운로드 바이트, API 다이제스트, 타겟별 아카이브 구조를 검증하는 고정 스크립트를 추가함. 아카이브 내용은 실행하지 않음.
+- 매니페스트와 같은 태그의 공식 LICENSE·NOTICE를 추가함.
+
+공식 출처와 해시
+- 릴리스: https://github.com/openai/codex/releases/tag/rust-v0.144.4
+- Windows x86_64: https://github.com/openai/codex/releases/download/rust-v0.144.4/codex-x86_64-pc-windows-msvc.exe.zip, SHA-256 d731eee110fe287fcb8e201e9bdf39920e863bfc3c97f21e2d697a35d38c63c5
+- macOS aarch64: https://github.com/openai/codex/releases/download/rust-v0.144.4/codex-aarch64-apple-darwin.tar.gz, SHA-256 77c8969a481302f9db1d9ea2a6c21c083abae3f1a8fc8a7275dc38323699391e
+- macOS x86_64: https://github.com/openai/codex/releases/download/rust-v0.144.4/codex-x86_64-apple-darwin.tar.gz, SHA-256 274ea4931246621d477ad61d61ea3303527878e77fa910087df52153f5e6188e
+- LICENSE: https://raw.githubusercontent.com/openai/codex/rust-v0.144.4/LICENSE, SHA-256 d17f227e4df5da1600391338865ce0f3055211760a36688f816941d58232d8dc
+- NOTICE: https://raw.githubusercontent.com/openai/codex/rust-v0.144.4/NOTICE, SHA-256 9d71575ecfd9a843fc1677b0efb08053c6ba9fd686a0de1a6f5382fd3c220915
+
+보안 재결정
+- 공식 API가 반환한 정확한 OpenAI/Codex 릴리스 URL로 시작한 요청만 허용하며 HTTPS `release-assets.githubusercontent.com`을 단 하나의 최종 호스트로 허용함. 다른 리디렉션 호스트나 2회 이상의 리디렉션은 거부하며, 기록에는 서명된 CDN URL이 아닌 안정적인 공식 릴리스 URL만 남김.
+
+검증
+- RED: `cargo test --manifest-path src-tauri/Cargo.toml --test codex_runtime` 실패 — `could not find codex in smartcat_translate`.
+- GREEN: `cargo test --manifest-path src-tauri/Cargo.toml --test codex_runtime` 통과 — 6/6.
+- RED: `pnpm runtime:pin:test` 실패 — `ERR_MODULE_NOT_FOUND` for `scripts/pin-codex-runtime.mjs`.
+- GREEN: `pnpm runtime:pin:test` 통과 — 9/9.
+- 공식 릴리스 검증 명령: `pnpm runtime:pin` 통과 — 3개 타겟의 체크섬과 아카이브 엔트리 검증.

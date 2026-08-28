@@ -1,0 +1,30 @@
+{
+  "version": "0.144.4",
+  "tag": "rust-v0.144.4",
+  "releaseUrl": "https://github.com/openai/codex/releases/tag/rust-v0.144.4",
+  "license": {
+    "spdx": "Apache-2.0",
+    "url": "https://raw.githubusercontent.com/openai/codex/rust-v0.144.4/LICENSE",
+    "noticeUrl": "https://raw.githubusercontent.com/openai/codex/rust-v0.144.4/NOTICE"
+  },
+  "runtimes": [
+    {
+      "target": "x86_64-pc-windows-msvc",
+      "url": "https://github.com/openai/codex/releases/download/rust-v0.144.4/codex-x86_64-pc-windows-msvc.exe.zip",
+      "sha256": "d731eee110fe287fcb8e201e9bdf39920e863bfc3c97f21e2d697a35d38c63c5",
+      "archiveEntry": "codex-x86_64-pc-windows-msvc.exe"
+    },
+    {
+      "target": "aarch64-apple-darwin",
+      "url": "https://github.com/openai/codex/releases/download/rust-v0.144.4/codex-aarch64-apple-darwin.tar.gz",
+      "sha256": "77c8969a481302f9db1d9ea2a6c21c083abae3f1a8fc8a7275dc38323699391e",
+      "archiveEntry": "codex-aarch64-apple-darwin"
+    },
+    {
+      "target": "x86_64-apple-darwin",
+      "url": "https://github.com/openai/codex/releases/download/rust-v0.144.4/codex-x86_64-apple-darwin.tar.gz",
+      "sha256": "274ea4931246621d477ad61d61ea3303527878e77fa910087df52153f5e6188e",
+      "archiveEntry": "codex-x86_64-apple-darwin"
+    }
+  ]
+}
