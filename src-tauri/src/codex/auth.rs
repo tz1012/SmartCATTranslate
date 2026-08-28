@@ -23,6 +23,13 @@ pub enum AccountState {
     },
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountSnapshot {
+    pub account: AccountState,
+    pub login_pending: bool,
+}
+
 impl fmt::Debug for AccountState {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -48,7 +55,8 @@ pub struct RateLimitState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AccountChangeReason {
-    LoginCompleted,
+    LoginSucceeded,
+    LoginFailed,
     AccountUpdated,
 }
 
@@ -126,6 +134,15 @@ impl AccountService {
 
     pub async fn read(&self) -> Result<AccountState, AuthError> {
         self.read_with_refresh(false).await
+    }
+
+    pub async fn read_snapshot(&self) -> Result<AccountSnapshot, AuthError> {
+        let account = self.read().await?;
+        let login_pending = self.pending_login.lock().await.is_some();
+        Ok(AccountSnapshot {
+            account,
+            login_pending,
+        })
     }
 
     pub async fn read_with_refresh(&self, refresh_token: bool) -> Result<AccountState, AuthError> {
@@ -278,6 +295,10 @@ async fn monitor_notifications(
                 else {
                     continue;
                 };
+                let Some(success) = notification.params.get("success").and_then(Value::as_bool)
+                else {
+                    continue;
+                };
                 let matched = {
                     let mut pending = pending_login.lock().await;
                     if pending
@@ -291,7 +312,11 @@ async fn monitor_notifications(
                     }
                 };
                 if matched {
-                    event_sink.account_state_changed(AccountChangeReason::LoginCompleted);
+                    event_sink.account_state_changed(if success {
+                        AccountChangeReason::LoginSucceeded
+                    } else {
+                        AccountChangeReason::LoginFailed
+                    });
                 }
             }
             "account/updated" => {
@@ -350,5 +375,8 @@ fn map_percent(value: Option<&Value>) -> Option<f64> {
 }
 
 fn map_timestamp(value: Option<&Value>) -> Option<i64> {
-    value.and_then(Value::as_i64).filter(|value| *value >= 0)
+    const MAX_JAVASCRIPT_DATE_UNIX_SECONDS: i64 = 8_640_000_000_000;
+    value
+        .and_then(Value::as_i64)
+        .filter(|value| (0..=MAX_JAVASCRIPT_DATE_UNIX_SECONDS).contains(value))
 }

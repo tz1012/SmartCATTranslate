@@ -2,6 +2,7 @@ use std::fs::{self, File};
 use std::io::{self, BufReader, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use flate2::read::GzDecoder;
@@ -15,6 +16,7 @@ use crate::codex::manifest::{
 use crate::codex::runtime::{RuntimeCandidate, RuntimeError};
 
 const MAX_EXPANDED_BYTES: u64 = 512 * 1024 * 1024;
+const OFFICIAL_RELEASE_PATH_PREFIX: &str = "/openai/codex/releases/download/rust-v0.144.4/";
 
 pub struct DownloadResponse {
     pub content_length: Option<u64>,
@@ -29,6 +31,106 @@ pub trait RuntimeByteStream: Send {
 #[async_trait]
 pub trait RuntimeDownloader: Send + Sync {
     async fn open(&self, url: &Url, expected_size: u64) -> Result<DownloadResponse, RuntimeError>;
+}
+
+pub struct ProductionRuntimeDownloader {
+    client: reqwest::Client,
+}
+
+impl ProductionRuntimeDownloader {
+    pub fn new() -> Result<Self, RuntimeError> {
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(Duration::from_secs(15))
+            .timeout(Duration::from_secs(180))
+            .build()
+            .map_err(|_| RuntimeError::DownloadFailed)?;
+        Ok(Self { client })
+    }
+}
+
+#[async_trait]
+impl RuntimeDownloader for ProductionRuntimeDownloader {
+    async fn open(&self, url: &Url, expected_size: u64) -> Result<DownloadResponse, RuntimeError> {
+        if expected_size == 0 || expected_size > MAX_DOWNLOAD_BYTES {
+            return Err(RuntimeError::ContentLengthInvalid);
+        }
+        let redirect = self
+            .client
+            .get(url.clone())
+            .send()
+            .await
+            .map_err(|_| RuntimeError::DownloadFailed)?;
+        if !redirect.status().is_redirection() {
+            return Err(RuntimeError::DownloadFailed);
+        }
+        let location = redirect
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .ok_or(RuntimeError::DownloadFailed)?;
+        let destination = validate_release_redirect(url, location)?;
+        drop(redirect);
+
+        let response = self
+            .client
+            .get(destination.clone())
+            .send()
+            .await
+            .map_err(|_| RuntimeError::DownloadFailed)?;
+        if !response.status().is_success() || response.url() != &destination {
+            return Err(RuntimeError::DownloadFailed);
+        }
+        Ok(DownloadResponse {
+            content_length: response.content_length(),
+            stream: Box::new(ReqwestByteStream { response }),
+        })
+    }
+}
+
+struct ReqwestByteStream {
+    response: reqwest::Response,
+}
+
+#[async_trait]
+impl RuntimeByteStream for ReqwestByteStream {
+    async fn next_chunk(&mut self) -> Result<Option<Vec<u8>>, RuntimeError> {
+        self.response
+            .chunk()
+            .await
+            .map(|chunk| chunk.map(|bytes| bytes.to_vec()))
+            .map_err(|_| RuntimeError::DownloadFailed)
+    }
+}
+
+pub(crate) fn validate_release_redirect(source: &Url, location: &str) -> Result<Url, RuntimeError> {
+    let source_asset = source
+        .path()
+        .strip_prefix(OFFICIAL_RELEASE_PATH_PREFIX)
+        .filter(|asset| !asset.is_empty() && !asset.contains('/'));
+    if source.scheme() != "https"
+        || source.host_str() != Some("github.com")
+        || !source.username().is_empty()
+        || source.password().is_some()
+        || source.port().is_some()
+        || source.query().is_some()
+        || source.fragment().is_some()
+        || source_asset.is_none()
+    {
+        return Err(RuntimeError::DownloadFailed);
+    }
+
+    let destination = Url::parse(location).map_err(|_| RuntimeError::DownloadFailed)?;
+    if destination.scheme() != "https"
+        || destination.host_str() != Some("release-assets.githubusercontent.com")
+        || !destination.username().is_empty()
+        || destination.password().is_some()
+        || destination.port().is_some()
+        || destination.fragment().is_some()
+    {
+        return Err(RuntimeError::DownloadFailed);
+    }
+    Ok(destination)
 }
 
 pub struct AppLocalRuntimeInstaller {
@@ -352,7 +454,10 @@ mod tests {
     use url::Url;
     use zip::write::SimpleFileOptions;
 
-    use super::{AppLocalRuntimeInstaller, DownloadResponse, RuntimeByteStream, RuntimeDownloader};
+    use super::{
+        validate_release_redirect, AppLocalRuntimeInstaller, DownloadResponse,
+        ProductionRuntimeDownloader, RuntimeByteStream, RuntimeDownloader,
+    };
     use crate::codex::manifest::{EmbeddedRuntimeManifest, HostTarget, PinnedRuntime};
     use crate::codex::runtime::{RuntimeError, RuntimeSource};
 
@@ -461,6 +566,48 @@ mod tests {
         assert_eq!(requests.len(), 1);
         assert_eq!(&requests[0].0, expected.url());
         assert_eq!(requests[0].1, expected.size());
+    }
+
+    #[test]
+    fn production_download_policy_requires_the_exact_official_release_and_single_cdn_handoff() {
+        let official = Url::parse(
+            "https://github.com/openai/codex/releases/download/rust-v0.144.4/codex-x86_64-pc-windows-msvc.exe.zip",
+        )
+        .unwrap();
+        let cdn = "https://release-assets.githubusercontent.com/github-production-release-asset/file?sig=opaque";
+
+        assert_eq!(
+            validate_release_redirect(&official, cdn)
+                .unwrap()
+                .host_str(),
+            Some("release-assets.githubusercontent.com")
+        );
+
+        for (source, location) in [
+            (
+                "https://github.com.evil.example/openai/codex/releases/download/rust-v0.144.4/file.zip",
+                cdn,
+            ),
+            (
+                official.as_str(),
+                "https://release-assets.githubusercontent.com.evil.example/file",
+            ),
+            (official.as_str(), "http://release-assets.githubusercontent.com/file"),
+            (
+                official.as_str(),
+                "https://user@release-assets.githubusercontent.com/file",
+            ),
+        ] {
+            let source = Url::parse(source).unwrap();
+            assert!(validate_release_redirect(&source, location).is_err());
+        }
+    }
+
+    #[test]
+    fn production_https_downloader_can_be_constructed_for_the_verified_installer() {
+        let downloader: Arc<dyn RuntimeDownloader> =
+            Arc::new(ProductionRuntimeDownloader::new().unwrap());
+        drop(downloader);
     }
 
     #[tokio::test]

@@ -5,9 +5,19 @@ description = "SmartCAT Translate"
 authors = ["SmartCAT Translate"]
 edition = "2021"
 
+[features]
+test-helper = []
+
 [lib]
 name = "smartcat_translate"
 crate-type = ["lib", "cdylib", "staticlib"]
+
+[[bin]]
+name = "smartcat-fake-codex"
+path = "test-support/fake_codex_process.rs"
+required-features = ["test-helper"]
+test = false
+bench = false
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -16,6 +26,7 @@ tauri-build = { version = "2", features = [] }
 async-trait = "0.1"
 flate2 = "1"
 regex = "1"
+reqwest = { version = "0.13", default-features = false, features = ["native-tls-no-alpn"] }
 semver = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -25,7 +36,7 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tempfile = "3"
 thiserror = "2"
-tokio = { version = "1", features = ["io-util", "macros", "rt", "sync"] }
+tokio = { version = "1", features = ["io-util", "macros", "process", "rt", "sync", "time"] }
 url = "2"
 zip = { version = "4", default-features = false, features = ["deflate"] }
 

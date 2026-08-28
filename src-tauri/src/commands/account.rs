@@ -3,7 +3,7 @@ use tauri::{AppHandle, Emitter, Runtime, State};
 
 use crate::app_state::AppState;
 use crate::codex::auth::{
-    start_login_and_open, AccountChangeReason, AccountEventSink, AccountState, BrowserOpener,
+    start_login_and_open, AccountChangeReason, AccountEventSink, AccountSnapshot, BrowserOpener,
     RateLimitState,
 };
 
@@ -23,9 +23,12 @@ pub enum CancelLoginResult {
 }
 
 #[tauri::command]
-pub async fn get_account(state: State<'_, AppState>) -> Result<AccountState, String> {
+pub async fn get_account(state: State<'_, AppState>) -> Result<AccountSnapshot, String> {
     let service = state.account_service().await.ok_or(SERVICE_UNAVAILABLE)?;
-    service.read().await.map_err(|error| error_code(&error))
+    service
+        .read_snapshot()
+        .await
+        .map_err(|error| error_code(&error))
 }
 
 #[tauri::command]

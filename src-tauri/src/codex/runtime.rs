@@ -292,7 +292,18 @@ impl RuntimeResolver {
         &self,
         candidate: RuntimeCandidate,
     ) -> Result<Option<ResolvedRuntime>, RuntimeError> {
-        let mut session = self.launcher.start(&candidate).await?;
+        let mut session = match self.launcher.start(&candidate).await {
+            Ok(session) => session,
+            Err(RuntimeError::SpawnFailed) => {
+                self.failure_recorder.record(RuntimeFailureRecord {
+                    source: candidate.source,
+                    version: candidate.version.to_string(),
+                    error_code: RuntimeError::SpawnFailed.code(),
+                });
+                return Ok(None);
+            }
+            Err(error) => return Err(error),
+        };
         let result = session.initialize().await;
         if matches!(&result, Ok(protocol) if protocol == &self.expected_protocol) {
             return Ok(Some(ResolvedRuntime {
@@ -395,8 +406,14 @@ struct CommandVersionProbe;
 
 impl RuntimeVersionProbe for CommandVersionProbe {
     fn version(&self, path: &Path) -> Result<Version, RuntimeError> {
-        let output = Command::new(path)
-            .arg("--version")
+        let mut command = Command::new(path);
+        command.arg("--version");
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000);
+        }
+        let output = command
             .output()
             .map_err(|_| RuntimeError::VersionProbeFailed)?;
         if !output.status.success() {
@@ -472,6 +489,10 @@ pub enum RuntimeError {
     VersionProbeFailed,
     #[error("the initialized Codex runtime transport is unavailable")]
     TransportUnavailable,
+    #[error("the Codex App Server process could not be started")]
+    SpawnFailed,
+    #[error("the Codex App Server initialization handshake failed")]
+    HandshakeFailed,
 }
 
 impl RuntimeError {
@@ -493,6 +514,8 @@ impl RuntimeError {
             Self::InstallConflict => "install_conflict",
             Self::VersionProbeFailed => "version_probe_failed",
             Self::TransportUnavailable => "runtime_transport_unavailable",
+            Self::SpawnFailed => "runtime_spawn_failed",
+            Self::HandshakeFailed => "runtime_handshake_failed",
         }
     }
 }
@@ -600,6 +623,29 @@ mod security_tests {
         assert_eq!(resolved.session_id(), "system-session");
     }
 
+    #[tokio::test]
+    async fn a_system_process_start_failure_falls_back_to_the_verified_app_local_runtime() {
+        let installed = Arc::new(Mutex::new(0));
+        let resolver = RuntimeResolver::with_provider_for_test(
+            vec![RuntimeCandidate::system(
+                "system-codex",
+                Version::parse("0.145.0").unwrap(),
+            )],
+            Arc::new(FakeAppLocalProvider {
+                installed: installed.clone(),
+            }),
+            "0.144.0",
+            "pinned",
+            Arc::new(SystemStartFailingLauncher),
+            Arc::new(NoopRecorder),
+        );
+
+        let resolved = resolver.resolve().await.unwrap();
+
+        assert_eq!(resolved.source(), RuntimeSource::AppLocal);
+        assert_eq!(*installed.lock().unwrap(), 1);
+    }
+
     struct FakeAppLocalProvider {
         installed: Arc<Mutex<usize>>,
     }
@@ -616,6 +662,24 @@ mod security_tests {
     }
 
     struct SourceLauncher;
+
+    struct SystemStartFailingLauncher;
+
+    #[async_trait]
+    impl RuntimeLauncher for SystemStartFailingLauncher {
+        async fn start(
+            &self,
+            candidate: &RuntimeCandidate,
+        ) -> Result<Box<dyn LiveRuntimeSession>, RuntimeError> {
+            if candidate.source() == RuntimeSource::System {
+                Err(RuntimeError::SpawnFailed)
+            } else {
+                Ok(Box::new(SourceSession {
+                    source: candidate.source(),
+                }))
+            }
+        }
+    }
 
     #[async_trait]
     impl RuntimeLauncher for SourceLauncher {

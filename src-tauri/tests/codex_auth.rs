@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use smartcat_translate::codex::auth::{
     start_login_and_open, validate_browser_login_url, AccountChangeReason, AccountEventSink,
-    AccountService, AccountState, AuthError, BrowserOpener, RateLimitState,
+    AccountService, AccountSnapshot, AccountState, AuthError, BrowserOpener, RateLimitState,
 };
 use smartcat_translate::codex::protocol::AppServerNotification;
 use smartcat_translate::codex::transport::{AppServerTransport, TransportError};
@@ -188,6 +188,42 @@ fn account_state_serializes_the_frontend_field_names() {
 }
 
 #[test]
+fn account_snapshot_serializes_authoritative_pending_state_without_an_identifier() {
+    let value = serde_json::to_value(AccountSnapshot {
+        account: AccountState::SignedOut,
+        login_pending: true,
+    })
+    .unwrap();
+
+    assert_eq!(
+        value,
+        json!({ "account": { "state": "signedOut" }, "loginPending": true })
+    );
+    assert!(!format!("{value:?}").contains("loginId"));
+}
+
+#[tokio::test]
+async fn account_snapshot_reports_a_server_pending_login_after_remount() {
+    let transport = FakeTransport::new(vec![
+        Ok(login_response(
+            "LOGIN-SECRET",
+            "https://chatgpt.com/auth/start",
+        )),
+        Ok(json!({ "account": null, "requiresOpenaiAuth": true })),
+    ]);
+    let service = service(transport, Arc::new(FakeSink::default()));
+    service.start_chatgpt_login().await.unwrap();
+
+    assert_eq!(
+        service.read_snapshot().await.unwrap(),
+        AccountSnapshot {
+            account: AccountState::SignedOut,
+            login_pending: true,
+        }
+    );
+}
+
+#[test]
 fn account_state_debug_never_exposes_email_or_untrusted_plan_text() {
     let state = AccountState::SignedIn {
         email_hint: Some("private@example.com".to_owned()),
@@ -225,6 +261,27 @@ async fn rate_limits_map_usage_and_unix_seconds_without_inventing_secondary_capa
     assert_eq!(
         transport.request_snapshot(),
         vec![("account/rateLimits/read".to_owned(), json!({}))]
+    );
+}
+
+#[tokio::test]
+async fn rate_limit_timestamps_are_bounded_to_the_javascript_date_range() {
+    let transport = FakeTransport::new(vec![Ok(json!({
+        "rateLimits": {
+            "primary": { "usedPercent": 1, "resetsAt": 8_640_000_000_000_i64 },
+            "secondary": { "usedPercent": 2, "resetsAt": 8_640_000_000_001_i64 }
+        }
+    }))]);
+    let service = service(transport, Arc::new(FakeSink::default()));
+
+    assert_eq!(
+        service.read_rate_limits().await.unwrap(),
+        RateLimitState {
+            primary_used_percent: Some(1.0),
+            primary_resets_at: Some(8_640_000_000_000),
+            secondary_used_percent: Some(2.0),
+            secondary_resets_at: None,
+        }
     );
 }
 
@@ -328,7 +385,7 @@ async fn completion_arriving_before_the_start_response_is_not_lost() {
     yield_until(|| !sink.snapshot().is_empty()).await;
 
     assert!(!service.has_pending_login().await);
-    assert_eq!(sink.snapshot(), vec![AccountChangeReason::LoginCompleted]);
+    assert_eq!(sink.snapshot(), vec![AccountChangeReason::LoginSucceeded]);
 }
 
 #[tokio::test]
@@ -397,7 +454,7 @@ async fn malformed_start_cleanup_failure_remains_explicitly_cancellable() {
 }
 
 #[tokio::test]
-async fn only_a_matching_login_completion_clears_pending_and_emits_a_safe_event() {
+async fn only_a_matching_successful_login_completion_clears_pending_and_emits_a_safe_event() {
     let transport = FakeTransport::new(vec![Ok(login_response(
         "MATCHING-ID",
         "https://chatgpt.com/auth/start",
@@ -420,8 +477,56 @@ async fn only_a_matching_login_completion_clears_pending_and_emits_a_safe_event(
     );
     yield_until(|| !sink.snapshot().is_empty()).await;
     assert!(!service.has_pending_login().await);
-    assert_eq!(sink.snapshot(), vec![AccountChangeReason::LoginCompleted]);
+    assert_eq!(sink.snapshot(), vec![AccountChangeReason::LoginSucceeded]);
     assert!(!format!("{:?}", sink.snapshot()).contains("TOKEN-SECRET"));
+}
+
+#[tokio::test]
+async fn matching_failed_login_completion_clears_pending_and_emits_only_failure_state() {
+    let transport = FakeTransport::new(vec![Ok(login_response(
+        "MATCHING-ID",
+        "https://chatgpt.com/auth/start",
+    ))]);
+    let sink = Arc::new(FakeSink::default());
+    let service = service(transport.clone(), sink.clone());
+    service.start_chatgpt_login().await.unwrap();
+
+    transport.notify(
+        "account/login/completed",
+        json!({ "loginId": "MATCHING-ID", "success": false, "error": "TOKEN-SECRET remote detail" }),
+    );
+    yield_until(|| !sink.snapshot().is_empty()).await;
+
+    assert!(!service.has_pending_login().await);
+    assert_eq!(sink.snapshot(), vec![AccountChangeReason::LoginFailed]);
+    let rendered = format!("{:?}", sink.snapshot());
+    assert!(!rendered.contains("TOKEN-SECRET"));
+    assert!(!rendered.contains("remote detail"));
+}
+
+#[tokio::test]
+async fn malformed_matching_login_completion_does_not_clear_or_emit() {
+    for malformed in [
+        json!({ "loginId": "MATCHING-ID" }),
+        json!({ "loginId": "MATCHING-ID", "success": "true" }),
+        json!({ "loginId": "MATCHING-ID", "success": null }),
+    ] {
+        let transport = FakeTransport::new(vec![Ok(login_response(
+            "MATCHING-ID",
+            "https://chatgpt.com/auth/start",
+        ))]);
+        let sink = Arc::new(FakeSink::default());
+        let service = service(transport.clone(), sink.clone());
+        service.start_chatgpt_login().await.unwrap();
+
+        transport.notify("account/login/completed", malformed);
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+        }
+
+        assert!(service.has_pending_login().await);
+        assert!(sink.snapshot().is_empty());
+    }
 }
 
 #[tokio::test]

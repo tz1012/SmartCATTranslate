@@ -5,6 +5,13 @@ export type AccountState =
   | { state: 'signedOut' }
   | { state: 'signedIn'; emailHint: string | null; plan: string | null };
 
+export type AccountSnapshot = {
+  account: AccountState;
+  loginPending: boolean;
+};
+
+export type AccountChangeReason = 'loginSucceeded' | 'loginFailed' | 'accountUpdated';
+
 export type RateLimitState = {
   primaryUsedPercent: number | null;
   primaryResetsAt: number | null;
@@ -12,8 +19,8 @@ export type RateLimitState = {
   secondaryResetsAt: number | null;
 };
 
-export function getAccount(): Promise<AccountState> {
-  return invoke<AccountState>('get_account');
+export function getAccount(): Promise<AccountSnapshot> {
+  return invoke<AccountSnapshot>('get_account');
 }
 
 export function getRateLimits(): Promise<RateLimitState> {
@@ -28,6 +35,10 @@ export function cancelChatgptLogin(): Promise<{ state: 'cancelled' | 'notPending
   return invoke('cancel_chatgpt_login');
 }
 
-export function onAccountStateChanged(handler: () => void): Promise<UnlistenFn> {
-  return listen('account-state-changed', handler);
+export function onAccountStateChanged(
+  handler: (reason: AccountChangeReason) => void,
+): Promise<UnlistenFn> {
+  return listen<{ reason: AccountChangeReason }>('account-state-changed', (event) => {
+    handler(event.payload.reason);
+  });
 }

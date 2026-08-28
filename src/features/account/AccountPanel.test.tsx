@@ -12,7 +12,7 @@ const invokeMock = vi.mocked(invoke);
 const listenMock = vi.mocked(listen);
 
 describe('AccountPanel', () => {
-  let accountChanged: (() => void) | undefined;
+  let accountChanged: ((reason?: 'loginSucceeded' | 'loginFailed' | 'accountUpdated') => void) | undefined;
   const unlisten = vi.fn();
 
   beforeEach(() => {
@@ -21,7 +21,11 @@ describe('AccountPanel', () => {
     invokeMock.mockReset();
     listenMock.mockReset();
     listenMock.mockImplementation(async (_event, handler) => {
-      accountChanged = () => handler({ event: 'account-state-changed', id: 1, payload: { reason: 'accountUpdated' } });
+      accountChanged = (reason = 'accountUpdated') => handler({
+        event: 'account-state-changed',
+        id: 1,
+        payload: { reason },
+      });
       return unlisten;
     });
   });
@@ -33,7 +37,7 @@ describe('AccountPanel', () => {
 
   it('opens ChatGPT login when the account is signed out', async () => {
     invokeMock
-      .mockResolvedValueOnce({ state: 'signedOut' })
+      .mockResolvedValueOnce({ account: { state: 'signedOut' }, loginPending: false })
       .mockResolvedValueOnce({ state: 'browserOpened' })
       .mockResolvedValueOnce({ state: 'cancelled' });
 
@@ -46,7 +50,7 @@ describe('AccountPanel', () => {
 
   it('cancels a pending login from the button', async () => {
     invokeMock
-      .mockResolvedValueOnce({ state: 'signedOut' })
+      .mockResolvedValueOnce({ account: { state: 'signedOut' }, loginPending: false })
       .mockResolvedValueOnce({ state: 'browserOpened' })
       .mockResolvedValueOnce({ state: 'cancelled' });
 
@@ -60,7 +64,7 @@ describe('AccountPanel', () => {
 
   it('cancels only when a panel with a pending login closes', async () => {
     invokeMock
-      .mockResolvedValueOnce({ state: 'signedOut' })
+      .mockResolvedValueOnce({ account: { state: 'signedOut' }, loginPending: false })
       .mockResolvedValueOnce({ state: 'browserOpened' })
       .mockResolvedValueOnce({ state: 'cancelled' });
     const pendingPanel = render(<AccountPanel />);
@@ -71,7 +75,7 @@ describe('AccountPanel', () => {
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('cancel_chatgpt_login'));
 
     invokeMock.mockReset();
-    invokeMock.mockResolvedValueOnce({ state: 'signedOut' });
+    invokeMock.mockResolvedValueOnce({ account: { state: 'signedOut' }, loginPending: false });
     const idlePanel = render(<AccountPanel />);
     await screen.findByRole('button', { name: 'ChatGPT로 로그인' });
     idlePanel.unmount();
@@ -80,8 +84,11 @@ describe('AccountPanel', () => {
 
   it('refreshes account and rate limits after a sanitized account event', async () => {
     invokeMock
-      .mockResolvedValueOnce({ state: 'signedOut' })
-      .mockResolvedValueOnce({ state: 'signedIn', emailHint: 'a***@example.com', plan: 'plus' })
+      .mockResolvedValueOnce({ account: { state: 'signedOut' }, loginPending: false })
+      .mockResolvedValueOnce({
+        account: { state: 'signedIn', emailHint: 'a***@example.com', plan: 'plus' },
+        loginPending: false,
+      })
       .mockResolvedValueOnce({
         primaryUsedPercent: 25,
         primaryResetsAt: 1_730_947_200,
@@ -103,13 +110,16 @@ describe('AccountPanel', () => {
   });
 
   it('does not let an older account read overwrite a newer account event', async () => {
-    let resolveOlder!: (value: { state: 'signedOut' }) => void;
-    const olderRead = new Promise<{ state: 'signedOut' }>((resolve) => {
+    let resolveOlder!: (value: { account: { state: 'signedOut' }; loginPending: false }) => void;
+    const olderRead = new Promise<{ account: { state: 'signedOut' }; loginPending: false }>((resolve) => {
       resolveOlder = resolve;
     });
     invokeMock
       .mockReturnValueOnce(olderRead)
-      .mockResolvedValueOnce({ state: 'signedIn', emailHint: null, plan: 'plus' })
+      .mockResolvedValueOnce({
+        account: { state: 'signedIn', emailHint: null, plan: 'plus' },
+        loginPending: false,
+      })
       .mockResolvedValueOnce({
         primaryUsedPercent: null,
         primaryResetsAt: null,
@@ -122,7 +132,7 @@ describe('AccountPanel', () => {
     accountChanged?.();
     expect(await screen.findByText('연결됨')).toBeVisible();
 
-    await act(async () => resolveOlder({ state: 'signedOut' }));
+    await act(async () => resolveOlder({ account: { state: 'signedOut' }, loginPending: false }));
 
     expect(screen.getByText('연결됨')).toBeVisible();
     expect(screen.getByRole('button', { name: '다시 로그인' })).toBeVisible();
@@ -130,7 +140,7 @@ describe('AccountPanel', () => {
 
   it('returns to signed out state when the browser opener fails', async () => {
     invokeMock
-      .mockResolvedValueOnce({ state: 'signedOut' })
+      .mockResolvedValueOnce({ account: { state: 'signedOut' }, loginPending: false })
       .mockRejectedValueOnce('browser_open_failed');
 
     render(<AccountPanel />);
@@ -144,7 +154,7 @@ describe('AccountPanel', () => {
     'keeps cancellation available when login cleanup must be retried (%s)',
     async (errorCode) => {
     invokeMock
-      .mockResolvedValueOnce({ state: 'signedOut' })
+      .mockResolvedValueOnce({ account: { state: 'signedOut' }, loginPending: false })
       .mockRejectedValueOnce(errorCode)
       .mockResolvedValueOnce({ state: 'cancelled' });
 
@@ -156,4 +166,79 @@ describe('AccountPanel', () => {
     expect(invokeMock).toHaveBeenCalledWith('cancel_chatgpt_login');
     },
   );
+
+  it('recovers a pending login from the authoritative backend snapshot after remount', async () => {
+    invokeMock.mockResolvedValueOnce({
+      account: { state: 'signedOut' },
+      loginPending: true,
+    });
+
+    render(<AccountPanel locale="en" />);
+
+    expect(await screen.findByText('Complete sign-in in your browser.')).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Cancel sign-in' })).toBeVisible();
+  });
+
+  it('cancels a login that finishes opening after the panel was closed', async () => {
+    let finishOpening!: (value: { state: 'browserOpened' }) => void;
+    const opening = new Promise<{ state: 'browserOpened' }>((resolve) => {
+      finishOpening = resolve;
+    });
+    invokeMock
+      .mockResolvedValueOnce({ account: { state: 'signedOut' }, loginPending: false })
+      .mockReturnValueOnce(opening)
+      .mockResolvedValueOnce({ state: 'cancelled' });
+
+    const panel = render(<AccountPanel locale="en" />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Sign in with ChatGPT' }));
+    panel.unmount();
+    await act(async () => finishOpening({ state: 'browserOpened' }));
+
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('cancel_chatgpt_login'));
+  });
+
+  it('refreshes instead of forcing signed out when cancellation reports not pending after success', async () => {
+    let finishCancellation!: (value: { state: 'notPending' }) => void;
+    const cancellation = new Promise<{ state: 'notPending' }>((resolve) => {
+      finishCancellation = resolve;
+    });
+    invokeMock
+      .mockResolvedValueOnce({ account: { state: 'signedOut' }, loginPending: false })
+      .mockResolvedValueOnce({ state: 'browserOpened' })
+      .mockReturnValueOnce(cancellation)
+      .mockResolvedValueOnce({
+        account: { state: 'signedIn', emailHint: null, plan: 'plus' },
+        loginPending: false,
+      })
+      .mockResolvedValueOnce({
+        primaryUsedPercent: null,
+        primaryResetsAt: null,
+        secondaryUsedPercent: null,
+        secondaryResetsAt: null,
+      })
+      .mockResolvedValueOnce({
+        account: { state: 'signedIn', emailHint: null, plan: 'plus' },
+        loginPending: false,
+      })
+      .mockResolvedValueOnce({
+        primaryUsedPercent: null,
+        primaryResetsAt: null,
+        secondaryUsedPercent: null,
+        secondaryResetsAt: null,
+      });
+
+    render(<AccountPanel locale="en" />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Sign in with ChatGPT' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Cancel sign-in' }));
+    accountChanged?.('loginSucceeded');
+    await act(async () => finishCancellation({ state: 'notPending' }));
+
+    expect(await screen.findByText('Connected')).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Sign in again' })).toBeVisible();
+  });
+
+  it('shows a localized safe fallback for timestamps outside the Date range', () => {
+    expect(formatResetTime(Number.POSITIVE_INFINITY, 'en')).toBe('Reset time unavailable');
+    expect(formatResetTime(8_640_000_000_001, 'ko')).toBe('재설정 시간 정보 없음');
+  });
 });

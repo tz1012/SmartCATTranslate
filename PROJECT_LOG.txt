@@ -171,3 +171,28 @@ TDD 및 검증
 - 요약: feature: chatgpt-account-flow
 - 변경 파일: CHANGELOG.md, DECISIONS.txt, package.json, pnpm-lock.yaml, src-tauri/Cargo.lock, src-tauri/Cargo.toml, src-tauri/src/app_state.rs, src-tauri/src/codex/auth.rs, src-tauri/src/codex/mod.rs, src-tauri/src/commands/account.rs, src-tauri/src/commands/mod.rs, src-tauri/src/lib.rs, src-tauri/tests/codex_auth.rs, src/app/App.tsx, src/features/account/accountApi.ts, src/features/account/AccountPanel.test.tsx, src/features/account/AccountPanel.tsx, src/styles.css
 - 검증: pnpm test && 10/10 passed && cargo test && 59/59 passed
+
+[2026-08-28] Task 6 검토 수정 — 운영 부트스트랩, 인증 경합과 현지화
+
+구현
+- 실제 운영 앱이 공식 시스템 Codex를 탐색하고, 없거나 시작할 수 없으면 고정 매니페스트로 검증한 앱 전용 Codex를 설치하도록 Tauri 시작 경로를 연결함.
+- 셸 없이 `codex app-server --listen stdio://`를 앱 데이터 아래의 빈 임시 작업 디렉터리에서 실행하고, 공식 초기화 요청과 알림을 마친 동일 stdio 채널을 JSONL 전송 계층에 인계함.
+- 앱 상태가 계정 서비스와 전송 계층을 함께 소유하고, 종료와 늦은 부트스트랩의 경합에서는 종료가 우선해 프로세스와 임시 작업 디렉터리가 남지 않도록 함.
+- 운영 HTTPS 다운로더는 플랫폼 신뢰 저장소를 사용하는 최소 `reqwest` 구성을 채택하고 자동 리디렉션을 차단함. 고정 GitHub 릴리스에서 허용된 CDN으로 정확히 한 번 이동하는 경우만 스트리밍하며 시간·크기·해시·아카이브 경계를 적용함.
+- 일치하는 로그인 완료 알림의 `success`가 실제 불리언일 때만 처리하고 성공과 실패를 구분한 안전한 이벤트를 보냄. 누락·잘못된 형식·다른 로그인 ID·원격 오류 문구는 무시함.
+- 계정 조회에 서버 기준 로그인 대기 여부를 포함해 패널 재열기와 취소·로그인 완료 순서 경합을 복구함. 브라우저를 여는 도중 패널이 닫혀도 반환 직후 취소하고, 이미 완료된 로그인에 대한 `notPending`은 계정을 다시 읽음.
+- 계정 패널의 모든 표시·접근성·오류 문구를 한국어와 영어로 제공하고, App의 영어 경로에 한국어가 남지 않게 함.
+- Rust에서 JavaScript Date 범위를 벗어난 Unix 초를 제거하고 화면에서도 현지화된 안전 문구로 방어함.
+
+TDD 및 검증
+- RED: 성공/실패 로그인 완료 이유, 서버 기준 대기 스냅샷, 잘못된 날짜 경계, 영어 문구, 패널 재열기와 열기·취소 경합 테스트가 각각 기존 구현에서 실패함을 확인함.
+- RED: 운영 부트스트랩 통합 테스트가 실제 보조 프로세스 모듈과 해석기 연결 함수 부재로 컴파일 실패함을 확인함. 종료 후 늦은 설치 테스트는 남은 임시 작업 디렉터리를 재현함.
+- GREEN: 계정 인증 집중 테스트 22/22, 운영 프로세스·파일시스템 경계 테스트 2/2, 계정 패널·앱 집중 테스트 14/14 통과.
+- 전체 프런트엔드 테스트 14/14와 프로덕션 빌드 통과.
+- 전체 Rust 기본 기능 67/67, 운영 보조 기능 포함 69/69 통과. 일반 라이브러리 검사와 Rust 서식 검사 통과.
+- 변경 기록 검사 16/16, 런타임 고정 검사 17/17, 공식 Codex 3개 대상 자산·해시·아카이브 재검증 통과.
+
+[2026-08-28 16:25 Asia/Seoul] 변경 기록
+- 요약: fix: production-account-bootstrap
+- 변경 파일: CHANGELOG.md, DECISIONS.txt, PROJECT_LOG.txt, src-tauri/Cargo.lock, src-tauri/Cargo.toml, src-tauri/src/app_state.rs, src-tauri/src/codex/auth.rs, src-tauri/src/codex/bootstrap.rs, src-tauri/src/codex/install.rs, src-tauri/src/codex/mod.rs, src-tauri/src/codex/process.rs, src-tauri/src/codex/runtime.rs, src-tauri/src/commands/account.rs, src-tauri/src/lib.rs, src-tauri/test-support/fake_codex_process.rs, src-tauri/tests/codex_auth.rs, src-tauri/tests/codex_bootstrap.rs, src/app/App.test.tsx, src/app/App.tsx, src/features/account/AccountPanel.test.tsx, src/features/account/AccountPanel.tsx, src/features/account/accountApi.ts
+- 검증: pnpm test && 14/14 passed && cargo test && 69/69 passed
