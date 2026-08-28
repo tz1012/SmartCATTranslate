@@ -64,5 +64,6 @@ SmartCAT Translate 프로젝트 기록
 - RED: `pnpm install --frozen-lockfile=false && pnpm test` 후 `pnpm test`를 실행하여 `src/app/App.tsx`가 없어 `./App`을 해석할 수 없음을 확인함.
 - GREEN: `pnpm test` 통과 — 테스트 파일 1개, 테스트 1개 통과.
 - `pnpm build` 통과 — TypeScript 검사와 Vite 프로덕션 번들 생성 완료.
-- 공식 Rustup으로 worktree 전용 최소 stable Rust 1.98.0/Cargo 1.98.0을 설치하고 `cargo test --manifest-path src-tauri/Cargo.toml`을 실행함. 테스트는 소스 컴파일 전 단계에서 호스트에 MSVC C++ 빌드 도구가 없어 실패함. 경로에서 발견된 것은 Git의 호환되지 않는 `link.exe`였음.
+- Tauri Windows 리소스에 필요한 기본 `icons/icon.ico`를 추가함.
+- worktree 전용 Rust 1.98.0/Cargo 1.98.0을 Visual Studio Build Tools 2022 환경에서 실행하고 `cargo test --manifest-path src-tauri/Cargo.toml`을 통과함 — Rust 테스트 1개 통과. MSVC가 유니코드 worktree 경로를 안정적으로 처리하도록 같은 로컬 런타임을 가리키는 임시 ASCII 경로와 sysroot/target을 테스트 실행 중에만 사용함.
 - `COREPACK_HOME`을 worktree 내부로 제한해 Corepack의 pnpm 10.17.1 실행과 동결 잠금 파일 설치를 확인함. 일반 검증은 호스트 정책 런타임의 pnpm 11.19.0으로 `pnpm test` 1/1 통과 및 `pnpm build` 통과.
