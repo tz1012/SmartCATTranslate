@@ -6,6 +6,10 @@ import { fileURLToPath } from 'node:url';
 const secretPattern = /(secret|token|credential|password|api[_-]?key)/i;
 const bearerTokenPattern = /\bbearer\s+\S+/i;
 const absoluteUserPath = /(?:[A-Za-z]:[\\/]|\\\\|\/(?:Users|home)\/)/;
+const summaryPattern = /^(?:feature|fix|chore|docs|test|build|security): [a-z0-9]+(?:-[a-z0-9]+){0,11}$/;
+const diagnosticCommandPattern = /^(?:pnpm|npm|node|cargo|git|vitest)(?: [A-Za-z0-9_./:@=+\-]+)*$/i;
+const diagnosticResultPattern = /^(?:(?:\d+\/\d+ )?(?:passed|failed|skipped)|exit \d+)$/i;
+const maximumRecordFieldLength = 160;
 
 function formatSeoulTime(now) {
   const parts = new Intl.DateTimeFormat('en-GB', {
@@ -29,16 +33,40 @@ function relativePaths(files, repositoryRoot) {
     .sort((left, right) => left.localeCompare(right));
 }
 
+function validateRecordText(field, value, isAllowed) {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error(`${field} is required.`);
+  }
+  if (value.length > maximumRecordFieldLength) {
+    throw new Error(`${field} is too long.`);
+  }
+  if (/[\x00-\x1F\x7F]/.test(value)) {
+    throw new Error(`${field} contains a control character.`);
+  }
+  if (absoluteUserPath.test(value)) {
+    throw new Error(`${field} contains an absolute path.`);
+  }
+  if (secretPattern.test(value) || bearerTokenPattern.test(value)) {
+    throw new Error(`${field} contains a secret.`);
+  }
+  if (!isAllowed(value)) {
+    throw new Error(`${field} must contain approved record metadata.`);
+  }
+  return value;
+}
+
+function isDiagnosticMetadata(value) {
+  return value.split(/\s*(?:&&|;)\s*/).every((part) =>
+    diagnosticCommandPattern.test(part) || diagnosticResultPattern.test(part),
+  );
+}
+
 export function buildRecordEntry({ summary, tests, files, repositoryRoot = process.cwd(), now = new Date() }) {
-  if (absoluteUserPath.test(summary ?? '')) {
-    throw new Error('Summary contains an absolute path.');
-  }
-  if (secretPattern.test(summary ?? '') || bearerTokenPattern.test(summary ?? '')) {
-    throw new Error('Summary contains a secret.');
-  }
+  const safeSummary = validateRecordText('Summary', summary, (value) => summaryPattern.test(value));
+  const safeTests = validateRecordText('Tests', tests, isDiagnosticMetadata);
 
   const changedFiles = relativePaths(files, repositoryRoot);
-  return `\n[${formatSeoulTime(now)} Asia/Seoul] 변경 기록\n- 요약: ${summary}\n- 변경 파일: ${changedFiles.join(', ')}\n- 검증: ${tests}\n`;
+  return `\n[${formatSeoulTime(now)} Asia/Seoul] 변경 기록\n- 요약: ${safeSummary}\n- 변경 파일: ${changedFiles.join(', ')}\n- 검증: ${safeTests}\n`;
 }
 
 function gitOutput(repositoryRoot, args) {

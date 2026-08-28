@@ -79,3 +79,8 @@ SmartCAT Translate 프로젝트 기록
 - 요약: 제품 변경 기록 자동 검사와 CI를 추가함
 - 변경 파일: .github/workflows/ci.yml, package.json, PROJECT_LOG.txt, RECORDING_POLICY.txt, scripts/check-records.mjs, scripts/check-records.test.mjs, scripts/record-change.mjs, scripts/record-change.test.mjs, vite.config.ts
 - 검증: pnpm records:test && pnpm test && cargo test --manifest-path src-tauri/Cargo.toml
+
+[2026-08-28 11:54 Asia/Seoul] 변경 기록
+- 요약: fix: record-enforcement
+- 변경 파일: .github/workflows/ci.yml, RECORDING_POLICY.txt, scripts/check-records.mjs, scripts/check-records.test.mjs, scripts/record-change.mjs, scripts/record-change.test.mjs
+- 검증: pnpm records:test && 16/16 passed
