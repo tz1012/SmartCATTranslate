@@ -191,6 +191,13 @@ impl LiveRuntimeSession for FakeSession {
             Ok(())
         }
     }
+
+    fn abort(&mut self) {
+        self.events
+            .lock()
+            .unwrap()
+            .push(format!("abort:{}", self.path));
+    }
 }
 
 #[derive(Default)]

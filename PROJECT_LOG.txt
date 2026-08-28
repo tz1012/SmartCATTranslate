@@ -149,3 +149,20 @@ SmartCAT Translate 프로젝트 기록
 - GREEN: `cargo test --manifest-path src-tauri/Cargo.toml --test codex_transport` 통과 — 9/9.
 - 전체 Rust 회귀 검사 통과 — 라이브러리 22, 기존 런타임 5, 새 전송 계층 9로 총 36/36.
 - 일반 라이브러리 `cargo check`와 Rust 서식 검사 통과.
+
+[2026-08-28 14:32 Asia/Seoul] Task 5 검토 수정 — 종료 상태와 세션 수명주기
+
+수정
+- 프로세스가 먼저 종료된 뒤 구독하는 화면도 현재 `runtime/exited` 상태를 즉시 한 번 받을 수 있도록 종료 상태 재생 경로를 추가함. 종료와 구독의 경합에서도 공유 방송 또는 전용 재생 중 하나만 반환함.
+- 명시적 종료 시 외부 세션 정리를 기다리기 전에 모든 대기 요청을 `ProcessExited`로 해제하도록 순서를 변경함.
+- 단일 writer가 이미 `write_all` 또는 `flush`에 진입했더라도 종료 신호가 오면 해당 I/O 미래를 취소하고 writer를 떨어뜨리도록 변경함.
+- `LiveRuntimeSession`에 동기·비차단·멱등 `abort` 계약을 필수화하고, `OwnedLiveRuntimeSession` RAII 소유자를 추가함. 채널 인계 실패, 비호환 후보의 정지 실패, 전송 생성 실패와 전송 객체 파괴 경로에서 세션이 남지 않음.
+- 서버가 임의 지정하는 알림 `method`와 `params`를 모두 `Debug` 출력에서 가림.
+
+TDD 및 검증
+- RED: 즉시 EOF 뒤 늦은 구독자가 종료 알림을 받지 못함을 재현함.
+- RED: 지연된 세션 `stop` 동안 대기 요청이 해제되지 않는 문제와 가득 찬 파이프의 진행 중 쓰기 때문에 `shutdown`이 끝나지 않는 문제를 각각 재현함.
+- RED: 필수 `abort` 계약이 없어 채널 인계 실패와 전송 객체 파괴 시 명시적 정리를 검증할 수 없음을 컴파일 실패로 확인함.
+- RED: 토큰·사용자 경로를 포함한 서버 `method`가 알림 디버그 문자열에 노출됨을 재현함.
+- GREEN: `cargo test --manifest-path src-tauri/Cargo.toml --test codex_transport` 통과 — 15/15.
+- 전체 Rust 회귀 검사와 일반 라이브러리 검사 통과 — 라이브러리 22, 런타임 5, 전송 15로 총 42/42.

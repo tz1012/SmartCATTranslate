@@ -39,7 +39,7 @@ impl fmt::Debug for AppServerNotification {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("AppServerNotification")
-            .field("method", &self.method)
+            .field("method", &"<redacted>")
             .field("params", &"<redacted>")
             .finish()
     }

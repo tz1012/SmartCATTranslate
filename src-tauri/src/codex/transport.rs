@@ -9,7 +9,7 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use crate::codex::protocol::{AppServerNotification, JsonRpcRequest, JsonRpcResponse};
-use crate::codex::runtime::{LiveRuntimeSession, ResolvedRuntime};
+use crate::codex::runtime::{OwnedLiveRuntimeSession, ResolvedRuntime};
 
 const WRITER_CAPACITY: usize = 64;
 const EVENT_CAPACITY: usize = 64;
@@ -33,7 +33,7 @@ pub struct JsonlAppServerTransport {
     pending: PendingMap,
     exited: Arc<AtomicBool>,
     shutdown: watch::Sender<bool>,
-    session: tokio::sync::Mutex<Option<Box<dyn LiveRuntimeSession>>>,
+    session: tokio::sync::Mutex<Option<OwnedLiveRuntimeSession>>,
     tasks: tokio::sync::Mutex<Vec<JoinHandle<()>>>,
 }
 
@@ -79,6 +79,12 @@ impl JsonlAppServerTransport {
 
     pub async fn shutdown(&self) -> Result<(), TransportError> {
         let _ = self.shutdown.send(true);
+        SharedExitState::new(
+            self.pending.clone(),
+            self.events.clone(),
+            self.exited.clone(),
+        )
+        .exit_once();
         let stop_result = {
             let mut session = self.session.lock().await;
             match session.take() {
@@ -86,12 +92,6 @@ impl JsonlAppServerTransport {
                 None => Ok(()),
             }
         };
-        SharedExitState::new(
-            self.pending.clone(),
-            self.events.clone(),
-            self.exited.clone(),
-        )
-        .exit_once();
 
         let tasks = {
             let mut tasks = self.tasks.lock().await;
@@ -153,7 +153,14 @@ impl AppServerTransport for JsonlAppServerTransport {
     }
 
     fn subscribe(&self) -> broadcast::Receiver<AppServerNotification> {
-        self.events.subscribe()
+        let receiver = self.events.subscribe();
+        if self.exited.load(Ordering::Acquire) {
+            let (replay, receiver) = broadcast::channel(1);
+            let _ = replay.send(runtime_exited_notification());
+            receiver
+        } else {
+            receiver
+        }
     }
 }
 
@@ -228,10 +235,14 @@ impl SharedExitState {
         for (_, sender) in pending {
             let _ = sender.send(Err(TransportError::ProcessExited));
         }
-        let _ = self.events.send(AppServerNotification {
-            method: "runtime/exited".to_owned(),
-            params: json!({ "reason": "process_exited" }),
-        });
+        let _ = self.events.send(runtime_exited_notification());
+    }
+}
+
+fn runtime_exited_notification() -> AppServerNotification {
+    AppServerNotification {
+        method: "runtime/exited".to_owned(),
+        params: json!({ "reason": "process_exited" }),
     }
 }
 
@@ -244,6 +255,7 @@ async fn writer_loop(
 ) {
     loop {
         tokio::select! {
+            biased;
             changed = shutdown.changed() => {
                 if changed.is_err() || *shutdown.borrow() {
                     break;
@@ -262,7 +274,20 @@ async fn writer_loop(
                     }
                 };
                 frame.push(b'\n');
-                if writer.write_all(&frame).await.is_err() || writer.flush().await.is_err() {
+                let write_result = tokio::select! {
+                    biased;
+                    changed = shutdown.changed() => {
+                        if changed.is_err() || *shutdown.borrow() {
+                            return;
+                        }
+                        continue;
+                    }
+                    result = async {
+                        writer.write_all(&frame).await?;
+                        writer.flush().await
+                    } => result,
+                };
+                if write_result.is_err() {
                     exit.exit_once();
                     let _ = shutdown_signal.send(true);
                     break;
@@ -270,7 +295,6 @@ async fn writer_loop(
             }
         }
     }
-    let _ = writer.shutdown().await;
 }
 
 async fn reader_loop(

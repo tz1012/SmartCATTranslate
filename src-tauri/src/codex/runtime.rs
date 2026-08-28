@@ -100,8 +100,64 @@ pub trait LiveRuntimeSession: Send {
     async fn initialize(&mut self) -> Result<String, RuntimeError>;
     async fn stop(&mut self) -> Result<(), RuntimeError>;
 
+    /// Immediately prevents the runtime from outliving its owner.
+    /// Implementations must be idempotent, synchronous, and non-blocking.
+    fn abort(&mut self);
+
     fn take_transport_channel(&mut self) -> Result<LiveRuntimeChannel, RuntimeError> {
         Err(RuntimeError::TransportUnavailable)
+    }
+}
+
+pub struct OwnedLiveRuntimeSession {
+    session: Option<Box<dyn LiveRuntimeSession>>,
+}
+
+impl OwnedLiveRuntimeSession {
+    fn new(session: Box<dyn LiveRuntimeSession>) -> Self {
+        Self {
+            session: Some(session),
+        }
+    }
+
+    fn session_id(&self) -> &str {
+        self.session
+            .as_ref()
+            .expect("owned live runtime session is present")
+            .session_id()
+    }
+
+    fn take_transport_channel(&mut self) -> Result<LiveRuntimeChannel, RuntimeError> {
+        self.session
+            .as_mut()
+            .ok_or(RuntimeError::TransportUnavailable)?
+            .take_transport_channel()
+    }
+
+    pub async fn stop(&mut self) -> Result<(), RuntimeError> {
+        let result = match self.session.as_mut() {
+            Some(session) => session.stop().await,
+            None => return Ok(()),
+        };
+        if result.is_err() {
+            if let Some(session) = self.session.as_mut() {
+                session.abort();
+            }
+        }
+        self.session.take();
+        result
+    }
+
+    pub fn abort(&mut self) {
+        if let Some(mut session) = self.session.take() {
+            session.abort();
+        }
+    }
+}
+
+impl Drop for OwnedLiveRuntimeSession {
+    fn drop(&mut self) {
+        self.abort();
     }
 }
 
@@ -116,7 +172,7 @@ pub trait RuntimeLauncher: Send + Sync {
 pub struct ResolvedRuntime {
     source: RuntimeSource,
     version: Version,
-    session: Box<dyn LiveRuntimeSession>,
+    session: OwnedLiveRuntimeSession,
 }
 
 impl ResolvedRuntime {
@@ -132,16 +188,11 @@ impl ResolvedRuntime {
         self.session.session_id()
     }
 
-    pub fn into_session(self) -> Box<dyn LiveRuntimeSession> {
-        self.session
-    }
-
     pub fn into_live_transport(
-        self,
-    ) -> Result<(Box<dyn LiveRuntimeSession>, LiveRuntimeChannel), RuntimeError> {
-        let mut session = self.session;
-        let channel = session.take_transport_channel()?;
-        Ok((session, channel))
+        mut self,
+    ) -> Result<(OwnedLiveRuntimeSession, LiveRuntimeChannel), RuntimeError> {
+        let channel = self.session.take_transport_channel()?;
+        Ok((self.session, channel))
     }
 }
 
@@ -247,12 +298,13 @@ impl RuntimeResolver {
             return Ok(Some(ResolvedRuntime {
                 source: candidate.source,
                 version: candidate.version,
-                session,
+                session: OwnedLiveRuntimeSession::new(session),
             }));
         }
 
         let failure = result.err().unwrap_or(RuntimeError::ProtocolIncompatible);
         if session.stop().await.is_err() {
+            session.abort();
             self.failure_recorder.record(RuntimeFailureRecord {
                 source: candidate.source,
                 version: candidate.version.to_string(),
@@ -603,6 +655,8 @@ mod security_tests {
         async fn stop(&mut self) -> Result<(), RuntimeError> {
             Ok(())
         }
+
+        fn abort(&mut self) {}
     }
 
     struct NoopRecorder;
