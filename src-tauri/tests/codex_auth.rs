@@ -359,6 +359,27 @@ async fn cancel_failure_retains_the_pending_login_for_retry() {
 }
 
 #[tokio::test]
+async fn successful_cancel_emits_only_a_sanitized_pending_state_change() {
+    let transport = FakeTransport::new(vec![
+        Ok(login_response(
+            "LOGIN-SECRET",
+            "https://chatgpt.com/auth/start?opaque=TOKEN-SECRET",
+        )),
+        Ok(json!({})),
+    ]);
+    let sink = Arc::new(FakeSink::default());
+    let service = service(transport, sink.clone());
+    service.start_chatgpt_login().await.unwrap();
+
+    assert!(service.cancel_login().await.unwrap());
+
+    assert_eq!(sink.snapshot(), vec![AccountChangeReason::LoginCancelled]);
+    let rendered = format!("{:?}", sink.snapshot());
+    assert!(!rendered.contains("LOGIN-SECRET"));
+    assert!(!rendered.contains("TOKEN-SECRET"));
+}
+
+#[tokio::test]
 async fn a_second_start_is_rejected_without_replacing_the_pending_login() {
     let transport = FakeTransport::new(vec![Ok(login_response(
         "FIRST-ID",
@@ -584,7 +605,8 @@ async fn opener_failure_is_sanitized_and_cancels_the_server_login() {
         )),
         Ok(json!({})),
     ]);
-    let service = service(transport.clone(), Arc::new(FakeSink::default()));
+    let sink = Arc::new(FakeSink::default());
+    let service = service(transport.clone(), sink.clone());
     let opener = FakeOpener {
         fail: true,
         opened: Mutex::new(0),
@@ -595,6 +617,7 @@ async fn opener_failure_is_sanitized_and_cancels_the_server_login() {
 
     assert_eq!(error, AuthError::BrowserOpenFailed);
     assert!(!service.has_pending_login().await);
+    assert!(sink.snapshot().is_empty());
     assert_eq!(*opener.opened.lock().unwrap(), 1);
     for secret in ["LOGIN-SECRET", "TOKEN-SECRET", "chatgpt.com/auth"] {
         assert!(!rendered.contains(secret));

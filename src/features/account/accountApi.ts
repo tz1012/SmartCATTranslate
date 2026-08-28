@@ -10,7 +10,11 @@ export type AccountSnapshot = {
   loginPending: boolean;
 };
 
-export type AccountChangeReason = 'loginSucceeded' | 'loginFailed' | 'accountUpdated';
+export type AccountChangeReason =
+  | 'loginSucceeded'
+  | 'loginFailed'
+  | 'loginCancelled'
+  | 'accountUpdated';
 
 export type RateLimitState = {
   primaryUsedPercent: number | null;

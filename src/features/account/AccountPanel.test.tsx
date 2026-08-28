@@ -12,7 +12,11 @@ const invokeMock = vi.mocked(invoke);
 const listenMock = vi.mocked(listen);
 
 describe('AccountPanel', () => {
-  let accountChanged: ((reason?: 'loginSucceeded' | 'loginFailed' | 'accountUpdated') => void) | undefined;
+  let accountChanged:
+    | ((
+        reason?: 'loginSucceeded' | 'loginFailed' | 'loginCancelled' | 'accountUpdated'
+      ) => void)
+    | undefined;
   const unlisten = vi.fn();
 
   beforeEach(() => {
@@ -195,6 +199,88 @@ describe('AccountPanel', () => {
     await act(async () => finishOpening({ state: 'browserOpened' }));
 
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('cancel_chatgpt_login'));
+  });
+
+  it('lets completion before the start response win without leaving a pending ref to cancel', async () => {
+    let finishOpening!: (value: { state: 'browserOpened' }) => void;
+    const opening = new Promise<{ state: 'browserOpened' }>((resolve) => {
+      finishOpening = resolve;
+    });
+    invokeMock
+      .mockResolvedValueOnce({ account: { state: 'signedOut' }, loginPending: false })
+      .mockReturnValueOnce(opening)
+      .mockResolvedValueOnce({
+        account: { state: 'signedIn', emailHint: null, plan: 'plus' },
+        loginPending: false,
+      })
+      .mockResolvedValueOnce({
+        primaryUsedPercent: null,
+        primaryResetsAt: null,
+        secondaryUsedPercent: null,
+        secondaryResetsAt: null,
+      });
+
+    const panel = render(<AccountPanel locale="en" />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Sign in with ChatGPT' }));
+    await waitFor(() => expect(accountChanged).toBeDefined());
+    accountChanged?.('loginSucceeded');
+    expect(await screen.findByText('Connected')).toBeVisible();
+
+    await act(async () => finishOpening({ state: 'browserOpened' }));
+    panel.unmount();
+
+    expect(invokeMock).not.toHaveBeenCalledWith('cancel_chatgpt_login');
+  });
+
+  it('keeps a failed unmount cancellation recoverable after remount', async () => {
+    let failCancellation!: (reason: string) => void;
+    const cancellation = new Promise<never>((_resolve, reject) => {
+      failCancellation = reject;
+    });
+    invokeMock
+      .mockResolvedValueOnce({ account: { state: 'signedOut' }, loginPending: false })
+      .mockResolvedValueOnce({ state: 'browserOpened' })
+      .mockReturnValueOnce(cancellation)
+      .mockResolvedValueOnce({ account: { state: 'signedOut' }, loginPending: true });
+
+    const firstPanel = render(<AccountPanel locale="en" />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Sign in with ChatGPT' }));
+    await screen.findByText('Complete sign-in in your browser.');
+    firstPanel.unmount();
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('cancel_chatgpt_login'));
+
+    const remountedPanel = render(<AccountPanel locale="en" />);
+    expect(await screen.findByText('Complete sign-in in your browser.')).toBeVisible();
+    await act(async () => failCancellation('account_transport_failed'));
+
+    expect(screen.getByRole('button', { name: 'Cancel sign-in' })).toBeVisible();
+    remountedPanel.unmount();
+  });
+
+  it('corrects a remount that read pending before unmount cancellation completed', async () => {
+    let finishCancellation!: (value: { state: 'cancelled' }) => void;
+    const cancellation = new Promise<{ state: 'cancelled' }>((resolve) => {
+      finishCancellation = resolve;
+    });
+    invokeMock
+      .mockResolvedValueOnce({ account: { state: 'signedOut' }, loginPending: false })
+      .mockResolvedValueOnce({ state: 'browserOpened' })
+      .mockReturnValueOnce(cancellation)
+      .mockResolvedValueOnce({ account: { state: 'signedOut' }, loginPending: true })
+      .mockResolvedValueOnce({ account: { state: 'signedOut' }, loginPending: false });
+
+    const firstPanel = render(<AccountPanel locale="en" />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Sign in with ChatGPT' }));
+    await screen.findByText('Complete sign-in in your browser.');
+    firstPanel.unmount();
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('cancel_chatgpt_login'));
+
+    render(<AccountPanel locale="en" />);
+    expect(await screen.findByText('Complete sign-in in your browser.')).toBeVisible();
+    await act(async () => finishCancellation({ state: 'cancelled' }));
+    accountChanged?.('loginCancelled');
+
+    expect(await screen.findByRole('button', { name: 'Sign in with ChatGPT' })).toBeVisible();
   });
 
   it('refreshes instead of forcing signed out when cancellation reports not pending after success', async () => {

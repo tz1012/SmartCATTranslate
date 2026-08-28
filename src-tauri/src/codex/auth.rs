@@ -57,6 +57,7 @@ pub struct RateLimitState {
 pub enum AccountChangeReason {
     LoginSucceeded,
     LoginFailed,
+    LoginCancelled,
     AccountUpdated,
 }
 
@@ -109,6 +110,7 @@ impl fmt::Debug for PendingLoginId {
 
 pub struct AccountService {
     transport: Arc<dyn AppServerTransport>,
+    event_sink: Arc<dyn AccountEventSink>,
     pending_login: Arc<Mutex<Option<PendingLoginId>>>,
     notification_task: JoinHandle<()>,
 }
@@ -123,10 +125,11 @@ impl AccountService {
         let notification_task = tokio::spawn(monitor_notifications(
             notifications,
             pending_login.clone(),
-            event_sink,
+            event_sink.clone(),
         ));
         Self {
             transport,
+            event_sink,
             pending_login,
             notification_task,
         }
@@ -217,6 +220,14 @@ impl AccountService {
     }
 
     pub async fn cancel_login(&self) -> Result<bool, AuthError> {
+        self.cancel_login_with_event(true).await
+    }
+
+    async fn cancel_login_after_opener_failure(&self) -> Result<bool, AuthError> {
+        self.cancel_login_with_event(false).await
+    }
+
+    async fn cancel_login_with_event(&self, emit_change: bool) -> Result<bool, AuthError> {
         let mut pending = self.pending_login.lock().await;
         let Some(login) = pending.as_ref() else {
             return Ok(false);
@@ -228,6 +239,11 @@ impl AccountService {
             )
             .await?;
         *pending = None;
+        drop(pending);
+        if emit_change {
+            self.event_sink
+                .account_state_changed(AccountChangeReason::LoginCancelled);
+        }
         Ok(true)
     }
 
@@ -249,7 +265,7 @@ pub async fn start_login_and_open(
     let start = service.start_chatgpt_login().await?;
     validate_browser_login_url(&start.auth_url)?;
     if opener.open(&start.auth_url).is_err() {
-        return match service.cancel_login().await {
+        return match service.cancel_login_after_opener_failure().await {
             Ok(_) => Err(AuthError::BrowserOpenFailed),
             Err(_) => Err(AuthError::BrowserOpenFailedLoginPending),
         };

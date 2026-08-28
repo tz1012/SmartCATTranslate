@@ -95,6 +95,7 @@ export function AccountPanel({ locale = 'ko' }: { locale?: AccountPanelLocale })
   const [error, setError] = useState<string | null>(null);
   const pendingRef = useRef(false);
   const openingRef = useRef(false);
+  const openingGenerationRef = useRef<number | null>(null);
   const cancellationRequestedRef = useRef(false);
   const cancellingRef = useRef(false);
   const mountedRef = useRef(false);
@@ -163,7 +164,6 @@ export function AccountPanel({ locale = 'ko' }: { locale?: AccountPanelLocale })
     let disposed = false;
     let unlisten: (() => void) | undefined;
     mountedRef.current = true;
-    void refreshAccount();
     try {
       void onAccountStateChanged((reason) => {
         void refreshAccount(reason);
@@ -173,11 +173,15 @@ export function AccountPanel({ locale = 'ko' }: { locale?: AccountPanelLocale })
             stop();
           } else {
             unlisten = stop;
+            void refreshAccount();
           }
         })
-        .catch(() => undefined);
+        .catch(() => {
+          if (!disposed) void refreshAccount();
+        });
     } catch {
       // The browser test shell has no Tauri event bridge.
+      void refreshAccount();
     }
     return () => {
       disposed = true;
@@ -195,33 +199,40 @@ export function AccountPanel({ locale = 'ko' }: { locale?: AccountPanelLocale })
   const beginLogin = async () => {
     const loginGeneration = ++refreshGenerationRef.current;
     openingRef.current = true;
+    openingGenerationRef.current = loginGeneration;
     cancellationRequestedRef.current = false;
     setPhase('opening');
     setError(null);
     try {
       await startChatgptLogin();
+      if (openingGenerationRef.current !== loginGeneration) return;
+      openingGenerationRef.current = null;
       openingRef.current = false;
-      pendingRef.current = true;
       if (!mountedRef.current || cancellationRequestedRef.current) {
-        await performCancellation(false);
+        await performCancellation(mountedRef.current);
         return;
       }
       if (loginGeneration !== refreshGenerationRef.current) return;
+      pendingRef.current = true;
       setPhase('pending');
     } catch (reason) {
+      if (openingGenerationRef.current !== loginGeneration) return;
+      openingGenerationRef.current = null;
       openingRef.current = false;
       if (
         reason === 'browser_open_failed_login_pending' ||
         reason === 'login_cleanup_pending'
       ) {
-        pendingRef.current = true;
         if (!mountedRef.current || cancellationRequestedRef.current) {
-          await performCancellation(false);
+          await performCancellation(mountedRef.current);
           return;
         }
+        if (loginGeneration !== refreshGenerationRef.current) return;
+        pendingRef.current = true;
         setPhase('pending');
         setError(labels.cleanupError);
       } else {
+        if (loginGeneration !== refreshGenerationRef.current) return;
         pendingRef.current = false;
         if (!mountedRef.current) return;
         setPhase('signedOut');
