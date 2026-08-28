@@ -94,3 +94,8 @@ SmartCAT Translate 프로젝트 기록
 - 요약: chore: format-contracts
 - 변경 파일: src-tauri/src/core/audit.rs
 - 검증: cargo test --manifest-path src-tauri/Cargo.toml && 9/9 passed
+
+[2026-08-28 12:25 Asia/Seoul] 변경 기록
+- 요약: fix: secure-audit-events
+- 변경 파일: src-tauri/src/core/audit.rs
+- 검증: cargo test --manifest-path src-tauri/Cargo.toml && 13/13 passed
