@@ -7,6 +7,9 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "icons:generate": "tauri icon src-tauri/icons/icon.svg",
+    "records:add": "node scripts/record-change.mjs",
+    "records:check": "node scripts/check-records.mjs",
+    "records:test": "node --test scripts/check-records.test.mjs scripts/record-change.test.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "tauri": "tauri"

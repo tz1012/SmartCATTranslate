@@ -74,3 +74,8 @@ SmartCAT Translate 프로젝트 기록
 - 추적되는 SVG 원본에서 Tauri 아이콘 명령으로 Windows ICO와 macOS ICNS를 포함한 플랫폼 아이콘을 생성함.
 - 한국어 기본 셸과 별도로 영어 텍스트 번역 작업 영역 및 접근성 레이블 렌더링 경로를 추가함.
 - `pnpm test` 2/2, `pnpm build`, pnpm 10.17.1 동결 설치, Visual Studio Build Tools 환경의 `pnpm tauri build --debug` 및 제한된 `pnpm tauri dev` 시작 검증을 실행함. 개발 검증에서 localhost:1420 응답과 `smartcat-translate.exe` 실행을 확인함.
+
+[2026-08-28 11:33 Asia/Seoul] 변경 기록
+- 요약: 제품 변경 기록 자동 검사와 CI를 추가함
+- 변경 파일: .github/workflows/ci.yml, package.json, PROJECT_LOG.txt, RECORDING_POLICY.txt, scripts/check-records.mjs, scripts/check-records.test.mjs, scripts/record-change.mjs, scripts/record-change.test.mjs, vite.config.ts
+- 검증: pnpm records:test && pnpm test && cargo test --manifest-path src-tauri/Cargo.toml

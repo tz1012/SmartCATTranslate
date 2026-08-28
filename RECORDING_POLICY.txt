@@ -19,8 +19,9 @@ SmartCAT Translate 자동 기록 정책
 
 자동화 원칙
 - 설계 단계에서는 작업 담당자가 승인 직후 기록 파일을 함께 갱신한다.
-- 구현 단계에서는 변경 기록 스크립트와 커밋 전 검사를 추가한다.
-- CI 빌드는 빌드 대상, 버전, 테스트 결과, 산출물 정보를 기록한다.
+- 구현 단계에서는 `pnpm records:add -- --summary "..." --tests "..." --files-from-git`으로 변경 파일을 자동 수집해 PROJECT_LOG.txt에 기록한다.
+- 커밋 전에는 `pnpm records:check`으로 제품 변경에 PROJECT_LOG.txt, DECISIONS.txt 또는 CHANGELOG.md 기록이 함께 있는지 검사한다.
+- CI는 같은 기록 검사와 기록 스크립트 테스트를 실행해 누락된 변경 기록을 실패 처리한다.
 - 기록 누락이 발견되면 배포 검사를 실패 처리한다.
 
 기록 금지 정보
