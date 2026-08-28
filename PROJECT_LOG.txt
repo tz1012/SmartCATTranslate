@@ -67,3 +67,10 @@ SmartCAT Translate 프로젝트 기록
 - Tauri Windows 리소스에 필요한 기본 `icons/icon.ico`를 추가함.
 - worktree 전용 Rust 1.98.0/Cargo 1.98.0을 Visual Studio Build Tools 2022 환경에서 실행하고 `cargo test --manifest-path src-tauri/Cargo.toml`을 통과함 — Rust 테스트 1개 통과. MSVC가 유니코드 worktree 경로를 안정적으로 처리하도록 같은 로컬 런타임을 가리키는 임시 ASCII 경로와 sysroot/target을 테스트 실행 중에만 사용함.
 - `COREPACK_HOME`을 worktree 내부로 제한해 Corepack의 pnpm 10.17.1 실행과 동결 잠금 파일 설치를 확인함. 일반 검증은 호스트 정책 런타임의 pnpm 11.19.0으로 `pnpm test` 1/1 통과 및 `pnpm build` 통과.
+
+[2026-08-28] Task 1 수정 라운드 1
+
+- Vite 개발 서버를 고정 포트 1420으로 설정하고, Tauri의 `beforeDevCommand`와 `beforeBuildCommand`를 각각 `pnpm dev`, `pnpm build`로 연결함.
+- 추적되는 SVG 원본에서 Tauri 아이콘 명령으로 Windows ICO와 macOS ICNS를 포함한 플랫폼 아이콘을 생성함.
+- 한국어 기본 셸과 별도로 영어 텍스트 번역 작업 영역 및 접근성 레이블 렌더링 경로를 추가함.
+- `pnpm test` 2/2, `pnpm build`, pnpm 10.17.1 동결 설치, Visual Studio Build Tools 환경의 `pnpm tauri build --debug` 및 제한된 `pnpm tauri dev` 시작 검증을 실행함. 개발 검증에서 localhost:1420 응답과 `smartcat-translate.exe` 실행을 확인함.

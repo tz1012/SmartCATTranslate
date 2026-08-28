@@ -1,17 +1,34 @@
-export function App() {
+export type AppLocale = 'ko' | 'en';
+
+const copy = {
+  ko: {
+    workspace: '텍스트 번역',
+    source: '원문',
+    translation: '번역문',
+  },
+  en: {
+    workspace: 'Text translation',
+    source: 'Source text',
+    translation: 'Translation',
+  },
+} as const;
+
+export function App({ locale = 'ko' }: { locale?: AppLocale }) {
+  const labels = copy[locale];
+
   return (
     <main>
       <header>
         <h1>SmartCAT Translate</h1>
       </header>
-      <section className="translation-grid" aria-label="텍스트 번역">
+      <section className="translation-grid" aria-label={labels.workspace}>
         <label>
-          원문
-          <textarea aria-label="원문" />
+          {labels.source}
+          <textarea aria-label={labels.source} />
         </label>
         <label>
-          번역문
-          <textarea aria-label="번역문" readOnly />
+          {labels.translation}
+          <textarea aria-label={labels.translation} readOnly />
         </label>
       </section>
     </main>
