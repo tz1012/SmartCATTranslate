@@ -33,6 +33,8 @@ pub struct AppServerNotification {
     pub method: String,
     #[serde(default)]
     pub params: Value,
+    #[serde(default)]
+    pub server_request: bool,
 }
 
 impl fmt::Debug for AppServerNotification {

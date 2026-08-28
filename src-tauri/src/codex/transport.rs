@@ -243,6 +243,7 @@ fn runtime_exited_notification() -> AppServerNotification {
     AppServerNotification {
         method: "runtime/exited".to_owned(),
         params: json!({ "reason": "process_exited" }),
+        server_request: false,
     }
 }
 
@@ -346,6 +347,14 @@ fn route_inbound(frame: &[u8], exit: &SharedExitState, shutdown_signal: &watch::
         let Some(id) = object.get("id").and_then(Value::as_u64) else {
             return;
         };
+        if let Some(method) = object.get("method").and_then(Value::as_str) {
+            let _ = exit.events.send(AppServerNotification {
+                method: method.to_owned(),
+                params: object.get("params").cloned().unwrap_or(Value::Null),
+                server_request: true,
+            });
+            return;
+        }
         let sender = lock_pending(&exit.pending).remove(&id);
         let Some(sender) = sender else {
             return;
@@ -378,6 +387,7 @@ fn route_inbound(frame: &[u8], exit: &SharedExitState, shutdown_signal: &watch::
     let _ = exit.events.send(AppServerNotification {
         method: method.to_owned(),
         params: object.get("params").cloned().unwrap_or(Value::Null),
+        server_request: false,
     });
 }
 

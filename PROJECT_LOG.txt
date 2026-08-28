@@ -217,3 +217,27 @@ TDD 및 검증
 - 요약: fix: account-pending-races
 - 변경 파일: PROJECT_LOG.txt, src-tauri/src/codex/auth.rs, src-tauri/tests/codex_auth.rs, src/features/account/AccountPanel.test.tsx, src/features/account/AccountPanel.tsx, src/features/account/accountApi.ts
 - 검증: pnpm test && 17/17 passed && cargo test && 70/70 passed
+
+[2026-08-28] Task 7 — 제한된 Codex 텍스트 번역 코디네이터
+
+구현
+- 앱 소유 표시와 비어 있음이 확인된 표준 작업공간에서 내용 없는 기반 스레드를 한 번 만들고, 각 번역은 `ephemeral: true` 임시 포크에서만 원문을 처리하도록 구현함.
+- `approvalPolicy: never`, 플랫폼 기본 읽기 범위와 앱의 빈 작업공간만 허용하는 제한된 읽기 전용 샌드박스, 빈 `mcp_servers` App Server 구성을 적용함. 계정 자격 증명 저장 위치는 변경하지 않음.
+- 출력 스키마를 추가 속성 없는 `translation` 문자열 하나로 고정하고, JSON 문자열 이스케이프와 유니코드 쌍을 경계 청크에서도 안전하게 스트리밍함. 최종 구조화 메시지를 권위 있는 결과로 검증해 델타와 중복하지 않음.
+- 서버 요청, 명령·프로세스·파일 변경·MCP·웹·동적 도구·승인·협업·하위 에이전트 계열을 실패 폐쇄로 거부하고 해당 턴을 중단함. 요청/응답 ID가 충돌한 서버 요청도 응답으로 오인하지 않음.
+- 이벤트를 요청 전에 구독하고 스레드 ID와 턴 ID가 모두 일치하는 이벤트만 수락함. 입력·출력 크기, 제한시간, 취소, 프로세스 종료, 수신 지연, 잘못된 응답과 동시 작업을 제한함.
+- 번역 명령은 UUID를 즉시 반환하고 요청 창에만 델타·완료·안전한 실패 이벤트를 보냄. 창 종료는 그 창의 작업만 취소하고 앱 종료는 모든 작업, 기반 스레드, 전송 계층 순으로 정리함.
+- 정리 요청을 독립된 제한시간으로 감싸 응답 없는 중단 요청이 구독 해제를 막지 않게 하고, 실패한 기반 스레드 삭제는 다음 종료 호출에서 재시도할 수 있게 함.
+- 계정 전송 계층과 번역 기반 스레드가 모두 준비된 뒤에만 번역 관리자를 앱 상태에 원자적으로 설치함. 준비 실패와 종료 경합에서는 프로세스와 작업공간을 정리함.
+
+TDD 및 검증
+- RED: 번역 모듈과 App Server 구성이 없어 초기 통합 테스트가 컴파일되지 않음을 확인함. 구조화 출력의 긴 첫 청크, 초기화 후 작업공간 변조, 응답 없는 구독 해제·중단·기반 삭제, 서버 요청 ID 충돌을 각각 실패로 재현함.
+- GREEN: 번역 코디네이터 집중 테스트 20/20, JSONL 전송 테스트 16/16, 운영 부트스트랩 테스트 2/2 통과.
+- 전체 Rust 운영 보조 기능 테스트 91/91, Rust 서식과 일반 검사 통과. Task 7 변경은 Clippy 경고 0개이며 기존 인증 트레잇의 단위 오류 반환 린트만 예외로 두고 전체 대상 검사를 통과함.
+- 전체 프런트엔드 테스트 17/17과 TypeScript/Vite 프로덕션 빌드 통과.
+- 변경 기록 검사 16/16, 런타임 고정 검사 17/17, 공식 Codex 3개 대상 자산·체크섬·아카이브 재검증 통과.
+
+[2026-08-28 23:44 Asia/Seoul] 변경 기록
+- 요약: feature: restricted-codex-translation
+- 변경 파일: CHANGELOG.md, DECISIONS.txt, PROJECT_LOG.txt, src-tauri/Cargo.lock, src-tauri/Cargo.toml, src-tauri/src/app_state.rs, src-tauri/src/codex/bootstrap.rs, src-tauri/src/codex/mod.rs, src-tauri/src/codex/process.rs, src-tauri/src/codex/protocol.rs, src-tauri/src/codex/translation.rs, src-tauri/src/codex/transport.rs, src-tauri/src/commands/mod.rs, src-tauri/src/commands/translation.rs, src-tauri/src/core/errors.rs, src-tauri/src/lib.rs, src-tauri/test-support/fake_codex_process.rs, src-tauri/tests/codex_auth.rs, src-tauri/tests/codex_bootstrap.rs, src-tauri/tests/codex_transport.rs, src-tauri/tests/translation_coordinator.rs
+- 검증: pnpm test && 17/17 passed && cargo test && 91/91 passed

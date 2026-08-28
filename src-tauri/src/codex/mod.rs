@@ -5,4 +5,5 @@ pub mod manifest;
 pub mod process;
 pub mod protocol;
 pub mod runtime;
+pub mod translation;
 pub mod transport;

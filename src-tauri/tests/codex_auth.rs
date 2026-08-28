@@ -35,6 +35,7 @@ impl AppServerTransport for ImmediateCompletionTransport {
         let _ = self.notifications.send(AppServerNotification {
             method: "account/login/completed".to_owned(),
             params: json!({ "loginId": "RACING-ID", "success": true, "error": null }),
+            server_request: false,
         });
         tokio::task::yield_now().await;
         Ok(login_response(
@@ -62,6 +63,7 @@ impl FakeTransport {
         let _ = self.notifications.send(AppServerNotification {
             method: method.to_owned(),
             params,
+            server_request: false,
         });
     }
 

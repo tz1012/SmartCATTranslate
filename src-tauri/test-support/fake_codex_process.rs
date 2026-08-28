@@ -2,7 +2,7 @@ use std::io::{self, BufRead, Write};
 
 fn main() {
     let arguments: Vec<_> = std::env::args().skip(1).collect();
-    if arguments != ["app-server", "--listen", "stdio://"] {
+    if arguments != ["-c", "mcp_servers={}", "app-server", "--listen", "stdio://"] {
         std::process::exit(10);
     }
     if std::fs::read_dir(std::env::current_dir().expect("current directory"))
@@ -46,6 +46,10 @@ fn main() {
         if line.contains("\"method\":\"account/read\"") {
             write_line(&format!(
                 r#"{{"id":{id},"result":{{"account":{{"type":"chatgpt","email":"person@example.com","planType":"plus"}},"requiresOpenaiAuth":true}}}}"#,
+            ));
+        } else if line.contains("\"method\":\"thread/start\"") {
+            write_line(&format!(
+                r#"{{"id":{id},"result":{{"thread":{{"id":"smartcat-base"}}}}}}"#,
             ));
         } else {
             write_line(&format!(r#"{{"id":{id},"result":{{}}}}"#));

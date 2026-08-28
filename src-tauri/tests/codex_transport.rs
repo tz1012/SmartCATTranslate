@@ -148,6 +148,45 @@ async fn an_object_with_an_invalid_id_is_not_forwarded_as_a_notification() {
 }
 
 #[tokio::test]
+async fn forwards_well_formed_server_requests_to_the_security_monitor() {
+    let harness = spawn_fake_transport(|mut reader, mut writer| async move {
+        let request = read_request(&mut reader).await;
+        write_json_line(
+            &mut writer,
+            &json!({
+                "id": request["id"],
+                "method": "item/commandExecution/requestApproval",
+                "params": {
+                    "threadId": "ephemeral",
+                    "turnId": "turn-1",
+                    "itemId": "tool-1"
+                }
+            }),
+        )
+        .await;
+        write_json_line(
+            &mut writer,
+            &json!({ "id": request["id"], "result": { "ok": true } }),
+        )
+        .await;
+    })
+    .await;
+    let mut events = harness.transport.subscribe();
+
+    let response = harness
+        .transport
+        .request("translation/test", json!({}))
+        .await
+        .unwrap();
+    let event = events.recv().await.unwrap();
+
+    assert_eq!(response, json!({ "ok": true }));
+    assert_eq!(event.method, "item/commandExecution/requestApproval");
+    assert!(event.server_request);
+    harness.server_task.await.unwrap();
+}
+
+#[tokio::test]
 async fn accepts_an_explicit_null_json_rpc_result() {
     let harness = spawn_fake_transport(|mut reader, mut writer| async move {
         let request = read_request(&mut reader).await;
@@ -298,6 +337,7 @@ fn notification_debug_redacts_untrusted_method_params_tokens_and_paths() {
     let notification = AppServerNotification {
         method: "Bearer TOP-SECRET C:\\Users\\private".to_owned(),
         params: json!({ "text": "PRIVATE PARAMS" }),
+        server_request: false,
     };
 
     let rendered = format!("{notification:?}");

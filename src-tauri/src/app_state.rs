@@ -5,6 +5,8 @@ use tokio::sync::RwLock;
 
 use crate::codex::auth::AccountService;
 use crate::codex::transport::{JsonlAppServerTransport, TransportError};
+use crate::commands::translation::TranslationJobManager;
+use crate::core::errors::TranslationError;
 
 #[derive(Default)]
 pub struct AppState {
@@ -19,6 +21,7 @@ impl AppState {
             *runtime = Some(InstalledAccountRuntime {
                 service,
                 transport: None,
+                translation_jobs: None,
             });
         }
     }
@@ -27,6 +30,7 @@ impl AppState {
         &self,
         service: Arc<AccountService>,
         transport: Arc<JsonlAppServerTransport>,
+        translation_jobs: Arc<TranslationJobManager>,
     ) -> Result<(), AppStateError> {
         let mut runtime = self.runtime.write().await;
         if self.shutting_down.load(Ordering::Acquire) {
@@ -38,6 +42,7 @@ impl AppState {
         *runtime = Some(InstalledAccountRuntime {
             service,
             transport: Some(transport),
+            translation_jobs: Some(translation_jobs),
         });
         Ok(())
     }
@@ -50,16 +55,44 @@ impl AppState {
             .map(|runtime| runtime.service.clone())
     }
 
-    pub async fn shutdown(&self) -> Result<(), TransportError> {
+    pub async fn translation_jobs(&self) -> Option<Arc<TranslationJobManager>> {
+        self.runtime
+            .read()
+            .await
+            .as_ref()
+            .and_then(|runtime| runtime.translation_jobs.clone())
+    }
+
+    pub async fn cancel_window_translation_jobs(&self, owner: &str) {
+        if let Some(manager) = self.translation_jobs().await {
+            manager.cancel_owner(owner).await;
+        }
+    }
+
+    pub async fn shutdown(&self) -> Result<(), AppShutdownError> {
         self.shutting_down.store(true, Ordering::Release);
         let installed = self.runtime.write().await.take();
         let Some(installed) = installed else {
             return Ok(());
         };
-        drop(installed.service);
-        match installed.transport {
-            Some(transport) => transport.shutdown().await,
+        let translation_result = match installed.translation_jobs {
+            Some(manager) => manager
+                .shutdown()
+                .await
+                .map_err(AppShutdownError::Translation),
             None => Ok(()),
+        };
+        drop(installed.service);
+        let transport_result = match installed.transport {
+            Some(transport) => transport
+                .shutdown()
+                .await
+                .map_err(AppShutdownError::Transport),
+            None => Ok(()),
+        };
+        match (translation_result, transport_result) {
+            (Err(error), _) | (Ok(()), Err(error)) => Err(error),
+            (Ok(()), Ok(())) => Ok(()),
         }
     }
 }
@@ -67,6 +100,7 @@ impl AppState {
 struct InstalledAccountRuntime {
     service: Arc<AccountService>,
     transport: Option<Arc<JsonlAppServerTransport>>,
+    translation_jobs: Option<Arc<TranslationJobManager>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -75,4 +109,12 @@ pub enum AppStateError {
     AlreadyInstalled,
     #[error("the application is shutting down")]
     ShuttingDown,
+}
+
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+pub enum AppShutdownError {
+    #[error("the translation coordinator could not stop")]
+    Translation(TranslationError),
+    #[error("the Codex transport could not stop")]
+    Transport(TransportError),
 }

@@ -36,10 +36,22 @@ pub fn run() {
             commands::account::get_rate_limits,
             commands::account::start_chatgpt_login,
             commands::account::cancel_chatgpt_login,
+            commands::translation::translate_text,
+            commands::translation::cancel_translation,
         ])
         .build(tauri::generate_context!())
         .expect("failed to run SmartCAT Translate");
     app.run(|app_handle, event| {
+        if let tauri::RunEvent::WindowEvent { label, event, .. } = &event {
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                let app_handle = app_handle.clone();
+                let label = label.clone();
+                tauri::async_runtime::spawn(async move {
+                    let state = app_handle.state::<app_state::AppState>();
+                    state.cancel_window_translation_jobs(&label).await;
+                });
+            }
+        }
         if matches!(event, tauri::RunEvent::Exit) {
             let state = app_handle.state::<app_state::AppState>();
             let _ = tauri::async_runtime::block_on(state.shutdown());

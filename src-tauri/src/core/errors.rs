@@ -1,9 +1,28 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, thiserror::Error)]
 #[serde(rename_all = "camelCase")]
 pub enum TranslationError {
+    #[error("the translation request is invalid")]
+    InvalidInput,
+    #[error("the translation workspace is not application-owned and empty")]
+    UnsafeWorkspace,
+    #[error("the translation response violated the expected schema")]
+    InvalidOutput,
+    #[error("the translation exceeded its size limit")]
+    SizeLimitExceeded,
+    #[error("the translation attempted to use a prohibited tool")]
     ToolUseRejected,
+    #[error("the translation runtime is unavailable")]
+    RuntimeUnavailable,
+    #[error("the translation runtime protocol was invalid")]
+    ProtocolViolation,
+    #[error("the translation timed out")]
+    TimedOut,
+    #[error("the translation was cancelled")]
+    Cancelled,
+    #[error("the application is shutting down")]
+    ShuttingDown,
 }
 
 #[cfg(test)]

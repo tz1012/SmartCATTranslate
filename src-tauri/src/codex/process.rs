@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
@@ -16,6 +17,35 @@ use crate::codex::runtime::{
 pub const CODEX_APP_SERVER_PROTOCOL: &str = "codex-app-server-jsonl-v2";
 const MAX_HANDSHAKE_BYTES: usize = 64 * 1024;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
+const CONFIG_OVERRIDE_FLAG: &str = "-c";
+const EMPTY_MCP_OVERRIDE: &str = "mcp_servers={}";
+
+/// Per-process configuration owned by SmartCAT. It deliberately changes only
+/// the MCP map, so Codex continues to use its normal ChatGPT credential store.
+pub struct CodexAppServerConfig {
+    mcp_servers: BTreeMap<String, Value>,
+}
+
+impl CodexAppServerConfig {
+    pub fn tool_free() -> Self {
+        Self {
+            mcp_servers: BTreeMap::new(),
+        }
+    }
+
+    pub fn to_override_args(&self) -> [&'static str; 2] {
+        [CONFIG_OVERRIDE_FLAG, EMPTY_MCP_OVERRIDE]
+    }
+
+    pub fn mcp_server_count(&self) -> usize {
+        self.mcp_servers.len()
+    }
+
+    pub fn preserves_default_account_store(&self) -> bool {
+        true
+    }
+}
 
 pub struct ProcessRuntimeLauncher {
     work_root: PathBuf,
@@ -39,8 +69,10 @@ impl RuntimeLauncher for ProcessRuntimeLauncher {
             .tempdir_in(&self.work_root)
             .map_err(|_| RuntimeError::FilesystemFailed)?;
 
+        let config = CodexAppServerConfig::tool_free();
         let mut command = Command::new(candidate.path());
         command
+            .args(config.to_override_args())
             .arg("app-server")
             .arg("--listen")
             .arg("stdio://")

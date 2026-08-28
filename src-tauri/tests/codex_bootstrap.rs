@@ -42,9 +42,14 @@ async fn production_wiring_hands_the_initialized_process_to_account_commands_and
     );
     let state = AppState::default();
 
-    bootstrap_with_resolver(&state, &resolver, Arc::new(NoopSink))
-        .await
-        .unwrap();
+    bootstrap_with_resolver(
+        &state,
+        &resolver,
+        Arc::new(NoopSink),
+        app_data.path().to_path_buf(),
+    )
+    .await
+    .unwrap();
 
     let service = state
         .account_service()
@@ -59,10 +64,12 @@ async fn production_wiring_hands_the_initialized_process_to_account_commands_and
         }
     );
     assert!(!snapshot.login_pending);
+    assert!(state.translation_jobs().await.is_some());
     drop(service);
 
     state.shutdown().await.unwrap();
     assert!(state.account_service().await.is_none());
+    assert!(state.translation_jobs().await.is_none());
     assert!(work_root.read_dir().unwrap().next().is_none());
 }
 
@@ -85,9 +92,14 @@ async fn shutdown_wins_a_race_with_late_bootstrap_and_leaves_no_process_or_workd
     let state = AppState::default();
     state.shutdown().await.unwrap();
 
-    let error = bootstrap_with_resolver(&state, &resolver, Arc::new(NoopSink))
-        .await
-        .unwrap_err();
+    let error = bootstrap_with_resolver(
+        &state,
+        &resolver,
+        Arc::new(NoopSink),
+        app_data.path().to_path_buf(),
+    )
+    .await
+    .unwrap_err();
 
     assert_eq!(error, BootstrapError::State(AppStateError::ShuttingDown));
     assert!(state.account_service().await.is_none());
