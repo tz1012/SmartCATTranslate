@@ -131,3 +131,21 @@ SmartCAT Translate 프로젝트 기록
 - 요약: security: codex-runtime-hardening
 - 변경 파일: DECISIONS.txt, scripts/pin-codex-runtime.mjs, scripts/pin-codex-runtime.test.mjs, src-tauri/Cargo.lock, src-tauri/Cargo.toml, src-tauri/resources/codex-runtime.json, src-tauri/src/codex/install.rs, src-tauri/src/codex/manifest.rs, src-tauri/src/codex/mod.rs, src-tauri/src/codex/runtime.rs, src-tauri/tests/codex_runtime.rs
 - 검증: pnpm runtime:pin:test && 17/17 passed && cargo test && 27/27 passed
+
+[2026-08-28 14:08 Asia/Seoul] Codex App Server JSONL 전송 계층
+
+구현
+- 검증된 `ResolvedRuntime`이 소유한 초기화 완료 라이브 세션에서 같은 입출력 채널을 인계받아, 실행 경로를 다시 탐색하거나 프로세스를 재실행하지 않는 JSONL 전송 계층을 추가함.
+- 단일 writer 작업이 요청 하나를 JSON 한 줄로 기록하고, reader 작업이 응답 ID별 대기 요청과 서버 알림을 분리해 전달하도록 구현함.
+- 동시 요청 ID를 원자적으로 할당하고, 응답 순서가 바뀌어도 올바른 요청으로 전달하며, 취소된 요청의 대기 항목을 자동 제거함.
+- 프로세스 종료와 명시적 종료 시 모든 대기 요청을 안전한 종료 오류로 해제하고 `runtime/exited` 알림을 정확히 한 번만 발행함.
+- 잘못된 JSON, 알 수 없는 메시지와 응답 ID는 다음 정상 응답을 방해하지 않으며, 알려진 요청의 손상된 응답은 안전한 프로토콜 오류로 종료함.
+- 서버 오류의 메시지·데이터, 원문·번역문, 토큰과 전체 경로를 오류 문자열이나 내부 로그에 포함하지 않고 숫자 오류 코드만 노출함. 알림의 `Debug` 출력에서도 매개변수를 숨김.
+- 입력 JSONL 한 줄에 8 MiB 상한을 두어 줄바꿈 없는 비정상 입력으로 인한 무제한 메모리 증가를 차단함.
+
+테스트 및 빌드
+- RED: 전송 모듈, 라이브 채널과 세션 인계 인터페이스가 없어 `codex_transport` 통합 테스트 컴파일이 실패함을 확인함.
+- RED/GREEN: 명시적 JSON `null` 결과가 프로토콜 위반으로 오인되는 실패와 숫자가 아닌 ID를 알림으로 잘못 전달하는 실패를 각각 재현한 뒤 수정함.
+- GREEN: `cargo test --manifest-path src-tauri/Cargo.toml --test codex_transport` 통과 — 9/9.
+- 전체 Rust 회귀 검사 통과 — 라이브러리 22, 기존 런타임 5, 새 전송 계층 9로 총 36/36.
+- 일반 라이브러리 `cargo check`와 Rust 서식 검사 통과.

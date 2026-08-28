@@ -8,6 +8,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use semver::Version;
 use sha2::{Digest, Sha256};
+use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::codex::install::AppLocalRuntimeInstaller;
 
@@ -66,11 +67,42 @@ pub trait RuntimeFailureRecorder: Send + Sync {
     fn record(&self, record: RuntimeFailureRecord);
 }
 
+pub struct LiveRuntimeChannel {
+    reader: Box<dyn AsyncRead + Send + Unpin>,
+    writer: Box<dyn AsyncWrite + Send + Unpin>,
+}
+
+impl LiveRuntimeChannel {
+    pub fn new<R, W>(reader: R, writer: W) -> Self
+    where
+        R: AsyncRead + Send + Unpin + 'static,
+        W: AsyncWrite + Send + Unpin + 'static,
+    {
+        Self {
+            reader: Box::new(reader),
+            writer: Box::new(writer),
+        }
+    }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        Box<dyn AsyncRead + Send + Unpin>,
+        Box<dyn AsyncWrite + Send + Unpin>,
+    ) {
+        (self.reader, self.writer)
+    }
+}
+
 #[async_trait]
 pub trait LiveRuntimeSession: Send {
     fn session_id(&self) -> &str;
     async fn initialize(&mut self) -> Result<String, RuntimeError>;
     async fn stop(&mut self) -> Result<(), RuntimeError>;
+
+    fn take_transport_channel(&mut self) -> Result<LiveRuntimeChannel, RuntimeError> {
+        Err(RuntimeError::TransportUnavailable)
+    }
 }
 
 #[async_trait]
@@ -102,6 +134,14 @@ impl ResolvedRuntime {
 
     pub fn into_session(self) -> Box<dyn LiveRuntimeSession> {
         self.session
+    }
+
+    pub fn into_live_transport(
+        self,
+    ) -> Result<(Box<dyn LiveRuntimeSession>, LiveRuntimeChannel), RuntimeError> {
+        let mut session = self.session;
+        let channel = session.take_transport_channel()?;
+        Ok((session, channel))
     }
 }
 
@@ -378,6 +418,8 @@ pub enum RuntimeError {
     InstallConflict,
     #[error("the system Codex version probe failed")]
     VersionProbeFailed,
+    #[error("the initialized Codex runtime transport is unavailable")]
+    TransportUnavailable,
 }
 
 impl RuntimeError {
@@ -398,6 +440,7 @@ impl RuntimeError {
             Self::FilesystemFailed => "filesystem_failed",
             Self::InstallConflict => "install_conflict",
             Self::VersionProbeFailed => "version_probe_failed",
+            Self::TransportUnavailable => "runtime_transport_unavailable",
         }
     }
 }
