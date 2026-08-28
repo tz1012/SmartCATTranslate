@@ -1,0 +1,29 @@
+# Synced ChatGPT project references
+AGENTS.md
+sources/
+
+# Frontend and Tauri build output
+node_modules/
+dist/
+src-tauri/target/
+target/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.key
+*.p12
+*.pfx
+
+# App-local runtime and generated translation data
+.runtime/
+.local-data/
+artifacts/
+test-results/
+
+# Editor and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
