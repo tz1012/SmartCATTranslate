@@ -84,3 +84,8 @@ SmartCAT Translate 프로젝트 기록
 - 요약: fix: record-enforcement
 - 변경 파일: .github/workflows/ci.yml, RECORDING_POLICY.txt, scripts/check-records.mjs, scripts/check-records.test.mjs, scripts/record-change.mjs, scripts/record-change.test.mjs
 - 검증: pnpm records:test && 16/16 passed
+
+[2026-08-28 12:11 Asia/Seoul] 변경 기록
+- 요약: feature: translation-contracts
+- 변경 파일: src-tauri/Cargo.lock, src-tauri/Cargo.toml, src-tauri/src/core/audit.rs, src-tauri/src/core/errors.rs, src-tauri/src/core/mod.rs, src-tauri/src/core/types.rs, src-tauri/src/lib.rs, src/lib/types.ts
+- 검증: cargo test --manifest-path src-tauri/Cargo.toml && 8/8 passed
