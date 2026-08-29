@@ -13,7 +13,10 @@
     "runtime:pin": "node scripts/pin-codex-runtime.mjs",
     "runtime:pin:test": "node --test scripts/pin-codex-runtime.test.mjs",
     "runtime:build": "node scripts/build-smartcat-codex-runtime.mjs",
-    "runtime:build:test": "node --test scripts/build-smartcat-codex-runtime.test.mjs",
+    "runtime:build:test": "node --test scripts/build-smartcat-codex-runtime.test.mjs scripts/release-evidence.test.mjs",
+    "release:evidence": "node scripts/release-evidence.mjs create-artifacts",
+    "release:sbom:cargo": "node scripts/release-evidence.mjs generate-cargo",
+    "release:sbom:verify": "node scripts/release-evidence.mjs verify",
     "test": "vitest run",
     "test:watch": "vitest",
     "tauri": "tauri"

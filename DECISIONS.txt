@@ -126,3 +126,9 @@ SmartCAT Translate 설계 결정 기록
 실행 증명: 패치 전용 안정 메서드 `smartcat/attestation`은 정확한 업스트림 커밋, 패치 버전, `toolCount=0`, `instructionDiscovery=false`를 반환한다. 앱은 `initialize`를 완료한 바로 그 stdio 세션에서 이 값을 확인하며, 실행 전에 설치기에 포함된 바이너리의 크기와 SHA-256을 빌드 생성 매니페스트와 대조한다. stock 또는 변조된 Codex, 매니페스트 없는 sidecar, 다른 세션은 거부하며 시스템·다운로드 폴백은 없다.
 배포 경계: Windows x86_64, macOS x86_64, macOS arm64는 각 대상의 명시적 GitHub Actions 릴리스 작업에서 고정 소스·패치 시험, `cargo --locked` 빌드, 체크섬·provenance·SBOM 생성 후 Tauri `externalBin`으로 설치기에 포함한다. 공개 배포 서명·공증은 D-003과 D-014의 플랫폼 자격 증명 경계를 그대로 따른다. 커밋·보관 파일·패치·잠금 파일은 재현 가능한 입력으로 고정하지만 서로 다른 호스트의 바이트 동일성은 별도 증명 없이는 주장하지 않는다.
 보존 경계: 앱 전용 `CODEX_HOME`, 최소 ChatGPT 자격 증명 가져오기, 사용자 환경 제거, 빈 앱 소유 작업공간, `approvalPolicy=never`, 턴의 `readOnly`와 `networkAccess=false`, 서버 요청 및 허용 목록 밖 알림의 실패 폐쇄, 중단 실패 오염과 창 tombstone 규칙은 계속 적용한다. 이전 AppContainer와 Seatbelt 실행 구현은 제품 소스에서 제거하며 격리 없는 stock Codex 경로로 우회하지 않는다.
+
+[D-024] 릴리스 SBOM과 산출물 provenance 완전성
+상태: 확정
+결정: 명시적 3대상 릴리스 작업은 고정된 `cargo-cyclonedx`로 하류 Codex와 Tauri Rust의 각 잠금 의존성 그래프를 만들고, 고정된 Syft로 저장소 작업공간의 프런트엔드·소스 의존성을 별도 수집한다. sidecar와 Tauri bundle 아래의 모든 플랫폼 설치 파일은 실제 바이트 SHA-256과 CycloneDX 산출물 목록에 함께 포함한다.
+실패 폐쇄: Cargo 잠금 파일이 SBOM 생성 중 바뀌거나, 어떤 SBOM이 비어 있거나 구성 요소가 2개 미만이거나, Rust SBOM에 실제 의존 관계가 없거나, checksum 생성 뒤 sidecar·설치 파일이 바뀌면 attestation과 업로드를 시작하지 않는다. GitHub provenance는 검증된 checksum 파일을 입력으로 사용해 sidecar와 모든 설치 파일을 한 번에 대상으로 삼고, 업로드는 이 단계의 성공 뒤에만 실행한다.
+일반 CI: 네트워크 다운로드나 하류 Codex 대형 빌드 없이 공급망 스크립트와 릴리스 순서의 계약 시험만 Windows와 macOS에서 항상 실행한다. 실제 3대상 빌드·SBOM·설치기·attestation은 수동 릴리스 작업에 한정한다.

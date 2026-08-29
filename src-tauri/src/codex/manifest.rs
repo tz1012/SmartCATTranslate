@@ -18,7 +18,7 @@ const UPSTREAM_COMMIT: &str = "8c68d4c87dc54d38861f5114e920c3de2efa5876";
 const SOURCE_ARCHIVE_SHA256: &str =
     "14c173d78f0c22da73e4ca1a205836b525e1dd9fe7db9b4ddea62214b2cc5009";
 const PATCH_VERSION: &str = "smartcat-1";
-const PATCH_SHA256: &str = "277656cea5ca940c30cf692bff1bcbe398ca18a60ed57bcdc6f0a1a82388704a";
+const PATCH_SHA256: &str = "ffe6e77bea83a860259000332eb6d2c256bdc5def3375447319dc055c7f5bcaf";
 const MAX_BUNDLED_RUNTIME_BYTES: u64 = 512 * 1024 * 1024;
 pub(crate) const MAX_DOWNLOAD_BYTES: u64 = 128 * 1024 * 1024;
 
@@ -421,7 +421,7 @@ mod tests {
         std::fs::write(
             &manifest,
             format!(
-                r#"{{"schemaVersion":1,"target":"x86_64-pc-windows-msvc","binary":"smartcat-codex-x86_64-pc-windows-msvc.exe","sha256":"{hash}","size":21,"upstreamTag":"rust-v0.144.4","upstreamCommit":"8c68d4c87dc54d38861f5114e920c3de2efa5876","sourceArchiveSha256":"14c173d78f0c22da73e4ca1a205836b525e1dd9fe7db9b4ddea62214b2cc5009","patchVersion":"smartcat-1","patchSha256":"277656cea5ca940c30cf692bff1bcbe398ca18a60ed57bcdc6f0a1a82388704a","cargoLocked":true}}"#
+                r#"{{"schemaVersion":1,"target":"x86_64-pc-windows-msvc","binary":"smartcat-codex-x86_64-pc-windows-msvc.exe","sha256":"{hash}","size":21,"upstreamTag":"rust-v0.144.4","upstreamCommit":"8c68d4c87dc54d38861f5114e920c3de2efa5876","sourceArchiveSha256":"14c173d78f0c22da73e4ca1a205836b525e1dd9fe7db9b4ddea62214b2cc5009","patchVersion":"smartcat-1","patchSha256":"ffe6e77bea83a860259000332eb6d2c256bdc5def3375447319dc055c7f5bcaf","cargoLocked":true}}"#
             ),
         )
         .unwrap();

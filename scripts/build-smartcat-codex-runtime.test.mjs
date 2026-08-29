@@ -83,7 +83,7 @@ test("cargo invocation is locked, release-only, package-scoped, and target allow
   assert.throws(() => buildCargoInvocation("x86_64-unknown-linux-gnu"), /target_unsupported/);
 });
 
-test("patched runtime build runs the three audited upstream security tests", () => {
+test("patched runtime build runs all four audited upstream security tests", () => {
   assert.deepEqual(buildVerificationInvocations(), [
     {
       command: "cargo",
@@ -114,7 +114,21 @@ test("patched runtime build runs the three audited upstream security tests", () 
         "--locked",
         "-p",
         "codex-app-server",
+        "--test",
+        "all",
         "smartcat_attests_tool_free_runtime_and_reports_no_instruction_sources",
+      ],
+    },
+    {
+      command: "cargo",
+      args: [
+        "test",
+        "--locked",
+        "-p",
+        "codex-app-server",
+        "--test",
+        "all",
+        "smartcat_attestation_is_rejected_before_initialize",
       ],
     },
   ]);
@@ -146,7 +160,7 @@ test("tracked patch notice identifies downstream limits without reproducibility 
   assert.doesNotMatch(notice, /byte-for-byte reproducible/i);
 });
 
-test("release workflow builds and attests all three sidecar targets only on explicit dispatch", async () => {
+test("release workflow verifies dependency and artifact evidence before attesting and uploading", async () => {
   const workflow = await readFile(
     new URL("../.github/workflows/smartcat-runtime-release.yml", import.meta.url),
     "utf8",
@@ -173,9 +187,33 @@ test("release workflow builds and attests all three sidecar targets only on expl
   );
   assert.match(workflow, /runtime:build -- --target/);
   assert.match(workflow, /actual_patched_sidecar_initializes_and_attests_on_the_live_session/);
-  assert.match(workflow, /anchore\/sbom-action/);
-  assert.match(workflow, /actions\/attest-build-provenance/);
+  assert.match(workflow, /cargo install cargo-cyclonedx --version 0\.5\.9 --locked/);
+  assert.match(workflow, /anchore\/sbom-action@v0\.20\.10/);
+  assert.match(workflow, /syft-version: v1\.51\.0/);
+  assert.match(workflow, /path: \./);
+  assert.match(workflow, /subject-checksums:/);
+  assert.doesNotMatch(workflow, /subject-path: src-tauri\/binaries/);
   assert.match(workflow, /tauri build --config src-tauri\/tauri\.runtime\.conf\.json/);
+
+  const workspaceSbom = workflow.indexOf("anchore/sbom-action@v0.20.10");
+  const evidence = workflow.indexOf("release:evidence");
+  const validation = workflow.indexOf("release:sbom:verify");
+  const attestation = workflow.indexOf("actions/attest-build-provenance@v3");
+  const upload = workflow.indexOf("actions/upload-artifact@v4");
+  assert.ok(evidence > workspaceSbom, "third-party scanning must finish before final artifact hashing");
+  assert.ok(evidence >= 0, "release evidence must be generated from built files");
+  assert.ok(validation > evidence, "all SBOMs must be validated after artifact discovery");
+  assert.ok(attestation > validation, "attestation must wait for SBOM validation");
+  assert.ok(upload > attestation, "upload must wait for successful attestation");
+  assert.match(workflow, /smartcat-\$\{\{ matrix\.target \}\}\.sha256/);
+  assert.match(workflow, /src-tauri\/target\/\$\{\{ matrix\.target \}\}\/release\/bundle/);
+});
+
+test("ordinary CI runs the offline runtime supply-chain contract without building Codex", async () => {
+  const workflow = await readFile(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+
+  assert.match(workflow, /pnpm runtime:build:test/);
+  assert.doesNotMatch(workflow, /pnpm runtime:build -- --target/);
 });
 
 test("runtime bundle overlay contains only the patched sidecar and tracked notices", async () => {

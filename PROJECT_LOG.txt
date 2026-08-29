@@ -293,3 +293,26 @@ TDD 및 검증
 - 따라서 실제 로컬 acceptance는 동일 patched 소스의 non-LTO sidecar로 완료했고, 배포용 `--locked --release` thin-LTO 및 세 대상 checksum/provenance/SBOM 생성은 검증된 스크립트와 명시적 GitHub Actions 릴리스 관문에 남아 있다. 로컬 설치기 공개나 배포는 수행하지 않았다.
 - 커밋 전 자체 검토에서 항상 거짓인 조건 아래 남아 있던 이전 AppContainer·Seatbelt 구현과 관련 불필요 의존 기능을 제거했다. 제거 뒤 보안 집중 시험 7/7, 실제 patched 수락 1/1과 실제 stock 거부 1/1을 다시 통과했다. 릴리스 CI는 기존 인증 트레잇의 단위 오류 반환 린트 하나만 좁게 허용하고 그 밖의 모든 경고를 오류로 유지한다.
 - 공식 GitHub 러너 지원표와 폐기 공지를 재확인해 지원 종료된 macOS 13 Intel 러너를 macOS 15 Intel로 교체하고, Apple Silicon도 macOS 15 arm64 러너로 고정했다. 지원 러너 계약 시험이 기존 워크플로에서 9/10 RED가 된 뒤 수정 후 10/10 GREEN이 됐다.
+
+[2026-08-29] Task 7 보안 검토 수정 4 — 완전한 SBOM과 설치기 provenance
+
+구현
+- 하류 Codex와 Tauri 앱의 Cargo 잠금 의존성 그래프를 `cargo-cyclonedx` 0.5.9로 각각 생성한다. 생성 전후 잠금 파일 SHA-256이 달라지면 실패하며, 구성 요소가 2개 미만이거나 실제 의존 관계가 없는 Rust SBOM도 거부한다.
+- Syft 1.51.0으로 저장소 작업공간 전체를 별도 스캔해 프런트엔드와 소스 의존성을 포함한다. 수동 릴리스 작업은 버전이 고정된 두 표준 도구만 사용한다.
+- 대상별 sidecar와 Tauri bundle 아래의 모든 MSI·NSIS·DMG·PKG 설치 파일을 직접 발견해 SHA-256 목록과 CycloneDX 산출물 SBOM을 만든다. 링크, 빈 파일, 누락된 설치기, 경로 이탈과 생성 뒤 바이트 변경을 모두 거부한다.
+- 모든 의존성·작업공간·산출물 SBOM과 실제 checksum 재검증이 끝난 뒤에만 GitHub provenance가 checksum 목록 전체를 대상으로 생성된다. artifact 업로드는 attestation 성공보다 뒤에 있으며 파일 누락도 오류로 끝난다.
+- 일반 CI에 오프라인·소규모 `runtime:build:test`를 연결했다. 하류 Codex 다운로드와 대형 빌드는 수동 릴리스 작업에만 남긴다.
+- App Server는 `initialize` 전 `smartcat/attestation` 요청을 일반 초기화 게이트에서 거부하며, 고정 업스트림 통합 시험이 오류 코드와 문구를 확인한다.
+
+TDD 및 검증
+- RED: 네 번째 업스트림 보안 시험 호출, pinned SBOM 도구, installer checksum·attestation, 일반 CI 계약과 릴리스 증거 모듈이 없어 공급망 계약 시험 4건이 실패함을 확인했다.
+- RED: checksum 생성 뒤 설치기를 바꾸어도 이를 다시 확인하는 경계가 없어 새 검증 함수 가져오기가 실패함을 확인했다.
+- RED: 외부 SBOM 스캔 action이 최종 산출물 checksum 뒤에 실행되는 순서 위험을 계약 시험으로 재현하고, 최종 해싱보다 먼저 끝나도록 순서를 고정했다.
+- GREEN: 릴리스 계약과 실제 임시 산출물 기반 SHA-256·SBOM 검증 시험 19/19가 통과했다. 빈·단일 구성 요소·의존 관계 없는 SBOM과 변경된 설치기를 각각 실패 폐쇄로 거부하고, 표준 도구의 소스 측 임시 SBOM은 검증·복사 뒤 제거한다.
+- 실제 고정 `cargo-cyclonedx` 0.5.9가 Tauri 앱 잠금 그래프에서 299개 구성 요소, 300개 의존 노드와 214개 비어 있지 않은 간선을 생성했고 잠금 파일 불변 검증을 통과했다.
+- 고정 upstream App Server의 초기화 전 attestation 거부 1/1과 초기화 뒤 attestation·빈 instruction source 1/1, 전체 SmartCAT Rust 112/112, 프런트엔드 17/17과 프로덕션 빌드가 통과했다.
+
+[2026-08-29 23:36 Asia/Seoul] 변경 기록
+- 요약: security: complete-release-evidence
+- 변경 파일: .github/workflows/ci.yml, .github/workflows/smartcat-runtime-release.yml, CHANGELOG.md, DECISIONS.txt, package.json, PROJECT_LOG.txt, runtime-patches/codex-0.144.4-smartcat/pin.json, runtime-patches/codex-0.144.4-smartcat/smartcat.patch, scripts/build-smartcat-codex-runtime.mjs, scripts/build-smartcat-codex-runtime.test.mjs, scripts/release-evidence.mjs, scripts/release-evidence.test.mjs, src-tauri/src/codex/manifest.rs, task-7-report.md
+- 검증: pnpm runtime:build:test && 19/19 passed && cargo test && 112/112 passed

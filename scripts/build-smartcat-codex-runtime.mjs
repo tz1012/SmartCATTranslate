@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import {
   chmod,
   cp,
@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
+import { generateCargoDependencySbom } from "./release-evidence.mjs";
 
 const EXPECTED = Object.freeze({
   repository: "https://github.com/openai/codex",
@@ -138,7 +139,21 @@ export function buildVerificationInvocations() {
         "--locked",
         "-p",
         "codex-app-server",
+        "--test",
+        "all",
         "smartcat_attests_tool_free_runtime_and_reports_no_instruction_sources",
+      ],
+    },
+    {
+      command: "cargo",
+      args: [
+        "test",
+        "--locked",
+        "-p",
+        "codex-app-server",
+        "--test",
+        "all",
+        "smartcat_attestation_is_rejected_before_initialize",
       ],
     },
   ];
@@ -193,6 +208,8 @@ export async function buildRuntime({ target, outputRoot, cacheRoot } = {}) {
       process.env.SMARTCAT_CODEX_CARGO_TARGET_DIR ?? join(cache, "cargo-target", target),
     );
     const cargoEnvironment = buildCargoEnvironment(cargoTargetDirectory);
+    const outputDirectory = resolve(outputRoot ?? join(repositoryRoot, "src-tauri", "binaries"));
+    await mkdir(outputDirectory, { recursive: true });
     for (const verification of buildVerificationInvocations()) {
       await run(
         verification.command,
@@ -208,14 +225,23 @@ export async function buildRuntime({ target, outputRoot, cacheRoot } = {}) {
       join(sourceRoot, "codex-rs"),
       cargoEnvironment,
     );
+    const sbomPath = join(
+      outputDirectory,
+      `smartcat-codex-${target}.runtime.cdx.json`,
+    );
+    await generateCargoDependencySbom({
+      manifestPath: join(sourceRoot, "codex-rs", "cli", "Cargo.toml"),
+      lockPath: join(sourceRoot, "codex-rs", "Cargo.lock"),
+      target,
+      outputStem: `smartcat-codex-${target}.runtime.cdx`,
+      destinationPath: sbomPath,
+    });
     const sourceBinary = join(
       cargoTargetDirectory,
       target,
       "release",
       pin.targets[target].binary,
     );
-    const outputDirectory = resolve(outputRoot ?? join(repositoryRoot, "src-tauri", "binaries"));
-    await mkdir(outputDirectory, { recursive: true });
     const extension = target.includes("windows") ? ".exe" : "";
     const outputBinary = join(outputDirectory, `smartcat-codex-${target}${extension}`);
     const staging = `${outputBinary}.tmp-${process.pid}`;
@@ -254,34 +280,6 @@ export async function buildRuntime({ target, outputRoot, cacheRoot } = {}) {
           ],
           subject: [{ name: basename(outputBinary), digest: { sha256: manifest.sha256 } }],
           reproducibilityClaim: "reproducible-inputs-only",
-        },
-        null,
-        2,
-      )}\n`,
-    );
-    const sbomPath = join(outputDirectory, `smartcat-codex-${target}.sbom.cdx.json`);
-    await atomicWrite(
-      sbomPath,
-      `${JSON.stringify(
-        {
-          bomFormat: "CycloneDX",
-          specVersion: "1.6",
-          serialNumber: `urn:uuid:${randomUUID()}`,
-          version: 1,
-          metadata: { component: { type: "application", name: "smartcat-codex", version: "0.144.4-smartcat.1" } },
-          components: [
-            {
-              type: "application",
-              name: "smartcat-codex",
-              version: "0.144.4-smartcat.1",
-              hashes: [{ alg: "SHA-256", content: manifest.sha256 }],
-              licenses: [{ license: { id: "Apache-2.0" } }],
-              properties: [
-                { name: "smartcat:upstreamCommit", value: pin.upstream.commit },
-                { name: "smartcat:patchSha256", value: pin.patchSha256 },
-              ],
-            },
-          ],
         },
         null,
         2,

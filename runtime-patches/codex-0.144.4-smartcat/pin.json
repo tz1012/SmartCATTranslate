@@ -9,7 +9,7 @@
     "archiveSha256": "14c173d78f0c22da73e4ca1a205836b525e1dd9fe7db9b4ddea62214b2cc5009"
   },
   "patchFile": "smartcat.patch",
-  "patchSha256": "277656cea5ca940c30cf692bff1bcbe398ca18a60ed57bcdc6f0a1a82388704a",
+  "patchSha256": "ffe6e77bea83a860259000332eb6d2c256bdc5def3375447319dc055c7f5bcaf",
   "prePatchFiles": {
     "codex-rs/Cargo.lock": "175793a40a3147db1fee08fd9db0acc59312c344b3513dd7ee316f5446d8119e",
     "codex-rs/core/src/client.rs": "e3788e78e4c702d31ebb31b1e96ce5dfec5eb19d96920e8bba58f64073cdd43e",

@@ -1,4 +1,4 @@
-# Task 7 보안 수정 3 보고서
+# Task 7 보안 수정 보고서
 
 ## 결과
 
@@ -10,7 +10,7 @@ SmartCAT 번역용 Codex를 stock/system 실행 파일이 아닌 감사 가능�
 - 업스트림 커밋: `8c68d4c87dc54d38861f5114e920c3de2efa5876`
 - 소스 보관 파일 SHA-256: `14c173d78f0c22da73e4ca1a205836b525e1dd9fe7db9b4ddea62214b2cc5009`
 - 패치 버전: `smartcat-1`
-- 패치 SHA-256: `277656cea5ca940c30cf692bff1bcbe398ca18a60ed57bcdc6f0a1a82388704a`
+- 패치 SHA-256: `ffe6e77bea83a860259000332eb6d2c256bdc5def3375447319dc055c7f5bcaf`
 - 대상: Windows x86_64, macOS x86_64, macOS arm64
 - 앱 선택: 빌드 생성 매니페스트가 지정한 내장 sidecar만 허용; 시스템 탐색·다운로드 폴백 없음
 - 실행 증명: 같은 stdio 세션에서 정확한 커밋·패치 버전·`toolCount=0`·`instructionDiscovery=false` 확인
@@ -46,7 +46,7 @@ GREEN:
 - TypeScript/Vite 프로덕션 빌드: 통과
 - rustfmt: 통과
 - Clippy 전체 대상: 기존 인증 트레잇의 단위 오류 반환 린트 하나만 좁게 허용하고 그 밖의 경고는 오류로 처리해 통과
-- `git diff --check`: 통과
+- 바깥 저장소의 `git diff --check`: 통과. 이 검사는 중첩된 `smartcat.patch`의 내부 diff를 해석하지 않는다. 릴리스 빌드 스크립트가 고정 소스에서 먼저 `git apply --check --whitespace=error-all`을 실행하는 계약을 시험했고, 로컬에서는 적용된 감사 소스의 reverse-check와 실제 패치 SHA-256 대조를 별도 관문으로 통과했다.
 - patch 파일 실제 SHA-256과 pin 일치: 통과
 - 유료/모델 네트워크 호출: 없음
 - `sources/`: 변경 없음
@@ -82,11 +82,59 @@ GREEN:
 - `src-tauri/tauri.runtime.conf.json`
 - `task-7-report.md`
 
+## 보안 검토 수정 4 — 릴리스 증거 완전성
+
+- Important 2/2와 Minor 3/3을 닫았다.
+- `cargo-cyclonedx` 0.5.9는 patched Codex CLI와 Tauri 앱의 각 `Cargo.lock` 전체 의존 관계를 CycloneDX 1.5로 생성한다. 생성 전후 잠금 파일 해시가 바뀌면 실패한다.
+- Syft 1.51.0은 저장소 전체를 스캔해 pnpm을 포함한 작업공간 의존성을 별도 CycloneDX로 만든다.
+- sidecar와 bundle의 모든 플랫폼 설치 파일을 직접 발견해 실제 바이트 SHA-256과 CycloneDX 산출물 SBOM에 함께 넣는다. installer가 없거나 링크·빈 파일이면 실패하고, checksum을 attestation 직전에 실제 파일과 다시 비교한다.
+- GitHub provenance는 검증된 checksum 파일 전체를 대상으로 하므로 sidecar와 모든 installer를 함께 포함한다. 업로드 단계는 모든 SBOM·checksum 검증과 attestation보다 뒤에 있다.
+- 일반 CI는 네트워크·대형 Codex 빌드 없이 공급망·릴리스 계약 시험만 실행한다.
+- 초기화 전 `smartcat/attestation`은 `-32600 Not initialized`로 거부됨을 고정 업스트림 통합 시험에 추가했다.
+
+Round 4 TDD RED/GREEN:
+
+1. 네 번째 업스트림 보안 시험, pinned SBOM 도구, installer checksum/provenance와 일반 CI 계약이 기존 구현에서 실패했다.
+2. checksum 생성 뒤 installer 변조를 재현하는 시험은 재검증 함수가 없어 실패했다.
+3. 외부 SBOM 스캔이 최종 checksum 생성 뒤에 실행되는 기존 순서를 실패로 고정하고, 모든 외부 스캔이 끝난 뒤 우리 코드가 최종 산출물을 해싱·재검증하도록 바꿨다.
+4. 구현 뒤 릴리스 계약·실제 임시 산출물 검증 19/19가 통과했다. 빈 SBOM, 단일 구성 요소 SBOM, 의존 관계 없는 Rust SBOM, 누락·빈·링크 installer와 checksum 뒤 변조가 모두 실패 폐쇄된다.
+
+Round 4 전체 관문:
+
+- 릴리스·SBOM 계약 및 실제 임시 산출물: 19/19 통과
+- 실제 `cargo-cyclonedx` 0.5.9 Tauri 잠금 그래프: 구성 요소 299개, 의존 노드 300개, 비어 있지 않은 간선 214개; 잠금 불변과 소스 측 임시 파일 제거 통과
+- 고정 upstream 초기화 전 attestation 거부: 1/1 통과
+- 고정 upstream 초기화 뒤 attestation·빈 instruction source: 1/1 통과
+- SmartCAT Rust 전체: 112/112 통과
+- 프런트엔드: 17/17 통과
+- TypeScript/Vite 프로덕션 빌드: 통과
+- rustfmt: 통과
+- 전체 대상 Clippy: 기존 인증 트레잇 예외 하나만 좁게 허용하고 통과
+- 런타임 고정 검사: 17/17 통과
+- 변경 기록 검사: 16/16 통과
+
+Round 4 변경 파일:
+
+- `.github/workflows/ci.yml`
+- `.github/workflows/smartcat-runtime-release.yml`
+- `CHANGELOG.md`
+- `DECISIONS.txt`
+- `PROJECT_LOG.txt`
+- `package.json`
+- `runtime-patches/codex-0.144.4-smartcat/pin.json`
+- `runtime-patches/codex-0.144.4-smartcat/smartcat.patch`
+- `scripts/build-smartcat-codex-runtime.mjs`
+- `scripts/build-smartcat-codex-runtime.test.mjs`
+- `scripts/release-evidence.mjs`
+- `scripts/release-evidence.test.mjs`
+- `src-tauri/src/codex/manifest.rs`
+- `task-7-report.md`
+
 ## 자체 검토와 열린 우려
 
 - 앱의 제품 경로는 stock/system 런타임을 탐색하거나 실행하지 않는다. fake resolver의 system 후보는 테스트 전용이다.
 - 패치가 upstream tool 모듈을 삭제하지는 않지만 최종 Responses 요청 조립 경계가 모든 provider·feature 상태에서 빈 도구 목록을 강제하며 upstream 시험이 이를 직접 검증한다.
 - pinned 0.144.4의 정상 lifecycle 알림은 exact 구조와 disabled 상태만 허용한다. payload를 기록하거나 화면에 전달하지 않는다.
 - 이전 AppContainer·Seatbelt 제품 구현과 관련 불필요 Windows 의존 기능은 제거되어 비활성 우회 코드가 남아 있지 않다.
-- 로컬 제품용 thin-LTO sidecar와 생성 매니페스트/SBOM/provenance는 아직 없다. 동일 patched non-LTO sidecar로 실제 앱 경계를 검증했으며, 제품 산출물은 릴리스 CI가 성공하기 전에는 배포할 수 없다.
+- 로컬에서는 앱의 실제 잠금 의존성 SBOM까지 생성·검증했지만, 배포용 thin-LTO sidecar·플랫폼 설치기·Syft 작업공간 SBOM·GitHub-hosted provenance의 완전한 묶음은 만들거나 공개하지 않았다. 동일 patched non-LTO sidecar로 실제 앱 경계를 검증했으며, 세 대상 릴리스 CI 전체가 성공하기 전에는 제품 산출물을 배포할 수 없다.
 - 새 Rust 1.98의 엄격 Clippy 경고 1개는 기존 인증 트레잇에 있으며 이번 변경 범위를 넓혀 API를 바꾸지 않았다. 로컬과 릴리스 CI 모두 이 린트 하나만 좁게 허용하고 나머지 경고는 오류로 처리한다.

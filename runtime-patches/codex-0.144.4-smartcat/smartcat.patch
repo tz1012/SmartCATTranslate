@@ -1284,10 +1284,26 @@ diff --git a/codex-rs/app-server/tests/suite/v2/thread_start.rs b/codex-rs/app-s
 index 363b1c3..b84a928 100644
 --- a/codex-rs/app-server/tests/suite/v2/thread_start.rs
 +++ b/codex-rs/app-server/tests/suite/v2/thread_start.rs
-@@ -60,6 +60,56 @@ const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
+@@ -60,6 +60,72 @@ const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
  const INVALID_REQUEST_ERROR_CODE: i64 = -32600;
  const EXEC_POLICY_PARSE_WARNING_SUMMARY: &str = "Error parsing rules; custom rules not applied.";
  
++#[tokio::test]
++async fn smartcat_attestation_is_rejected_before_initialize() -> Result<()> {
++    let mut mcp = TestAppServer::builder().without_auto_env().build().await?;
++
++    let attestation_id = mcp.send_smartcat_attestation_request().await?;
++    let error = timeout(
++        DEFAULT_READ_TIMEOUT,
++        mcp.read_stream_until_error_message(RequestId::Integer(attestation_id)),
++    )
++    .await??;
++    assert_eq!(error.error.code, INVALID_REQUEST_ERROR_CODE);
++    assert_eq!(error.error.message, "Not initialized");
++
++    Ok(())
++}
++
 +#[tokio::test]
 +async fn smartcat_attests_tool_free_runtime_and_reports_no_instruction_sources() -> Result<()> {
 +    let codex_home = TempDir::new()?;

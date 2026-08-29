@@ -40,6 +40,8 @@ jobs:
           targets: ${{ matrix.target }}
           components: clippy,rustfmt
       - run: pnpm install --frozen-lockfile
+      - name: Install pinned Rust SBOM generator
+        run: cargo install cargo-cyclonedx --version 0.5.9 --locked
       - name: Verify pinned source and patch build contract
         run: pnpm runtime:build:test
       - name: Build and test audited patched runtime
@@ -54,19 +56,27 @@ jobs:
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml --features test-helper
       - name: Check SmartCAT Rust boundary
         run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets --features test-helper -- -D warnings -A clippy::result-unit-err
+      - name: Generate locked SmartCAT Rust dependency SBOM
+        run: pnpm release:sbom:cargo -- --manifest src-tauri/Cargo.toml --lock src-tauri/Cargo.lock --target ${{ matrix.target }} --output-stem smartcat-app-rust-${{ matrix.target }}.dependencies.cdx --destination artifacts/smartcat-app-rust-${{ matrix.target }}.dependencies.cdx.json
       - name: Build signed-ready Tauri installer with the patched sidecar
         run: pnpm tauri build --config src-tauri/tauri.runtime.conf.json --target ${{ matrix.target }}
-      - name: Generate CycloneDX SBOM
+      - name: Generate pinned workspace dependency SBOM
         uses: anchore/sbom-action@v0.20.10
         with:
-          path: src-tauri/binaries
+          path: .
           format: cyclonedx-json
-          output-file: smartcat-${{ matrix.target }}.sbom.json
+          output-file: artifacts/smartcat-${{ matrix.target }}.workspace.cdx.json
+          syft-version: v1.51.0
           upload-artifact: false
-      - name: Attest patched sidecar provenance
+      - name: Discover and checksum the sidecar and every installer
+        run: pnpm release:evidence -- --target ${{ matrix.target }} --sidecar src-tauri/binaries/${{ matrix.sidecar }} --bundle-root src-tauri/target/${{ matrix.target }}/release/bundle --output-root artifacts
+      - name: Verify every dependency and artifact SBOM plus artifact checksum
+        run: pnpm release:sbom:verify -- --checksums artifacts/smartcat-${{ matrix.target }}.sha256 --dependency src-tauri/binaries/smartcat-codex-${{ matrix.target }}.runtime.cdx.json --dependency artifacts/smartcat-app-rust-${{ matrix.target }}.dependencies.cdx.json --inventory artifacts/smartcat-${{ matrix.target }}.workspace.cdx.json --inventory artifacts/smartcat-${{ matrix.target }}.artifacts.cdx.json
+      - name: Attest sidecar and installer provenance from verified checksums
+        id: provenance
         uses: actions/attest-build-provenance@v3
         with:
-          subject-path: src-tauri/binaries/smartcat-codex-${{ matrix.target }}*
+          subject-checksums: artifacts/smartcat-${{ matrix.target }}.sha256
       - name: Publish explicit release-workflow artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -75,5 +85,8 @@ jobs:
           path: |
             src-tauri/binaries/smartcat-codex-${{ matrix.target }}*
             src-tauri/resources/smartcat-codex-runtime.json
-            smartcat-${{ matrix.target }}.sbom.json
+            artifacts/smartcat-${{ matrix.target }}.sha256
+            artifacts/smartcat-${{ matrix.target }}.*.cdx.json
+            artifacts/smartcat-app-rust-${{ matrix.target }}.dependencies.cdx.json
+            ${{ steps.provenance.outputs.bundle-path }}
             src-tauri/target/${{ matrix.target }}/release/bundle/**
