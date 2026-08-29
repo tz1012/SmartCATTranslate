@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import type { Quality, Tone, TranslationProfile } from '../../lib/types';
+import { onAccountStateChanged } from '../account/accountApi';
 import { GlossaryEditor } from './GlossaryEditor';
 import { languageLabel, SUPPORTED_LANGUAGES } from './languages';
 import { ModelSelector, modelChoiceValue } from './ModelSelector';
@@ -60,6 +61,7 @@ const copy = {
     launch: '로그인할 때 실행', close: '닫기 동작', keepInTray: '트레이에 유지', quit: '앱 종료', askEveryTime: '매번 묻기',
     quickPosition: '빠른 번역 위치', popup: '작은 팝업', mainWindow: '전체 창', save: '설정 저장', saved: '저장됨', saveError: '설정을 저장할 수 없습니다',
     modelListStatus: '모델 목록 상태', modelListError: '모델 목록을 불러올 수 없습니다. 저장된 선택을 유지합니다.', signedOutModels: 'ChatGPT 계정 연결 후 모델 목록을 확인할 수 있습니다.',
+    retryModels: '다시 시도',
     rewritePrompt: '문장을 개선할까요?', rewrite: '문장 개선', changeTarget: '대상 언어 변경', defaultProfile: '기본 프로필', newProfile: '새 프로필',
   },
   en: {
@@ -71,6 +73,7 @@ const copy = {
     launch: 'Launch at login', close: 'Close behavior', keepInTray: 'Keep in tray', quit: 'Quit app', askEveryTime: 'Ask every time',
     quickPosition: 'Quick translation position', popup: 'Small popup', mainWindow: 'Main window', save: 'Save settings', saved: 'Saved', saveError: 'Could not save settings',
     modelListStatus: 'Model list status', modelListError: 'Could not load the model list. The saved selection is preserved.', signedOutModels: 'Connect a ChatGPT account to view available models.',
+    retryModels: 'Retry',
     rewritePrompt: 'Improve the sentence?', rewrite: 'Improve writing', changeTarget: 'Change target language', defaultProfile: 'Default profile', newProfile: 'New profile',
   },
 } as const;
@@ -100,26 +103,57 @@ export function SettingsView({
   const [loadFailed, setLoadFailed] = useState(false);
   const settingsRevision = useRef(0);
   const saveGeneration = useRef(0);
+  const mounted = useRef(false);
+  const modelRefreshGeneration = useRef(0);
+
+  const refreshModels = useCallback(async () => {
+    if (!mounted.current) return;
+    const generation = ++modelRefreshGeneration.current;
+    setModelCatalogStatus('loading');
+    try {
+      const available = await invoke<AvailableModel[]>('list_available_models');
+      if (!mounted.current || generation !== modelRefreshGeneration.current) return;
+      setModels(available);
+      setModelCatalogStatus('available');
+    } catch (error) {
+      if (!mounted.current || generation !== modelRefreshGeneration.current) return;
+      setModels([]);
+      setModelCatalogStatus(error === 'model_catalog_signed_out' ? 'signedOut' : 'unavailable');
+    }
+  }, []);
 
   useEffect(() => {
-    let active = true;
-    void Promise.all([
-      invoke<AppSettings>('get_settings'),
-      invoke<AvailableModel[]>('list_available_models')
-        .then((models) => ({ status: 'available' as const, models }))
-        .catch((error) => ({
-          status: error === 'model_catalog_signed_out' ? 'signedOut' as const : 'unavailable' as const,
-          models: [] as AvailableModel[],
-        })),
-    ]).then(([loadedSettings, catalog]) => {
-      if (!active) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    mounted.current = true;
+    void invoke<AppSettings>('get_settings').then((loadedSettings) => {
+      if (disposed) return;
       setSettings(loadedSettings);
-      setModels(catalog.models);
-      setModelCatalogStatus(catalog.status);
       setSelectedProfileId(loadedSettings.defaultProfileId);
-    }).catch(() => active && setLoadFailed(true));
-    return () => { active = false; };
-  }, []);
+    }).catch(() => !disposed && setLoadFailed(true));
+    try {
+      void onAccountStateChanged(() => {
+        void refreshModels();
+      }).then((stop) => {
+        if (disposed) {
+          stop();
+        } else {
+          unlisten = stop;
+          void refreshModels();
+        }
+      }).catch(() => {
+        if (!disposed) void refreshModels();
+      });
+    } catch {
+      void refreshModels();
+    }
+    return () => {
+      disposed = true;
+      mounted.current = false;
+      modelRefreshGeneration.current += 1;
+      unlisten?.();
+    };
+  }, [refreshModels]);
 
   const locale = settings?.locale ?? 'ko';
   const labels = copy[locale];
@@ -221,8 +255,8 @@ export function SettingsView({
       {rewriteSuggested && <aside aria-live="polite"><p>{labels.rewritePrompt}</p><button type="button" onClick={onRewrite}>{labels.rewrite}</button><button type="button" onClick={() => updateTranslationProfile({ targetLanguage: selectedProfile.profile.targetLanguage === 'ko' ? 'en' : 'ko' })}>{labels.changeTarget}</button></aside>}
       <GlossaryEditor locale={locale} entries={settings.glossary} onChange={(glossary) => editSettings((current) => ({ ...current, glossary }))} />
       <ModelSelector locale={locale} choice={settings.selectedModel} models={models} catalogStatus={modelCatalogStatus} onChange={(selectedModel) => editSettings((current) => ({ ...current, selectedModel }))} />
-      {modelCatalogStatus === 'unavailable' && <p role="status" aria-label={labels.modelListStatus}>{labels.modelListError}</p>}
-      {modelCatalogStatus === 'signedOut' && <p role="status" aria-label={labels.modelListStatus}>{labels.signedOutModels}</p>}
+      {modelCatalogStatus === 'unavailable' && <div><p role="status" aria-label={labels.modelListStatus}>{labels.modelListError}</p><button type="button" onClick={() => void refreshModels()}>{labels.retryModels}</button></div>}
+      {modelCatalogStatus === 'signedOut' && <div><p role="status" aria-label={labels.modelListStatus}>{labels.signedOutModels}</p><button type="button" onClick={() => void refreshModels()}>{labels.retryModels}</button></div>}
 
       <label><input type="checkbox" checked={settings.launchAtLogin} onChange={(event) => editSettings((current) => ({ ...current, launchAtLogin: event.target.checked }))} />{labels.launch}</label>
       <label>{labels.close}<select value={settings.closeBehavior} onChange={(event) => editSettings((current) => ({ ...current, closeBehavior: event.target.value as CloseBehavior }))}>

@@ -14,11 +14,39 @@ use crate::codex::translation::{
 use crate::core::errors::TranslationError;
 use crate::core::types::{TranslationMode, TranslationRequest, TranslationResult};
 use crate::settings::types::{
-    language_pair_action, resolve_model_for_job, LanguagePairAction, ModelCatalogAuthority,
+    language_pair_action, resolve_model_for_job, AvailableModel, LanguagePairAction,
+    ModelCatalogAuthority, ModelChoice,
 };
 
 const TRANSLATION_EVENT_NAME: &str = "translation-event";
 const TRANSLATION_SERVICE_UNAVAILABLE: &str = "translation_service_unavailable";
+const MODEL_PREFLIGHT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+enum ModelPreflightOutcome {
+    Available(Vec<AvailableModel>),
+    Unavailable,
+    SignedOut,
+    TimedOut,
+    Cancelled,
+}
+
+fn resolve_preflight_model(
+    choice: &ModelChoice,
+    outcome: ModelPreflightOutcome,
+) -> Result<crate::core::types::TranslationModel, String> {
+    match outcome {
+        ModelPreflightOutcome::Available(models) => {
+            resolve_model_for_job(choice, ModelCatalogAuthority::Available(&models))
+                .map_err(|error| error.code().to_owned())
+        }
+        ModelPreflightOutcome::Unavailable | ModelPreflightOutcome::TimedOut => match choice {
+            ModelChoice::Automatic => Ok(crate::core::types::TranslationModel::Automatic),
+            ModelChoice::Specific { .. } => Err("model_catalog_unavailable".to_owned()),
+        },
+        ModelPreflightOutcome::SignedOut => Err("model_catalog_signed_out".to_owned()),
+        ModelPreflightOutcome::Cancelled => Err("translation_cancelled".to_owned()),
+    }
+}
 
 #[derive(Clone, Serialize)]
 #[serde(
@@ -65,6 +93,28 @@ pub trait TranslationEventSink: Send + Sync + 'static {
 pub struct TranslationJobManager {
     backend: Arc<CodexTranslationBackend>,
     registry: SharedOwnerJobRegistry,
+}
+
+pub struct PreparedTranslationJob {
+    job_id: Uuid,
+    permit: TranslationJobPermit,
+}
+
+impl PreparedTranslationJob {
+    pub fn job_id(&self) -> Uuid {
+        self.job_id
+    }
+
+    pub async fn wait_for_preflight<F, T>(
+        &mut self,
+        maximum_wait: std::time::Duration,
+        future: F,
+    ) -> Result<T, TranslationError>
+    where
+        F: std::future::Future<Output = T>,
+    {
+        self.permit.wait_for_preflight(maximum_wait, future).await
+    }
 }
 
 #[derive(Default)]
@@ -132,18 +182,23 @@ impl TranslationJobManager {
         sink: Arc<dyn TranslationEventSink>,
     ) -> Result<Uuid, TranslationError> {
         validate_translation_request(&request)?;
-        let job_id = Uuid::new_v4();
-        lock_registry(&self.registry).begin(owner.into(), job_id)?;
-        self.start_reserved(job_id, request, sink).await
+        let prepared = self.prepare(owner).await?;
+        self.start_prepared(prepared, request, sink).await
     }
 
-    pub(crate) async fn start_reserved(
+    pub async fn prepare(
         self: &Arc<Self>,
+        owner: impl Into<String>,
+    ) -> Result<PreparedTranslationJob, TranslationError> {
+        let job_id = Uuid::new_v4();
+        lock_registry(&self.registry).begin(owner.into(), job_id)?;
+        self.prepare_reserved(job_id).await
+    }
+
+    pub(crate) async fn prepare_reserved(
+        &self,
         job_id: Uuid,
-        request: TranslationRequest,
-        sink: Arc<dyn TranslationEventSink>,
-    ) -> Result<Uuid, TranslationError> {
-        validate_translation_request(&request)?;
+    ) -> Result<PreparedTranslationJob, TranslationError> {
         let permit = match self.backend.reserve_job(job_id).await {
             Ok(permit) => permit,
             Err(error) => {
@@ -156,11 +211,34 @@ impl TranslationJobManager {
             lock_registry(&self.registry).remove(job_id);
             return Err(TranslationError::Cancelled);
         }
+        Ok(PreparedTranslationJob { job_id, permit })
+    }
+
+    pub(crate) async fn start_prepared(
+        self: &Arc<Self>,
+        prepared: PreparedTranslationJob,
+        request: TranslationRequest,
+        sink: Arc<dyn TranslationEventSink>,
+    ) -> Result<Uuid, TranslationError> {
+        let job_id = prepared.job_id;
+        if let Err(error) = validate_translation_request(&request) {
+            self.discard_prepared(prepared).await;
+            return Err(error);
+        }
+        if !lock_registry(&self.registry).owner_is_live(job_id) {
+            self.discard_prepared(prepared).await;
+            return Err(TranslationError::Cancelled);
+        }
         let manager = self.clone();
         tauri::async_runtime::spawn(async move {
-            manager.run(job_id, permit, request, sink).await;
+            manager.run(prepared, request, sink).await;
         });
         Ok(job_id)
+    }
+
+    pub async fn discard_prepared(&self, prepared: PreparedTranslationJob) {
+        self.backend.discard_reserved_job(prepared.permit).await;
+        lock_registry(&self.registry).remove(prepared.job_id);
     }
 
     pub async fn cancel(&self, owner: &str, job_id: Uuid) -> bool {
@@ -191,18 +269,18 @@ impl TranslationJobManager {
 
     async fn run(
         &self,
-        job_id: Uuid,
-        permit: TranslationJobPermit,
+        prepared: PreparedTranslationJob,
         request: TranslationRequest,
         sink: Arc<dyn TranslationEventSink>,
     ) {
+        let job_id = prepared.job_id;
         let observer = JobObserver {
             job_id,
             sink: sink.clone(),
         };
         let result = self
             .backend
-            .translate_reserved(permit, request, &observer)
+            .translate_reserved(prepared.permit, request, &observer)
             .await;
         match result {
             Ok(result) => sink.emit(TranslationEvent::Completed { job_id, result }),
@@ -218,10 +296,14 @@ impl TranslationJobManager {
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_translation_action, OwnerJobRegistry};
+    use super::{
+        resolve_preflight_model, validate_translation_action, ModelPreflightOutcome,
+        OwnerJobRegistry,
+    };
     use crate::core::types::{
         Quality, Tone, TranslationMode, TranslationModel, TranslationProfile, TranslationRequest,
     };
+    use crate::settings::types::ModelChoice;
     use uuid::Uuid;
 
     #[test]
@@ -259,6 +341,43 @@ mod tests {
         request.mode = TranslationMode::Rewrite;
         assert_eq!(validate_translation_action(&request), Ok(()));
     }
+
+    #[test]
+    fn automatic_model_uses_protocol_default_after_bounded_catalog_failure() {
+        for outcome in [
+            ModelPreflightOutcome::TimedOut,
+            ModelPreflightOutcome::Unavailable,
+        ] {
+            assert_eq!(
+                resolve_preflight_model(&ModelChoice::Automatic, outcome),
+                Ok(TranslationModel::Automatic)
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_model_fails_closed_when_catalog_cannot_be_authoritatively_checked() {
+        let choice = ModelChoice::Specific {
+            id: "saved-model".into(),
+        };
+        for outcome in [
+            ModelPreflightOutcome::TimedOut,
+            ModelPreflightOutcome::Unavailable,
+        ] {
+            assert_eq!(
+                resolve_preflight_model(&choice, outcome),
+                Err("model_catalog_unavailable".to_owned())
+            );
+        }
+        assert_eq!(
+            resolve_preflight_model(&ModelChoice::Automatic, ModelPreflightOutcome::SignedOut),
+            Err("model_catalog_signed_out".to_owned())
+        );
+        assert_eq!(
+            resolve_preflight_model(&ModelChoice::Automatic, ModelPreflightOutcome::Cancelled),
+            Err("translation_cancelled".to_owned())
+        );
+    }
 }
 
 struct JobObserver {
@@ -293,27 +412,6 @@ pub async fn translate_text(
     let owner = window.label().to_owned();
     validate_translation_action(&request).map_err(str::to_owned)?;
     validate_translation_request(&request).map_err(|error| error_code(&error).to_owned())?;
-    let selected_model = {
-        let _operation = state
-            .lock_settings_operation()
-            .await
-            .map_err(|_| "settings_shutting_down".to_owned())?;
-        crate::commands::settings::open_store(&app)?
-            .load()
-            .await
-            .map_err(|error| error.code().to_owned())?
-            .selected_model
-    };
-    request.model = match crate::commands::settings::read_authoritative_models(&state).await {
-        Ok(models) => {
-            resolve_model_for_job(&selected_model, ModelCatalogAuthority::Available(&models))
-        }
-        Err(code) if code == "model_catalog_signed_out" => {
-            resolve_model_for_job(&selected_model, ModelCatalogAuthority::SignedOut)
-        }
-        Err(_) => resolve_model_for_job(&selected_model, ModelCatalogAuthority::Unavailable),
-    }
-    .map_err(|error| error.code().to_owned())?;
     let job_id = state
         .reserve_window_translation_job(&owner)
         .map_err(|error| error_code(&error).to_owned())?;
@@ -324,8 +422,56 @@ pub async fn translate_text(
             return Err(TRANSLATION_SERVICE_UNAVAILABLE.to_owned());
         }
     };
+    let mut prepared = manager
+        .prepare_reserved(job_id)
+        .await
+        .map_err(|error| error_code(&error).to_owned())?;
+    let selected_model = match prepared
+        .wait_for_preflight(MODEL_PREFLIGHT_TIMEOUT, async {
+            let _operation = state
+                .lock_settings_operation()
+                .await
+                .map_err(|_| "settings_shutting_down".to_owned())?;
+            crate::commands::settings::open_store(&app)?
+                .load()
+                .await
+                .map(|settings| settings.selected_model)
+                .map_err(|error| error.code().to_owned())
+        })
+        .await
+    {
+        Ok(Ok(choice)) => choice,
+        Ok(Err(code)) => {
+            manager.discard_prepared(prepared).await;
+            return Err(code);
+        }
+        Err(error) => {
+            manager.discard_prepared(prepared).await;
+            return Err(error_code(&error).to_owned());
+        }
+    };
+    let preflight = prepared
+        .wait_for_preflight(
+            MODEL_PREFLIGHT_TIMEOUT,
+            crate::commands::settings::read_authoritative_models(&state),
+        )
+        .await;
+    let outcome = match preflight {
+        Ok(Ok(models)) => ModelPreflightOutcome::Available(models),
+        Ok(Err(code)) if code == "model_catalog_signed_out" => ModelPreflightOutcome::SignedOut,
+        Ok(Err(_)) => ModelPreflightOutcome::Unavailable,
+        Err(TranslationError::TimedOut) => ModelPreflightOutcome::TimedOut,
+        Err(_) => ModelPreflightOutcome::Cancelled,
+    };
+    request.model = match resolve_preflight_model(&selected_model, outcome) {
+        Ok(model) => model,
+        Err(code) => {
+            manager.discard_prepared(prepared).await;
+            return Err(code);
+        }
+    };
     manager
-        .start_reserved(job_id, request, Arc::new(TauriWindowEventSink(window)))
+        .start_prepared(prepared, request, Arc::new(TauriWindowEventSink(window)))
         .await
         .map_err(|error| error_code(&error).to_owned())
 }

@@ -142,7 +142,11 @@ impl CodexTranslationBackend {
         }
         let (cancel, cancelled) = watch::channel(false);
         active.insert(job_id, cancel);
-        Ok(TranslationJobPermit { job_id, cancelled })
+        Ok(TranslationJobPermit {
+            job_id,
+            cancelled,
+            deadline: Instant::now() + self.translation_timeout,
+        })
     }
 
     pub async fn translate_reserved(
@@ -152,7 +156,7 @@ impl CodexTranslationBackend {
         observer: &(dyn TranslationObserver + Sync),
     ) -> Result<TranslationResult, TranslationError> {
         let result = self
-            .translate_stream_inner(request, observer, &mut permit.cancelled)
+            .translate_stream_inner(request, observer, &mut permit.cancelled, permit.deadline)
             .await;
         self.finish_job(permit.job_id).await;
         result
@@ -222,13 +226,13 @@ impl CodexTranslationBackend {
         request: TranslationRequest,
         observer: &(dyn TranslationObserver + Sync),
         cancelled: &mut watch::Receiver<bool>,
+        deadline: Instant,
     ) -> Result<TranslationResult, TranslationError> {
         let prompt = validated_translation_prompt(&request)?;
         validate_workspace_binding(&self.workspace_binding)?;
         if *cancelled.borrow() {
             return Err(TranslationError::Cancelled);
         }
-        let deadline = Instant::now() + self.translation_timeout;
         let mut events = self.transport.subscribe();
         let base_thread_id = self
             .base_thread_id
@@ -371,6 +375,33 @@ impl CodexTranslationBackend {
 pub struct TranslationJobPermit {
     job_id: Uuid,
     cancelled: watch::Receiver<bool>,
+    deadline: Instant,
+}
+
+impl TranslationJobPermit {
+    pub async fn wait_for_preflight<F, T>(
+        &mut self,
+        maximum_wait: Duration,
+        future: F,
+    ) -> Result<T, TranslationError>
+    where
+        F: Future<Output = T>,
+    {
+        if *self.cancelled.borrow() {
+            return Err(TranslationError::Cancelled);
+        }
+        let deadline = self.deadline.min(Instant::now() + maximum_wait);
+        tokio::select! {
+            biased;
+            changed = self.cancelled.changed() => {
+                let _ = changed;
+                Err(TranslationError::Cancelled)
+            }
+            result = timeout_at(deadline, future) => {
+                result.map_err(|_| TranslationError::TimedOut)
+            }
+        }
+    }
 }
 
 #[async_trait]

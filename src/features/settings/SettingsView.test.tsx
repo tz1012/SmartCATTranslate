@@ -4,6 +4,11 @@ import { invoke } from '@tauri-apps/api/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SettingsView, type AppSettings } from './SettingsView';
 
+const accountEvents = vi.hoisted(() => ({
+  handler: null as null | ((reason: 'loginSucceeded' | 'loginFailed' | 'loginCancelled' | 'accountUpdated') => void),
+  unlisten: vi.fn(),
+}));
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((resolvePromise) => { resolve = resolvePromise; });
@@ -11,6 +16,12 @@ function deferred<T>() {
 }
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
+vi.mock('../account/accountApi', () => ({
+  onAccountStateChanged: vi.fn(async (handler: typeof accountEvents.handler) => {
+    accountEvents.handler = handler;
+    return accountEvents.unlisten;
+  }),
+}));
 
 const defaultSettings: AppSettings = {
   schemaVersion: 1,
@@ -48,6 +59,7 @@ function mockCommands(settings: AppSettings = defaultSettings, models: unknown[]
 
 afterEach(() => {
   cleanup();
+  accountEvents.handler = null;
   vi.clearAllMocks();
 });
 
@@ -132,6 +144,99 @@ describe('SettingsView', () => {
     expect(invoke).toHaveBeenCalledWith('save_settings', {
       settings: expect.objectContaining({ selectedModel: { type: 'specific', id: 'saved-model' } }),
     });
+  });
+
+  it('refreshes a signed-out model catalog after the account login event', async () => {
+    let modelReads = 0;
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'get_settings') return structuredClone(defaultSettings);
+      if (command === 'list_available_models') {
+        modelReads += 1;
+        if (modelReads === 1) throw 'model_catalog_signed_out';
+        return [{ id: 'connected-model', displayName: 'Connected Model', supportedReasoningEfforts: [], isDefault: true }];
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+    render(<SettingsView />);
+    expect(await screen.findByRole('status', { name: '모델 목록 상태' })).toHaveTextContent('ChatGPT 계정 연결 후');
+
+    await act(async () => accountEvents.handler?.('loginSucceeded'));
+
+    expect(await screen.findByRole('option', { name: 'Connected Model' })).toBeVisible();
+    expect(modelReads).toBe(2);
+  });
+
+  it('offers localized retry and uses it to refresh a failed catalog', async () => {
+    let modelReads = 0;
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'get_settings') return structuredClone(defaultSettings);
+      if (command === 'list_available_models') {
+        modelReads += 1;
+        if (modelReads === 1) throw new Error('offline');
+        return [{ id: 'retry-model', displayName: 'Retry Model', supportedReasoningEfforts: [], isDefault: true }];
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+    const user = userEvent.setup();
+    render(<SettingsView />);
+
+    await user.click(await screen.findByRole('button', { name: '다시 시도' }));
+
+    expect(await screen.findByRole('option', { name: 'Retry Model' })).toBeVisible();
+    expect(modelReads).toBe(2);
+
+    cleanup();
+    vi.clearAllMocks();
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'get_settings') return structuredClone({ ...defaultSettings, locale: 'en' });
+      if (command === 'list_available_models') throw new Error('offline');
+      throw new Error(`unexpected command: ${command}`);
+    });
+    render(<SettingsView />);
+    expect(await screen.findByRole('button', { name: 'Retry' })).toBeVisible();
+  });
+
+  it('ignores an older retry result after a newer account refresh completes', async () => {
+    const older = deferred<unknown[]>();
+    const newer = deferred<unknown[]>();
+    let modelReads = 0;
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'get_settings') return structuredClone(defaultSettings);
+      if (command === 'list_available_models') {
+        modelReads += 1;
+        if (modelReads === 1) throw new Error('offline');
+        return modelReads === 2 ? older.promise : newer.promise;
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+    const user = userEvent.setup();
+    render(<SettingsView />);
+    await user.click(await screen.findByRole('button', { name: '다시 시도' }));
+    await waitFor(() => expect(modelReads).toBe(2));
+
+    await act(async () => accountEvents.handler?.('accountUpdated'));
+    await waitFor(() => expect(modelReads).toBe(3));
+    newer.resolve([{ id: 'new-model', displayName: 'New Model', supportedReasoningEfforts: [], isDefault: true }]);
+    expect(await screen.findByRole('option', { name: 'New Model' })).toBeVisible();
+    older.resolve([{ id: 'old-model', displayName: 'Old Model', supportedReasoningEfforts: [], isDefault: true }]);
+    await act(async () => older.promise);
+
+    expect(screen.getByRole('option', { name: 'New Model' })).toBeVisible();
+    expect(screen.queryByRole('option', { name: 'Old Model' })).not.toBeInTheDocument();
+  });
+
+  it('unsubscribes and ignores account events after unmount', async () => {
+    mockCommands();
+    const view = render(<SettingsView />);
+    await screen.findByRole('heading', { name: '설정' });
+    await waitFor(() => expect(accountEvents.handler).not.toBeNull());
+    const modelReads = vi.mocked(invoke).mock.calls.filter(([command]) => command === 'list_available_models').length;
+
+    view.unmount();
+    await act(async () => accountEvents.handler?.('accountUpdated'));
+
+    expect(accountEvents.unlisten).toHaveBeenCalledOnce();
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === 'list_available_models')).toHaveLength(modelReads);
   });
 
   it('offers rewrite or target-language change for a matching detected language', async () => {
