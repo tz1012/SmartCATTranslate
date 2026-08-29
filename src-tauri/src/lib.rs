@@ -10,13 +10,16 @@ pub mod app_state;
 pub mod codex;
 pub mod commands;
 pub mod core;
+pub mod settings;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_store::Builder::default().build())
         .manage(app_state::AppState::default())
         .setup(|app| {
+            commands::settings::open_store(app.handle())?;
             let app_data_root = app.path().app_local_data_dir()?;
             let resource_root = app.path().resource_dir()?;
             let executable_path = std::env::current_exe()?;
@@ -46,6 +49,9 @@ pub fn run() {
             commands::account::cancel_chatgpt_login,
             commands::translation::translate_text,
             commands::translation::cancel_translation,
+            commands::settings::get_settings,
+            commands::settings::save_settings,
+            commands::settings::list_available_models,
         ])
         .build(tauri::generate_context!())
         .expect("failed to run SmartCAT Translate");

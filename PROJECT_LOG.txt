@@ -316,3 +316,25 @@ TDD 및 검증
 - 요약: security: complete-release-evidence
 - 변경 파일: .github/workflows/ci.yml, .github/workflows/smartcat-runtime-release.yml, CHANGELOG.md, DECISIONS.txt, package.json, PROJECT_LOG.txt, runtime-patches/codex-0.144.4-smartcat/pin.json, runtime-patches/codex-0.144.4-smartcat/smartcat.patch, scripts/build-smartcat-codex-runtime.mjs, scripts/build-smartcat-codex-runtime.test.mjs, scripts/release-evidence.mjs, scripts/release-evidence.test.mjs, src-tauri/src/codex/manifest.rs, task-7-report.md
 - 검증: pnpm runtime:build:test && 19/19 passed && cargo test && 112/112 passed
+
+[2026-08-30] Task 8 — 번역 프로필, 용어집, 모델 선택과 앱 설정
+
+구현
+- 스키마 버전 1의 안정적인 Rust 설정 타입과 기본값, 누락된 버전 마이그레이션, 저장 전 전체 검증을 추가했다. 기본 번역은 원문 자동 감지, 대상 한국어, 균형 품질, 자연스러운 문체이며 시스템 테마와 한국어 화면을 사용한다.
+- 프로필 생성·이름 변경·삭제, 기본 프로필 보호, 언어 태그와 보존 기간 범위, 중복 용어집 원문, 보호 전용 용어를 검증한다.
+- 비밀정보가 아닌 설정을 Tauri Store 상태에 유지하고 자동 저장을 끈 뒤 동일 디렉터리 임시 파일의 동기화와 원자 교체로 저장한다. 동시 설정 명령은 앱 상태의 단일 작업 잠금으로 직렬화한다.
+- 초기화된 계정 런타임의 `model/list`를 페이지 단위로 조회해 서버가 반환한 식별자, 표시 이름, 추론 강도 순서와 기본 여부만 화면에 전달한다. 잘못된 응답과 반복 커서는 안전한 고정 오류로 닫는다.
+- 저장 모델이 현재 목록에 없으면 경고를 표시하고 실제 선택은 자동으로 해석하되, 사용자가 저장하기 전까지 원래 식별자를 유지한다.
+- 한국어·영어 설정 화면에 프로필, 공용 다국어 언어쌍, 품질, 문체, 분야, 용어집, 보호 용어, 모델, 테마, 로그인 실행, 닫기 동작과 빠른 번역 위치를 추가했다. 감지 언어와 대상 언어가 같으면 문장 개선과 대상 언어 변경을 명시적으로 제안한다.
+
+TDD 및 검증
+- RED: Rust 설정 모듈이 없어 통합 시험이 E0432/E0433으로 실패하고 React 설정 화면이 없어 import가 실패함을 각각 확인했다.
+- GREEN: 설정 저장소와 모델 카탈로그 집중 Rust 시험 8/8, 설정 화면 집중 시험 7/7 통과.
+- 전체 Rust 확장 시험 120/120 통과, 실제 로컬 런타임이 필요한 2건은 기존 조건부 무시 상태를 유지한다. rustfmt와 `-D warnings` Clippy가 통과했다.
+- 전체 프런트엔드 24/24, TypeScript/Vite 프로덕션 빌드, 변경 기록 16/16, 런타임 고정 17/17, 런타임·릴리스 계약 19/19이 통과했다.
+- 원문, 번역문, 인증 정보와 전체 로컬 경로를 기록하지 않았으며 Task 7의 도구 없는 런타임과 실패 폐쇄 회귀 시험이 모두 통과했다.
+
+[2026-08-30 00:26 Asia/Seoul] 변경 기록
+- 요약: feature: translation-settings
+- 변경 파일: CHANGELOG.md, DECISIONS.txt, PROJECT_LOG.txt, src-tauri/Cargo.lock, src-tauri/Cargo.toml, src-tauri/src/app_state.rs, src-tauri/src/commands/mod.rs, src-tauri/src/commands/settings.rs, src-tauri/src/lib.rs, src-tauri/src/settings/mod.rs, src-tauri/src/settings/store.rs, src-tauri/src/settings/types.rs, src-tauri/tests/settings_store.rs, src/features/settings/GlossaryEditor.tsx, src/features/settings/languages.ts, src/features/settings/ModelSelector.tsx, src/features/settings/SettingsView.test.tsx, src/features/settings/SettingsView.tsx
+- 검증: cargo test --all-targets --features test-helper && 120/120 passed && pnpm test && 24/24 passed && pnpm records:test && 16/16 passed

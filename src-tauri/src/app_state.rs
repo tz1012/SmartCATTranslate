@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, MutexGuard, RwLock};
 
 use crate::codex::auth::AccountService;
 use crate::codex::transport::{JsonlAppServerTransport, TransportError};
@@ -9,11 +9,13 @@ use crate::commands::translation::{
     new_owner_job_registry, SharedOwnerJobRegistry, TranslationJobManager,
 };
 use crate::core::errors::TranslationError;
+use crate::settings::ModelCatalogService;
 
 pub struct AppState {
     runtime: RwLock<Option<InstalledAccountRuntime>>,
     shutting_down: AtomicBool,
     translation_owners: SharedOwnerJobRegistry,
+    settings_operation: Mutex<()>,
 }
 
 impl Default for AppState {
@@ -22,6 +24,7 @@ impl Default for AppState {
             runtime: RwLock::new(None),
             shutting_down: AtomicBool::new(false),
             translation_owners: new_owner_job_registry(),
+            settings_operation: Mutex::new(()),
         }
     }
 }
@@ -73,6 +76,16 @@ impl AppState {
             .await
             .as_ref()
             .and_then(|runtime| runtime.translation_jobs.clone())
+    }
+
+    pub async fn model_catalog_service(&self) -> Option<ModelCatalogService> {
+        let runtime = self.runtime.read().await;
+        let transport = runtime.as_ref()?.transport.as_ref()?.clone();
+        Some(ModelCatalogService::new(transport))
+    }
+
+    pub(crate) async fn lock_settings_operation(&self) -> MutexGuard<'_, ()> {
+        self.settings_operation.lock().await
     }
 
     pub(crate) fn translation_owner_registry(&self) -> SharedOwnerJobRegistry {
