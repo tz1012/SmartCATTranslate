@@ -304,7 +304,7 @@ describe('TextWorkspace', () => {
     await userEvent.click(screen.getByRole('button', { name: '번역문 복사' }));
     expect(writeText).toHaveBeenCalledWith('안녕하세요');
     await userEvent.click(screen.getByRole('button', { name: '번역문 저장' }));
-    expect(invoke).toHaveBeenCalledWith('save_translation_text', { text: '안녕하세요', targetLanguage: 'ko' });
+    expect(invoke).toHaveBeenCalledWith('save_translation_text', { text: '안녕하세요', targetLanguage: 'ko', locale: 'ko' });
     expect(screen.getByRole('status')).toHaveTextContent('번역문 파일을 저장했습니다.');
     await userEvent.click(screen.getByRole('button', { name: '모두 지우기' }));
     expect(screen.getByLabelText('원문')).toHaveValue('');
@@ -339,15 +339,52 @@ describe('TextWorkspace', () => {
     expect(screen.queryByText(/private (copy|save) detail/)).not.toBeInTheDocument();
   });
 
-  it('clears a completed result when the source changes and blocks source edits while running', async () => {
+  it('keeps source focus with readOnly and cancels on Escape after the keyboard start shortcut', async () => {
+    const user = userEvent.setup();
+    const activity: boolean[] = [];
+    render(<TextWorkspace onActivityChange={(active) => activity.push(active)} />);
+    const source = await screen.findByLabelText('원문');
+    await user.type(source, 'Hello');
+    source.focus();
+    await user.keyboard('{Control>}{Enter}{/Control}');
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('translate_text', expect.anything()));
+    expect(source).toHaveAttribute('readonly');
+    expect(source).toHaveFocus();
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('cancel_translation', { jobId: 'job-1' }));
+    expect(activity.at(-1)).toBe(true);
+    emitTranslation({ type: 'failed', jobId: 'job-1', code: 'translation_cancelled', message: 'private' });
+    await waitFor(() => expect(activity.at(-1)).toBe(false));
+  });
+
+  it('clears a completed result when the source changes', async () => {
     render(<TextWorkspace />);
     const source = await screen.findByLabelText('원문');
     await userEvent.type(source, 'Hello');
     await userEvent.click(screen.getByRole('button', { name: '번역' }));
-    expect(source).toBeDisabled();
     emitTranslation({ type: 'completed', jobId: 'job-1', result: { translatedText: '안녕하세요', detectedLanguage: 'en' } });
     await userEvent.type(source, '!');
     expect(screen.getByLabelText('번역문')).toHaveValue('');
+  });
+
+  it('reports authoritative activity and clears it on unmount without accepting stale events', async () => {
+    const activity: boolean[] = [];
+    const { unmount } = render(<TextWorkspace onActivityChange={(active) => activity.push(active)} />);
+    await userEvent.type(await screen.findByLabelText('원문'), 'Hello');
+    await userEvent.click(screen.getByRole('button', { name: '번역' }));
+    await waitFor(() => expect(activity.at(-1)).toBe(true));
+
+    emitTranslation({ type: 'failed', jobId: 'stale-job', code: 'translation_failed', message: 'stale' });
+    expect(activity.at(-1)).toBe(true);
+    emitTranslation({ type: 'failed', jobId: 'job-1', code: 'translation_failed', message: 'private' });
+    await waitFor(() => expect(activity.at(-1)).toBe(false));
+    await userEvent.click(screen.getByRole('button', { name: '다시 시도' }));
+    await waitFor(() => expect(activity.at(-1)).toBe(true));
+
+    unmount();
+    expect(activity.at(-1)).toBe(false);
+    emitTranslation({ type: 'completed', jobId: 'job-1', result: { translatedText: 'stale', detectedLanguage: 'en' } });
+    expect(activity.at(-1)).toBe(false);
   });
 
   it('validates empty and oversized sources before invoking the backend', async () => {

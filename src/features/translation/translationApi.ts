@@ -17,8 +17,8 @@ export function cancelTranslation(jobId: string): Promise<boolean> {
 
 export type SaveTranslationResult = { status: 'saved' | 'cancelled' };
 
-export function saveTranslationText(text: string, targetLanguage: string): Promise<SaveTranslationResult> {
-  return invoke<SaveTranslationResult>('save_translation_text', { text, targetLanguage });
+export function saveTranslationText(text: string, targetLanguage: string, locale: 'ko' | 'en'): Promise<SaveTranslationResult> {
+  return invoke<SaveTranslationResult>('save_translation_text', { text, targetLanguage, locale });
 }
 
 export function onTranslationEvent(

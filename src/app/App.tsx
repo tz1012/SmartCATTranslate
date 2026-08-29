@@ -9,14 +9,15 @@ export function App({ locale }: { locale?: AppLocale }) {
   const [savedLocale, setSavedLocale] = useState<AppLocale>('ko');
   const [savedTheme, setSavedTheme] = useState<Theme>('system');
   const [activeView, setActiveView] = useState<'translate' | 'settings'>('translate');
+  const [translationActive, setTranslationActive] = useState(false);
   const accountLocale = locale ?? savedLocale;
   const acceptPreferences = useCallback((loadedLocale: AppLocale, loadedTheme: Theme) => {
     if (locale === undefined) setSavedLocale(loadedLocale);
     setSavedTheme(loadedTheme);
   }, [locale]);
   const labels = accountLocale === 'ko'
-    ? { navigation: '주요 화면', translate: '번역', settings: '설정' }
-    : { navigation: 'Main views', translate: 'Translate', settings: 'Settings' };
+    ? { navigation: '주요 화면', translate: '번역', settings: '설정', settingsLocked: '번역 또는 취소 처리 중에는 설정을 열 수 없습니다.' }
+    : { navigation: 'Main views', translate: 'Translate', settings: 'Settings', settingsLocked: 'Settings are unavailable while translation or cancellation is in progress.' };
 
   return (
     <main data-theme={savedTheme}>
@@ -24,13 +25,16 @@ export function App({ locale }: { locale?: AppLocale }) {
         <h1>SmartCAT Translate</h1>
       </header>
       <AccountPanel locale={accountLocale} />
-      <nav className="app-navigation" role="tablist" aria-label={labels.navigation}>
+      <nav className="app-navigation" role="tablist" aria-label={labels.navigation} aria-busy={translationActive}>
         <button id="app-tab-translate" type="button" role="tab" aria-selected={activeView === 'translate'} aria-controls="app-panel-translate" onClick={() => setActiveView('translate')}>{labels.translate}</button>
-        <button id="app-tab-settings" type="button" role="tab" aria-selected={activeView === 'settings'} aria-controls="app-panel-settings" onClick={() => setActiveView('settings')}>{labels.settings}</button>
+        <button id="app-tab-settings" type="button" role="tab" aria-selected={activeView === 'settings'} aria-controls="app-panel-settings" aria-describedby={translationActive ? 'settings-navigation-status' : undefined} disabled={translationActive} onClick={() => {
+          if (!translationActive) setActiveView('settings');
+        }}>{labels.settings}</button>
       </nav>
+      {translationActive && <p id="settings-navigation-status" className="navigation-note" role="status">{labels.settingsLocked}</p>}
       {activeView === 'translate' ? (
         <div id="app-panel-translate" role="tabpanel" aria-labelledby="app-tab-translate">
-          <TextWorkspace locale={locale} onPreferencesLoaded={acceptPreferences} />
+          <TextWorkspace locale={locale} onPreferencesLoaded={acceptPreferences} onActivityChange={setTranslationActive} />
         </div>
       ) : (
         <div id="app-panel-settings" role="tabpanel" aria-labelledby="app-tab-settings">

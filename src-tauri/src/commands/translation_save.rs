@@ -23,7 +23,19 @@ pub trait TranslationSavePicker: Send + Sync {
     async fn choose_text_path(
         &self,
         suggested_name: &str,
+        title: &str,
+        filter_name: &str,
     ) -> Result<Option<PathBuf>, SaveTranslationError>;
+}
+
+fn localized_dialog_labels(
+    locale: &str,
+) -> Result<(&'static str, &'static str), SaveTranslationError> {
+    match locale {
+        "ko" => Ok(("번역문 저장", "텍스트 파일")),
+        "en" => Ok(("Save translation", "Text file")),
+        _ => Err(SaveTranslationError),
+    }
 }
 
 struct TauriTranslationSavePicker(tauri::AppHandle);
@@ -33,14 +45,16 @@ impl TranslationSavePicker for TauriTranslationSavePicker {
     async fn choose_text_path(
         &self,
         suggested_name: &str,
+        title: &str,
+        filter_name: &str,
     ) -> Result<Option<PathBuf>, SaveTranslationError> {
         let (sender, receiver) = tokio::sync::oneshot::channel();
         self.0
             .dialog()
             .file()
-            .set_title("Save translation")
+            .set_title(title)
             .set_file_name(suggested_name)
-            .add_filter("Text", &["txt"])
+            .add_filter(filter_name, &["txt"])
             .save_file(move |selection| {
                 let result = selection
                     .map(|path| path.into_path().map_err(|_| SaveTranslationError))
@@ -55,7 +69,9 @@ pub async fn save_translation_text_with_picker(
     picker: &(dyn TranslationSavePicker + Sync),
     text: &str,
     target_language: &str,
+    locale: &str,
 ) -> Result<SaveTranslationOutcome, SaveTranslationError> {
+    let (title, filter_name) = localized_dialog_labels(locale)?;
     if text.is_empty() || text.chars().count() > MAX_SAVED_CHARS || text.len() > MAX_SAVED_BYTES {
         return Err(SaveTranslationError);
     }
@@ -72,7 +88,10 @@ pub async fn save_translation_text_with_picker(
             &language
         }
     );
-    let Some(path) = picker.choose_text_path(&suggested_name).await? else {
+    let Some(path) = picker
+        .choose_text_path(&suggested_name, title, filter_name)
+        .await?
+    else {
         return Ok(SaveTranslationOutcome::Cancelled);
     };
     tokio::fs::write(path, text)
@@ -86,8 +105,14 @@ pub async fn save_translation_text(
     app: tauri::AppHandle,
     text: String,
     target_language: String,
+    locale: String,
 ) -> Result<SaveTranslationOutcome, String> {
-    save_translation_text_with_picker(&TauriTranslationSavePicker(app), &text, &target_language)
-        .await
-        .map_err(|_| "translation_save_failed".to_owned())
+    save_translation_text_with_picker(
+        &TauriTranslationSavePicker(app),
+        &text,
+        &target_language,
+        &locale,
+    )
+    .await
+    .map_err(|_| "translation_save_failed".to_owned())
 }

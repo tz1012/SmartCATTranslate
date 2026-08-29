@@ -52,9 +52,11 @@ function sourceWithinBounds(text: string) {
 
 export function TextWorkspace({
   locale: localeOverride,
+  onActivityChange,
   onPreferencesLoaded,
 }: {
   locale?: AppLocale;
+  onActivityChange?: (active: boolean) => void;
   onPreferencesLoaded?: (locale: AppLocale, theme: Theme) => void;
 }) {
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -195,7 +197,7 @@ export function TextWorkspace({
     if (!state.text) return;
     setValidationError('');
     try {
-      const result = await saveTranslationText(state.text, effectiveProfile?.targetLanguage ?? 'translated');
+      const result = await saveTranslationText(state.text, effectiveProfile?.targetLanguage ?? 'translated', locale);
       if (result.status === 'saved') setNotice(labels.saved);
     } catch {
       setValidationError(labels.saveFailed);
@@ -210,10 +212,22 @@ export function TextWorkspace({
     : state.status === 'completed' ? labels.completed
       : accountPhase === 'signedIn' ? labels.ready : '');
   const pendingCleanup = state.status === 'failed' && Boolean(state.pendingCleanup);
+  const activityActive = state.status === 'running' || pendingCleanup;
   const disabled = loadError || !effectiveProfile || accountPhase !== 'signedIn' || listenerState !== 'ready' || pendingCleanup;
 
+  useEffect(() => {
+    onActivityChange?.(activityActive);
+  }, [activityActive, onActivityChange]);
+
+  useEffect(() => () => onActivityChange?.(false), [onActivityChange]);
+
   return (
-    <section className="text-workspace" aria-label={labels.workspace}>
+    <section className="text-workspace" aria-label={labels.workspace} onKeyDownCapture={(event) => {
+      if (event.key === 'Escape' && activityActive) {
+        event.preventDefault();
+        void cancel();
+      }
+    }}>
       <nav className="workspace-tabs" role="tablist" aria-label={labels.workspace}>
         <button id="workspace-tab-text" aria-controls="workspace-panel-text" type="button" role="tab" aria-selected="true">{labels.text}</button>
         {([
@@ -280,11 +294,14 @@ export function TextWorkspace({
             id="translation-source"
             aria-label={labels.source}
             value={source}
-            disabled={state.status === 'running' || pendingCleanup}
-            onChange={(event) => { clearBoundResult(); setSource(event.target.value); }}
+            readOnly={activityActive}
+            onChange={(event) => {
+              if (activityActive) return;
+              clearBoundResult();
+              setSource(event.target.value);
+            }}
             onKeyDown={(event) => {
               if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') { event.preventDefault(); run(); }
-              if (event.key === 'Escape' && state.status === 'running') { event.preventDefault(); void cancel(); }
             }}
           />
           <small aria-live="off">{Array.from(source).length.toLocaleString(locale === 'ko' ? 'ko-KR' : 'en-US')} / {MAX_SOURCE_CHARS.toLocaleString()}</small>
