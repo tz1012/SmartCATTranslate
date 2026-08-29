@@ -9,6 +9,7 @@ test.beforeEach(async ({ page }) => {
       __TAURI_INTERNALS__: Record<string, unknown>;
       __TAURI_EVENT_PLUGIN_INTERNALS__: Record<string, unknown>;
       __copied?: string;
+      __translationRequest?: unknown;
     };
     const settings = {
       schemaVersion: 1,
@@ -57,6 +58,7 @@ test.beforeEach(async ({ page }) => {
         if (command === 'get_account') return { account: { state: 'signedIn', emailHint: 'an***@example.com', plan: 'Plus' }, loginPending: false };
         if (command === 'get_rate_limits') return { primaryUsedPercent: null, primaryResetsAt: null, secondaryUsedPercent: null, secondaryResetsAt: null };
         if (command === 'translate_text') {
+          browserWindow.__translationRequest = args?.request;
           setTimeout(() => {
             emit('translation-event', { type: 'delta', jobId: 'e2e-job', text: '서식을 ' });
             emit('translation-event', { type: 'delta', jobId: 'e2e-job', text: '유지하세요' });
@@ -79,12 +81,34 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
-test('streams and copies an exact text translation', async ({ page }) => {
+test('sends the exact request, streams, copies and lays out the panes responsively', async ({ page }, testInfo) => {
   await page.goto('/');
   await page.getByRole('textbox', { name: '원문', exact: true }).fill('Keep formatting');
   await page.getByRole('button', { name: '번역', exact: true }).click();
 
+  await expect.poll(() => page.evaluate(() => (window as Window & { __translationRequest?: unknown }).__translationRequest)).toEqual({
+    text: 'Keep formatting',
+    profile: { sourceLanguage: null, targetLanguage: 'ko', quality: 'balanced', tone: 'natural', protectedTerms: [] },
+    field: 'general',
+    glossary: [],
+    mode: 'translate',
+    secret: false,
+  });
+
   await expect(page.getByRole('textbox', { name: '번역문', exact: true })).toHaveValue('서식을 유지하세요');
   await page.getByRole('button', { name: '번역문 복사' }).click();
   await expect.poll(() => page.evaluate(() => (window as Window & { __copied?: string }).__copied)).toBe('서식을 유지하세요');
+
+  const source = await page.locator('.source-pane').boundingBox();
+  const result = await page.locator('.result-pane').boundingBox();
+  expect(source).not.toBeNull();
+  expect(result).not.toBeNull();
+  if (testInfo.project.name === 'mobile-390x844') {
+    expect(result!.y).toBeGreaterThan(source!.y + source!.height - 2);
+    expect(Math.abs(result!.x - source!.x)).toBeLessThan(2);
+  } else {
+    expect(result!.x).toBeGreaterThan(source!.x + source!.width - 2);
+    expect(Math.abs(result!.y - source!.y)).toBeLessThan(2);
+  }
+  await expect(page.locator('main')).toHaveAttribute('data-theme', 'light');
 });

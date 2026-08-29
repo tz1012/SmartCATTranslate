@@ -4,6 +4,7 @@ sources/
 
 # Frontend and Tauri build output
 node_modules/
+.playwright-browsers/
 dist/
 src-tauri/target/
 src-tauri/gen/

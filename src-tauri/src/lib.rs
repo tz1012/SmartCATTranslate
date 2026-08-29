@@ -16,6 +16,7 @@ pub mod settings;
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(app_state::AppState::default())
         .setup(|app| {
             let app_data_root = app.path().app_local_data_dir()?;
@@ -47,6 +48,7 @@ pub fn run() {
             commands::account::cancel_chatgpt_login,
             commands::translation::translate_text,
             commands::translation::cancel_translation,
+            commands::translation_save::save_translation_text,
             commands::settings::get_settings,
             commands::settings::save_settings,
             commands::settings::list_available_models,

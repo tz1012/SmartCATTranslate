@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import type { Quality, Tone, TranslationProfile } from '../../lib/types';
+import type { Field, Quality, Tone, TranslationProfile } from '../../lib/types';
+export type { Field } from '../../lib/types';
 import { onAccountStateChanged } from '../account/accountApi';
 import { GlossaryEditor } from './GlossaryEditor';
 import { languageLabel, SUPPORTED_LANGUAGES } from './languages';
@@ -9,7 +10,6 @@ import { createUuidV4 } from './uuid';
 
 export type AppLocale = 'ko' | 'en';
 export type Theme = 'system' | 'light' | 'dark';
-export type Field = 'general' | 'technical' | 'legal' | 'medical' | 'business';
 export type CloseBehavior = 'keepInTray' | 'quit' | 'askEveryTime';
 export type QuickAccessPosition = 'popup' | 'mainWindow';
 export type ModelChoice = { type: 'automatic' } | { type: 'specific'; id: string };
@@ -89,11 +89,17 @@ function displayProfileName(profile: SavedProfile, settings: AppSettings, locale
 }
 
 export function SettingsView({
+  locale: localeOverride,
   detectedSourceLanguage,
   onRewrite,
+  onPreferencesLoaded,
+  onPreferencesSaved,
 }: {
+  locale?: AppLocale;
   detectedSourceLanguage?: string;
   onRewrite?: () => void;
+  onPreferencesLoaded?: (locale: AppLocale, theme: Theme) => void;
+  onPreferencesSaved?: (locale: AppLocale, theme: Theme) => void;
 }) {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [models, setModels] = useState<AvailableModel[]>([]);
@@ -130,6 +136,7 @@ export function SettingsView({
       if (disposed) return;
       setSettings(loadedSettings);
       setSelectedProfileId(loadedSettings.defaultProfileId);
+      onPreferencesLoaded?.(loadedSettings.locale, loadedSettings.theme);
     }).catch(() => !disposed && setLoadFailed(true));
     try {
       void onAccountStateChanged(() => {
@@ -153,9 +160,9 @@ export function SettingsView({
       modelRefreshGeneration.current += 1;
       unlisten?.();
     };
-  }, [refreshModels]);
+  }, [onPreferencesLoaded, refreshModels]);
 
-  const locale = settings?.locale ?? 'ko';
+  const locale = localeOverride ?? settings?.locale ?? 'ko';
   const labels = copy[locale];
   const selectedProfile = useMemo(() => settings?.profiles.find((profile) => profile.id === selectedProfileId)
     ?? settings?.profiles.find((profile) => profile.id === settings.defaultProfileId), [settings, selectedProfileId]);
@@ -206,6 +213,7 @@ export function SettingsView({
       if (generation === saveGeneration.current && revision === settingsRevision.current) {
         setSettings(saved);
         setStatus(labels.saved);
+        onPreferencesSaved?.(saved.locale, saved.theme);
       }
     } catch {
       if (generation === saveGeneration.current) setStatus(labels.saveError);

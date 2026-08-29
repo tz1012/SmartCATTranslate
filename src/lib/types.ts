@@ -4,6 +4,13 @@ export type Tone = 'natural' | 'literal' | 'formal' | 'casual';
 
 export type TranslationMode = 'translate' | 'rewrite';
 
+export type Field = 'general' | 'technical' | 'legal' | 'medical' | 'business';
+
+export interface GlossaryMapping {
+  sourceTerm: string;
+  targetTerm: string;
+}
+
 export interface TranslationProfile {
   sourceLanguage: string | null;
   targetLanguage: string;
@@ -15,6 +22,8 @@ export interface TranslationProfile {
 export interface TranslationRequest {
   text: string;
   profile: TranslationProfile;
+  field: Field;
+  glossary: GlossaryMapping[];
   mode: TranslationMode;
   secret: boolean;
 }

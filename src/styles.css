@@ -36,7 +36,33 @@ main {
   min-height: 100vh;
   margin: 0 auto;
   padding: 1rem;
+  color: #172033;
+  background: #eef3f8;
 }
+
+.app-navigation {
+  display: flex;
+  gap: 0.35rem;
+  margin-bottom: 0.65rem;
+}
+
+.app-navigation button[aria-selected="true"] {
+  border-color: #0967c6;
+  color: #0967c6;
+  font-weight: 700;
+}
+
+#app-panel-settings > section {
+  display: grid;
+  gap: 0.85rem;
+  padding: 1rem;
+  border: 1px solid #d7e0ea;
+  border-radius: 0.9rem;
+  background: #fff;
+}
+
+#app-panel-settings h2 { margin: 0; }
+#app-panel-settings fieldset { display: grid; gap: 0.7rem; border: 1px solid #d7e0ea; border-radius: 0.7rem; }
 
 .app-header {
   display: flex;
@@ -180,12 +206,21 @@ textarea {
   .workspace-actions button { flex: 1 1 auto; }
 }
 
+main[data-theme="dark"] { color: #e7edf5; background: #111827; color-scheme: dark; }
+main[data-theme="dark"] :is(.text-workspace, .account-panel, #app-panel-settings > section, button, select) { color: #e7edf5; background: #182233; border-color: #344258; }
+main[data-theme="dark"] :is(.workspace-meta, .result-pane textarea) { background: #141e2c; }
+main[data-theme="dark"] :is(.workspace-tabs, .language-bar, .translation-pane + .translation-pane, .workspace-actions, #app-panel-settings fieldset) { border-color: #344258; }
+main[data-theme="dark"] textarea { color: #f0f4fa; }
+main[data-theme="dark"] :is(label, .workspace-status) { color: #bcc7d5; }
+main[data-theme="dark"] .rewrite-suggestion { color: #fff2bd; background: #3b3218; }
+
 @media (prefers-color-scheme: dark) {
   :root { color: #e7edf5; background: #111827; }
-  .text-workspace, .account-panel, button, select { color: #e7edf5; background: #182233; border-color: #344258; }
-  .workspace-meta, .result-pane textarea { background: #141e2c; }
-  .workspace-tabs, .language-bar, .translation-pane + .translation-pane, .workspace-actions { border-color: #344258; }
-  textarea { color: #f0f4fa; }
-  label, .workspace-status { color: #bcc7d5; }
-  .rewrite-suggestion { color: #fff2bd; background: #3b3218; }
+  main[data-theme="system"] { color: #e7edf5; background: #111827; color-scheme: dark; }
+  main[data-theme="system"] :is(.text-workspace, .account-panel, #app-panel-settings > section, button, select) { color: #e7edf5; background: #182233; border-color: #344258; }
+  main[data-theme="system"] :is(.workspace-meta, .result-pane textarea) { background: #141e2c; }
+  main[data-theme="system"] :is(.workspace-tabs, .language-bar, .translation-pane + .translation-pane, .workspace-actions, #app-panel-settings fieldset) { border-color: #344258; }
+  main[data-theme="system"] textarea { color: #f0f4fa; }
+  main[data-theme="system"] :is(label, .workspace-status) { color: #bcc7d5; }
+  main[data-theme="system"] .rewrite-suggestion { color: #fff2bd; background: #3b3218; }
 }

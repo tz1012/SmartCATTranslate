@@ -10,11 +10,31 @@ pub struct TranslationProfile {
     pub protected_terms: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum Field {
+    #[default]
+    General,
+    Technical,
+    Legal,
+    Medical,
+    Business,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GlossaryMapping {
+    pub source_term: String,
+    pub target_term: String,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TranslationRequest {
     pub text: String,
     pub profile: TranslationProfile,
+    pub field: Field,
+    pub glossary: Vec<GlossaryMapping>,
     pub mode: TranslationMode,
     pub secret: bool,
     #[serde(skip)]
@@ -62,7 +82,8 @@ pub enum TranslationMode {
 #[cfg(test)]
 mod tests {
     use super::{
-        Quality, Tone, TranslationMode, TranslationModel, TranslationProfile, TranslationRequest,
+        Field, GlossaryMapping, Quality, Tone, TranslationMode, TranslationModel,
+        TranslationProfile, TranslationRequest,
     };
 
     #[test]
@@ -76,6 +97,11 @@ mod tests {
                 tone: Tone::Natural,
                 protected_terms: vec!["SmartCAT".to_owned()],
             },
+            field: Field::Technical,
+            glossary: vec![GlossaryMapping {
+                source_term: "cloud".to_owned(),
+                target_term: "클라우드".to_owned(),
+            }],
             mode: TranslationMode::Translate,
             secret: true,
             model: TranslationModel::Automatic,
@@ -83,7 +109,7 @@ mod tests {
 
         assert_eq!(
             serde_json::to_string(&request).unwrap(),
-            r#"{"text":"Hello","profile":{"sourceLanguage":"en","targetLanguage":"ko","quality":"balanced","tone":"natural","protectedTerms":["SmartCAT"]},"mode":"translate","secret":true}"#
+            r#"{"text":"Hello","profile":{"sourceLanguage":"en","targetLanguage":"ko","quality":"balanced","tone":"natural","protectedTerms":["SmartCAT"]},"field":"technical","glossary":[{"sourceTerm":"cloud","targetTerm":"클라우드"}],"mode":"translate","secret":true}"#
         );
     }
 }

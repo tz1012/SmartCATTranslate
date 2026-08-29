@@ -11,11 +11,14 @@ export type TranslationJobState =
   | { status: 'idle'; text: '' }
   | { status: 'running'; jobId: string; text: string }
   | { status: 'completed'; jobId: string; text: string }
-  | { status: 'failed'; jobId?: string; text: string; message: string };
+  | { status: 'failed'; jobId?: string; text: string; message: string; pendingCleanup?: boolean };
+
+export type TranslationListenerState = 'connecting' | 'ready' | 'failed';
 
 export function useTranslationJob() {
   const [state, setState] = useState<TranslationJobState>({ status: 'idle', text: '' });
   const [detectedLanguage, setDetectedLanguage] = useState<string | null>(null);
+  const [listenerState, setListenerState] = useState<TranslationListenerState>('connecting');
   const mounted = useRef(false);
   const generation = useRef(0);
   const starting = useRef(false);
@@ -23,6 +26,7 @@ export function useTranslationJob() {
   const pendingEvents = useRef<TranslationEvent[]>([]);
   const cancelSent = useRef(false);
   const cancelRequested = useRef(false);
+  const listenerReady = useRef(false);
 
   const applyEvent = useCallback((event: TranslationEvent, expectedGeneration: number) => {
     if (!mounted.current || expectedGeneration !== generation.current) return;
@@ -34,6 +38,8 @@ export function useTranslationJob() {
       return;
     }
     activeJobId.current = null;
+    cancelSent.current = false;
+    cancelRequested.current = false;
     if (event.type === 'completed') {
       setDetectedLanguage(event.result.detectedLanguage);
       setState({ status: 'completed', jobId: event.jobId, text: event.result.translatedText });
@@ -54,11 +60,22 @@ export function useTranslationJob() {
       applyEvent(event, generation.current);
     }).then((stop) => {
       if (disposed) stop();
-      else unlisten = stop;
+      else {
+        unlisten = stop;
+        listenerReady.current = true;
+        setListenerState('ready');
+      }
+    }).catch(() => {
+      if (!disposed && mounted.current) {
+        listenerReady.current = false;
+        setListenerState('failed');
+        setState({ status: 'failed', text: '', message: 'translation_listener_unavailable' });
+      }
     });
     return () => {
       disposed = true;
       mounted.current = false;
+      listenerReady.current = false;
       generation.current += 1;
       unlisten?.();
       const jobId = activeJobId.current;
@@ -68,7 +85,7 @@ export function useTranslationJob() {
   }, [applyEvent]);
 
   const start = useCallback(async (request: TranslationRequest) => {
-    if (starting.current || activeJobId.current !== null) return;
+    if (!listenerReady.current || starting.current || activeJobId.current !== null) return;
     const thisGeneration = ++generation.current;
     starting.current = true;
     cancelSent.current = false;
@@ -86,14 +103,23 @@ export function useTranslationJob() {
       setState({ status: 'running', jobId, text: '' });
       if (cancelRequested.current) {
         cancelSent.current = true;
-        await cancelTranslation(jobId);
+        const cancelled = await cancelTranslation(jobId);
+        if (!cancelled) {
+          cancelSent.current = false;
+          setState({ status: 'failed', jobId, text: '', message: 'translation_cancel_failed', pendingCleanup: true });
+        }
       }
       const earlyEvents = pendingEvents.current;
       pendingEvents.current = [];
       for (const event of earlyEvents) applyEvent(event, thisGeneration);
-    } catch (error) {
+    } catch {
       if (mounted.current && thisGeneration === generation.current) {
-        setState({ status: 'failed', text: '', message: String(error) });
+        if (activeJobId.current) {
+          cancelSent.current = false;
+          setState({ status: 'failed', jobId: activeJobId.current, text: '', message: 'translation_cancel_failed', pendingCleanup: true });
+        } else {
+          setState({ status: 'failed', text: '', message: 'translation_start_failed' });
+        }
       }
     } finally {
       if (thisGeneration === generation.current) starting.current = false;
@@ -109,11 +135,12 @@ export function useTranslationJob() {
     if (cancelSent.current) return;
     cancelSent.current = true;
     try {
-      await cancelTranslation(jobId);
-    } catch (error) {
+      const cancelled = await cancelTranslation(jobId);
+      if (!cancelled) throw new Error('cancel rejected');
+    } catch {
       if (mounted.current && activeJobId.current === jobId) {
-        activeJobId.current = null;
-        setState({ status: 'failed', jobId, text: '', message: String(error) });
+        cancelSent.current = false;
+        setState({ status: 'failed', jobId, text: '', message: 'translation_cancel_failed', pendingCleanup: true });
       }
     }
   }, []);
@@ -125,5 +152,5 @@ export function useTranslationJob() {
     setState({ status: 'idle', text: '' });
   }, []);
 
-  return { state, detectedLanguage, start, cancel, reset };
+  return { state, detectedLanguage, listenerState, start, cancel, reset };
 }

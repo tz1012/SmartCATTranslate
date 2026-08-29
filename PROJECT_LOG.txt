@@ -405,3 +405,24 @@ TDD 및 검증
 - 요약: fix: stable-browser-open-error
 - 변경 파일: CHANGELOG.md, package.json, playwright.config.ts, pnpm-lock.yaml, PROJECT_LOG.txt, src-tauri/src/codex/auth.rs, src-tauri/src/commands/account.rs, src-tauri/tests/codex_auth.rs, src/app/App.test.tsx, src/app/App.tsx, src/features/settings/defaultProfile.ts, src/features/translation/TextWorkspace.test.tsx, src/features/translation/TextWorkspace.tsx, src/features/translation/translationApi.ts, src/features/translation/useTranslationJob.ts, src/styles.css, tests/e2e/text-translation.spec.ts
 - 검증: cargo fmt; cargo clippy; cargo test 131/131 passed
+
+[2026-08-30] Task 9 검토 수정 1 — 요청 계약, 정리 가능한 취소와 네이티브 저장
+
+구현
+- 번역과 설정을 실제 한국어·영어 앱 탭으로 연결하고 저장된 테마를 앱 루트에 적용했다. 모든 작업 탭은 대응 패널을 명시하며 작은 창과 넓은 창 배치를 유지한다.
+- 저장 프로필의 분야와 현재 언어쌍에 맞는 원문·대상 용어 매핑을 안정된 TypeScript/Rust 요청 계약으로 전달한다. 보호 전용 항목은 보호 용어에만 합치며 합계 항목 수·64 KiB와 항목별 문자·바이트 경계를 Rust에서 다시 검사한다.
+- 원문·분야·용어집 JSON은 메시지 끝까지 전부 비신뢰 번역 데이터다. 데이터가 경계처럼 보이는 문자열이나 악성 지시를 포함해도 실행하지 않고 번역만 하며 도구·명령·파일 접근과 동작을 금지한다.
+- 이벤트 구독 준비 전 시작을 차단하고 구독 실패를 고정 오류로 닫았다. 진행 중 편집을 막고 완료 뒤 원문·언어쌍을 바꾸면 감지 언어와 결과를 함께 지운다.
+- 작업 중 로그아웃되어도 취소를 허용하고, 취소 거부·실패에는 작업 식별자를 보존해 정리를 재시도하며 정리 전 새 작업·편집을 막는다. 화면 해제와 늦거나 다른 작업 이벤트는 기존 정리·식별자 경계를 유지한다.
+- 브라우저 Blob 다운로드를 Tauri 운영체제 저장 대화상자로 교체했다. 취소는 정상 결과이고 선택·쓰기 실패는 내용과 경로 없는 고정 오류만 반환한다.
+- Tauri 콘텐츠 보안 정책과 Playwright 1.62.1 exact CI 브라우저 설치·캐시를 추가했다. 캐시는 운영체제·exact 버전·잠금 파일에 묶여 프로젝트 드라이브 위치에 의존하지 않는다.
+
+TDD 및 검증
+- RED: 요청 분야·용어 매핑 부재, 비신뢰 데이터 종료 표식 위조, 합계 한도 초과, 구독 전 시작·구독 실패, 완료 뒤 원문 변경, 로그아웃 뒤 취소와 취소 실패 정리, Blob 저장·복사/저장 오류, 설정 화면 미마운트와 탭 관계를 실패 시험으로 재현했다.
+- GREEN: Rust 전체 134/134, 번역 조정기 33/33, 프런트엔드 55/55, Playwright 데스크톱·모바일 2/2, 런타임·공급망 19/19, 자동 기록 16/16과 프로덕션 빌드가 통과했다. rustfmt와 전체 대상·시험 기능 엄격 Clippy도 통과했다.
+- 원문·번역문·계정 정보·원시 이벤트와 전체 로컬 경로를 기록하지 않았다. 실제 ChatGPT 네트워크 호출은 하지 않았고 기존 Task 7·8 계정·모델·도구 없는 런타임 수명주기를 전체 Rust 시험으로 보존했다.
+
+[2026-08-30 07:57 Asia/Seoul] 변경 기록
+- 요약: fix: task9-review-hardening
+- 변경 파일: .github/workflows/ci.yml, .gitignore, CHANGELOG.md, DECISIONS.txt, PROJECT_LOG.txt, src-tauri/Cargo.lock, src-tauri/Cargo.toml, src-tauri/src/codex/translation.rs, src-tauri/src/commands/mod.rs, src-tauri/src/commands/translation_save.rs, src-tauri/src/commands/translation.rs, src-tauri/src/core/types.rs, src-tauri/src/lib.rs, src-tauri/src/settings/types.rs, src-tauri/tauri.conf.json, src-tauri/tests/translation_coordinator.rs, src-tauri/tests/translation_save.rs, src/app/App.test.tsx, src/app/App.tsx, src/features/settings/SettingsView.tsx, src/features/translation/TextWorkspace.test.tsx, src/features/translation/TextWorkspace.tsx, src/features/translation/translationApi.ts, src/features/translation/useTranslationJob.ts, src/lib/types.ts, src/styles.css, task-9-report.md, tests/e2e/text-translation.spec.ts
+- 검증: cargo test; 134/134 passed; cargo clippy; exit 0; pnpm test; 55/55 passed; pnpm test:e2e; 2/2 passed; pnpm build; exit 0

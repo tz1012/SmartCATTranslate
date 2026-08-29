@@ -63,6 +63,7 @@ function signedInCommands() {
     }
     if (command === 'translate_text') return 'job-1';
     if (command === 'cancel_translation') return true;
+    if (command === 'save_translation_text') return { status: 'saved' };
     throw new Error(`unexpected command: ${command}`);
   });
 }
@@ -82,6 +83,17 @@ function deferred<T>() {
 }
 
 beforeEach(() => {
+  vi.mocked(listen).mockImplementation((async (name: string, handler: EventCallback) => {
+    if (name === 'translation-event') {
+      bridge.translationHandler = handler;
+      return bridge.unlistenTranslation;
+    }
+    if (name === 'account-state-changed') {
+      bridge.accountHandler = handler;
+      return bridge.unlistenAccount;
+    }
+    throw new Error(`unexpected event: ${name}`);
+  }) as unknown as typeof listen);
   signedInCommands();
 });
 
@@ -110,6 +122,8 @@ describe('TextWorkspace', () => {
           tone: 'natural',
           protectedTerms: [],
         },
+        field: 'general',
+        glossary: [],
         mode: 'translate',
         secret: false,
       },
@@ -154,12 +168,81 @@ describe('TextWorkspace', () => {
     expect(await screen.findByDisplayValue('먼저 온 결과')).toBeVisible();
   });
 
+  it('does not start before the event listener is ready and localizes listener failure', async () => {
+    const listener = deferred<() => void>();
+    vi.mocked(listen).mockImplementation(async (name, handler) => {
+      if (name === 'translation-event') {
+        bridge.translationHandler = handler as EventCallback;
+        return listener.promise;
+      }
+      bridge.accountHandler = handler as EventCallback;
+      return bridge.unlistenAccount;
+    });
+    render(<TextWorkspace />);
+    await userEvent.type(await screen.findByLabelText('원문'), 'Hello');
+    expect(screen.getByRole('button', { name: '번역' })).toBeDisabled();
+    listener.reject(new Error('private listener detail'));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('번역 서비스를 시작할 수 없습니다.');
+    expect(screen.queryByText('private listener detail')).not.toBeInTheDocument();
+    expect(invoke).not.toHaveBeenCalledWith('translate_text', expect.anything());
+  });
+
   it('cancels a running job on the second action', async () => {
     render(<TextWorkspace />);
     await userEvent.type(await screen.findByLabelText('원문'), 'Hello');
     await userEvent.click(screen.getByRole('button', { name: '번역' }));
     await userEvent.click(await screen.findByRole('button', { name: '취소' }));
     expect(invoke).toHaveBeenCalledWith('cancel_translation', { jobId: 'job-1' });
+  });
+
+  it('keeps cancellation enabled when the account becomes signed out', async () => {
+    let signedIn = true;
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'get_settings') return structuredClone(settings);
+      if (command === 'get_account') return { account: { state: signedIn ? 'signedIn' : 'signedOut' }, loginPending: false };
+      if (command === 'translate_text') return 'job-1';
+      if (command === 'cancel_translation') return true;
+      throw new Error(`unexpected command: ${command}`);
+    });
+    render(<TextWorkspace />);
+    await userEvent.type(await screen.findByLabelText('원문'), 'Hello');
+    await userEvent.click(screen.getByRole('button', { name: '번역' }));
+    signedIn = false;
+    act(() => bridge.accountHandler?.({ payload: { reason: 'accountUpdated' } }));
+
+    const cancelButton = await screen.findByRole('button', { name: '취소' });
+    expect(cancelButton).toBeEnabled();
+    await userEvent.click(cancelButton);
+    expect(invoke).toHaveBeenCalledWith('cancel_translation', { jobId: 'job-1' });
+  });
+
+  it.each(['false', 'error'] as const)('reports a %s cancellation failure and retries cleanup', async (failure) => {
+    let cancelAttempts = 0;
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'get_settings') return structuredClone(settings);
+      if (command === 'get_account') return { account: { state: 'signedIn' }, loginPending: false };
+      if (command === 'translate_text') return 'job-1';
+      if (command === 'cancel_translation') {
+        cancelAttempts += 1;
+        if (cancelAttempts === 1) {
+          if (failure === 'error') throw new Error('private cancel detail');
+          return false;
+        }
+        return true;
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+    render(<TextWorkspace />);
+    await userEvent.type(await screen.findByLabelText('원문'), 'Hello');
+    await userEvent.click(screen.getByRole('button', { name: '번역' }));
+    await userEvent.click(screen.getByRole('button', { name: '취소' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('번역 취소를 완료하지 못했습니다.');
+    expect(screen.queryByText('private cancel detail')).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: '다시 시도' }));
+    expect(cancelAttempts).toBe(2);
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === 'translate_text')).toHaveLength(1);
   });
 
   it('unlistens and cancels a running job when unmounted', async () => {
@@ -210,14 +293,9 @@ describe('TextWorkspace', () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('cancel_translation', { jobId: 'late-job' }));
   });
 
-  it('copies, saves and clears a completed result without storing it in app history', async () => {
+  it('copies, saves natively and clears a completed result without storing it in app history', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
-    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn() });
-    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() });
-    const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:translation');
-    const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
-    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
     render(<TextWorkspace />);
     await userEvent.type(await screen.findByLabelText('원문'), 'Hello');
     await userEvent.click(screen.getByRole('button', { name: '번역' }));
@@ -226,10 +304,49 @@ describe('TextWorkspace', () => {
     await userEvent.click(screen.getByRole('button', { name: '번역문 복사' }));
     expect(writeText).toHaveBeenCalledWith('안녕하세요');
     await userEvent.click(screen.getByRole('button', { name: '번역문 저장' }));
-    expect(createObjectURL).toHaveBeenCalledOnce();
-    expect(revokeObjectURL).toHaveBeenCalledWith('blob:translation');
+    expect(invoke).toHaveBeenCalledWith('save_translation_text', { text: '안녕하세요', targetLanguage: 'ko' });
+    expect(screen.getByRole('status')).toHaveTextContent('번역문 파일을 저장했습니다.');
     await userEvent.click(screen.getByRole('button', { name: '모두 지우기' }));
     expect(screen.getByLabelText('원문')).toHaveValue('');
+    expect(screen.getByLabelText('번역문')).toHaveValue('');
+  });
+
+  it('announces fixed copy and native save failures while treating save cancellation as neutral', async () => {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: vi.fn().mockRejectedValue(new Error('private copy detail')) } });
+    let saveResult: unknown = { status: 'cancelled' };
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'get_settings') return structuredClone(settings);
+      if (command === 'get_account') return { account: { state: 'signedIn' }, loginPending: false };
+      if (command === 'translate_text') return 'job-1';
+      if (command === 'save_translation_text') {
+        if (saveResult instanceof Error) throw saveResult;
+        return saveResult;
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+    render(<TextWorkspace />);
+    await userEvent.type(await screen.findByLabelText('원문'), 'Hello');
+    await userEvent.click(screen.getByRole('button', { name: '번역' }));
+    emitTranslation({ type: 'completed', jobId: 'job-1', result: { translatedText: '안녕하세요', detectedLanguage: 'en' } });
+
+    await userEvent.click(screen.getByRole('button', { name: '번역문 복사' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('번역문을 복사하지 못했습니다.');
+    await userEvent.click(screen.getByRole('button', { name: '번역문 저장' }));
+    expect(screen.getByRole('status')).not.toHaveTextContent('저장했습니다');
+    saveResult = new Error('private save detail');
+    await userEvent.click(screen.getByRole('button', { name: '번역문 저장' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('번역문 파일을 저장하지 못했습니다.');
+    expect(screen.queryByText(/private (copy|save) detail/)).not.toBeInTheDocument();
+  });
+
+  it('clears a completed result when the source changes and blocks source edits while running', async () => {
+    render(<TextWorkspace />);
+    const source = await screen.findByLabelText('원문');
+    await userEvent.type(source, 'Hello');
+    await userEvent.click(screen.getByRole('button', { name: '번역' }));
+    expect(source).toBeDisabled();
+    emitTranslation({ type: 'completed', jobId: 'job-1', result: { translatedText: '안녕하세요', detectedLanguage: 'en' } });
+    await userEvent.type(source, '!');
     expect(screen.getByLabelText('번역문')).toHaveValue('');
   });
 
@@ -322,6 +439,31 @@ describe('TextWorkspace', () => {
     });
   });
 
+  it('passes the saved field and matching source-to-target glossary mappings', async () => {
+    const withMapping = structuredClone(settings);
+    withMapping.profiles[0].field = 'technical';
+    withMapping.profiles[0].profile.sourceLanguage = 'en';
+    withMapping.glossary = [
+      { id: 'map-1', sourceLanguage: 'en', targetLanguage: 'ko', sourceTerm: 'cloud', targetTerm: '클라우드', protectOnly: false },
+      { id: 'protect-1', sourceLanguage: 'en', targetLanguage: 'ko', sourceTerm: 'SmartCAT', targetTerm: '', protectOnly: true },
+    ];
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'get_settings') return withMapping;
+      if (command === 'get_account') return { account: { state: 'signedIn' }, loginPending: false };
+      if (command === 'translate_text') return 'job-1';
+      throw new Error(`unexpected command: ${command}`);
+    });
+    render(<TextWorkspace />);
+    await userEvent.type(await screen.findByLabelText('원문'), 'cloud by SmartCAT');
+    await userEvent.click(screen.getByRole('button', { name: '번역' }));
+
+    expect(invoke).toHaveBeenCalledWith('translate_text', { request: expect.objectContaining({
+      field: 'technical',
+      glossary: [{ sourceTerm: 'cloud', targetTerm: '클라우드' }],
+      profile: expect.objectContaining({ protectedTerms: ['SmartCAT'] }),
+    }) });
+  });
+
   it('renders the compact workspace and status labels entirely in English', async () => {
     const englishSettings = structuredClone(settings);
     englishSettings.locale = 'en';
@@ -333,6 +475,8 @@ describe('TextWorkspace', () => {
     const { container } = render(<TextWorkspace locale="en" />);
     expect(await screen.findByRole('region', { name: 'Text translation' })).toBeVisible();
     expect(screen.getByRole('tab', { name: 'Text' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tab', { name: 'Text' })).toHaveAttribute('aria-controls', 'workspace-panel-text');
+    expect(screen.getByRole('tabpanel', { name: 'Text' })).toHaveAttribute('id', 'workspace-panel-text');
     expect(screen.getByText('Shortcut: Not set')).toBeVisible();
     expect(container.textContent).not.toMatch(/[\u3131-\u318E\uAC00-\uD7A3]/u);
   });

@@ -301,7 +301,8 @@ mod tests {
         OwnerJobRegistry,
     };
     use crate::core::types::{
-        Quality, Tone, TranslationMode, TranslationModel, TranslationProfile, TranslationRequest,
+        Field, Quality, Tone, TranslationMode, TranslationModel, TranslationProfile,
+        TranslationRequest,
     };
     use crate::settings::types::ModelChoice;
     use uuid::Uuid;
@@ -330,6 +331,8 @@ mod tests {
                 tone: Tone::Natural,
                 protected_terms: Vec::new(),
             },
+            field: Field::General,
+            glossary: Vec::new(),
             mode: TranslationMode::Translate,
             secret: false,
             model: TranslationModel::Automatic,

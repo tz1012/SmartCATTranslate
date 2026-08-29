@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+pub use crate::core::types::Field;
 use crate::core::types::{Quality, Tone, TranslationModel, TranslationProfile};
 
 pub const SETTINGS_SCHEMA_VERSION: u32 = 1;
@@ -34,17 +35,6 @@ pub enum Theme {
     System,
     Light,
     Dark,
-}
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum Field {
-    #[default]
-    General,
-    Technical,
-    Legal,
-    Medical,
-    Business,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
