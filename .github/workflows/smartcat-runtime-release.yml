@@ -1,0 +1,79 @@
+name: SmartCAT patched runtime release build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+jobs:
+  build-runtime-and-installer:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            sidecar: smartcat-codex-x86_64-pc-windows-msvc.exe
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            sidecar: smartcat-codex-x86_64-apple-darwin
+          - os: macos-15
+            target: aarch64-apple-darwin
+            sidecar: smartcat-codex-aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    env:
+      SMARTCAT_CODEX_CARGO_TARGET_DIR: ${{ runner.temp }}/smartcat-codex-target
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          targets: ${{ matrix.target }}
+          components: clippy,rustfmt
+      - run: pnpm install --frozen-lockfile
+      - name: Verify pinned source and patch build contract
+        run: pnpm runtime:build:test
+      - name: Build and test audited patched runtime
+        run: pnpm runtime:build -- --target ${{ matrix.target }}
+      - name: Verify the app accepts the exact patched live session
+        env:
+          SMARTCAT_PATCHED_CODEX_TEST_BINARY: ${{ github.workspace }}/src-tauri/binaries/${{ matrix.sidecar }}
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --features test-helper --test codex_bootstrap actual_patched_sidecar_initializes_and_attests_on_the_live_session -- --ignored --exact
+      - name: Test SmartCAT application
+        run: pnpm test
+      - name: Test SmartCAT Rust boundary
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --features test-helper
+      - name: Check SmartCAT Rust boundary
+        run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets --features test-helper -- -D warnings -A clippy::result-unit-err
+      - name: Build signed-ready Tauri installer with the patched sidecar
+        run: pnpm tauri build --config src-tauri/tauri.runtime.conf.json --target ${{ matrix.target }}
+      - name: Generate CycloneDX SBOM
+        uses: anchore/sbom-action@v0.20.10
+        with:
+          path: src-tauri/binaries
+          format: cyclonedx-json
+          output-file: smartcat-${{ matrix.target }}.sbom.json
+          upload-artifact: false
+      - name: Attest patched sidecar provenance
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: src-tauri/binaries/smartcat-codex-${{ matrix.target }}*
+      - name: Publish explicit release-workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: smartcat-${{ matrix.target }}
+          if-no-files-found: error
+          path: |
+            src-tauri/binaries/smartcat-codex-${{ matrix.target }}*
+            src-tauri/resources/smartcat-codex-runtime.json
+            smartcat-${{ matrix.target }}.sbom.json
+            src-tauri/target/${{ matrix.target }}/release/bundle/**

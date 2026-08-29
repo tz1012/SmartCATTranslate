@@ -27,39 +27,70 @@ impl RuntimeFailureRecorder for NoopRecorder {
     fn record(&self, _record: RuntimeFailureRecord) {}
 }
 
-async fn lock_appcontainer_integration() -> tokio::sync::MutexGuard<'static, ()> {
+async fn lock_process_integration() -> tokio::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
     LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
         .await
 }
 
-#[cfg(windows)]
 #[tokio::test]
-#[ignore = "blocked: pinned Codex 0.144.4 cannot canonicalize CODEX_HOME inside an otherwise functioning AppContainer"]
-async fn pinned_0_144_4_binary_accepts_the_isolated_config_inside_the_os_sandbox() {
-    let _serial = lock_appcontainer_integration().await;
-    let Some(binary) = std::env::var_os("SMARTCAT_PINNED_CODEX_0_144_4") else {
-        return;
-    };
-    let binary = std::path::PathBuf::from(binary);
-    assert!(binary.is_absolute());
+#[ignore = "requires the locally built SmartCAT patched Codex sidecar"]
+async fn actual_patched_sidecar_initializes_and_attests_on_the_live_session() {
+    let _serial = lock_process_integration().await;
+    let binary = std::env::var_os("SMARTCAT_PATCHED_CODEX_TEST_BINARY")
+        .expect("set SMARTCAT_PATCHED_CODEX_TEST_BINARY for this acceptance test");
     let app_data = tempdir().unwrap();
-    let launcher =
-        ProcessRuntimeLauncher::with_credential_source(app_data.path().to_path_buf(), None);
+    let empty_credentials = tempdir().unwrap();
+    let launcher = ProcessRuntimeLauncher::with_credential_source(
+        app_data.path().to_path_buf(),
+        Some(empty_credentials.path().to_path_buf()),
+    );
     let candidate = RuntimeCandidate::system(binary, Version::parse("0.144.4").unwrap());
 
-    let mut session = launcher.start(&candidate).await.unwrap();
-    assert_eq!(
-        session.initialize().await.unwrap(),
-        CODEX_APP_SERVER_PROTOCOL
-    );
+    let mut session = launcher
+        .start(&candidate)
+        .await
+        .expect("the patched sidecar must start");
+    let protocol = session
+        .initialize()
+        .await
+        .expect("the patched sidecar must initialize and attest on this session");
+    assert_eq!(protocol, CODEX_APP_SERVER_PROTOCOL);
     session.stop().await.unwrap();
 }
 
 #[tokio::test]
+#[ignore = "requires an explicitly selected unpatched stock Codex binary"]
+async fn actual_stock_codex_is_rejected_without_smartcat_attestation() {
+    let _serial = lock_process_integration().await;
+    let binary = std::env::var_os("SMARTCAT_STOCK_CODEX_TEST_BINARY")
+        .expect("set SMARTCAT_STOCK_CODEX_TEST_BINARY for this acceptance test");
+    let app_data = tempdir().unwrap();
+    let empty_credentials = tempdir().unwrap();
+    let launcher = ProcessRuntimeLauncher::with_credential_source(
+        app_data.path().to_path_buf(),
+        Some(empty_credentials.path().to_path_buf()),
+    );
+    // Deliberately provide the expected semantic version so this test reaches
+    // the live-session attestation boundary rather than a version precheck.
+    let candidate = RuntimeCandidate::system(binary, Version::parse("0.144.4").unwrap());
+
+    let mut session = launcher
+        .start(&candidate)
+        .await
+        .expect("stock Codex starts");
+    let error = session
+        .initialize()
+        .await
+        .expect_err("an unpatched stock Codex session must not attest");
+    let _ = session.stop().await;
+    assert_eq!(error, RuntimeError::HandshakeFailed);
+}
+
+#[tokio::test]
 async fn production_wiring_hands_the_initialized_process_to_account_commands_and_cleans_up() {
-    let _serial = lock_appcontainer_integration().await;
+    let _serial = lock_process_integration().await;
     let app_data = tempdir().unwrap();
     let sandbox_root = sandboxed_app_data_root(app_data.path()).unwrap();
     let work_root = sandbox_root.join("runtime-work");
@@ -142,8 +173,40 @@ async fn production_wiring_hands_the_initialized_process_to_account_commands_and
 }
 
 #[tokio::test]
+async fn stock_codex_without_the_live_smartcat_attestation_is_rejected() {
+    let _serial = lock_process_integration().await;
+    let app_data = tempdir().unwrap();
+    let sandbox_root = sandboxed_app_data_root(app_data.path()).unwrap();
+    let launcher = Arc::new(ProcessRuntimeLauncher::with_credential_source(
+        app_data.path().to_path_buf(),
+        None,
+    ));
+    let binary_dir = sandbox_root.join("bin");
+    std::fs::create_dir_all(&binary_dir).unwrap();
+    let stock_binary = binary_dir.join("stock-codex.exe");
+    std::fs::copy(env!("CARGO_BIN_EXE_smartcat-fake-codex"), &stock_binary).unwrap();
+    let resolver = RuntimeResolver::system_only(
+        vec![RuntimeCandidate::system(
+            stock_binary,
+            Version::parse("0.144.4").unwrap(),
+        )],
+        "0.144.4",
+        CODEX_APP_SERVER_PROTOCOL,
+        launcher,
+        Arc::new(NoopRecorder),
+    );
+
+    let error = match resolver.resolve().await {
+        Ok(_) => panic!("stock Codex was accepted without SmartCAT attestation"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error, RuntimeError::NoCompatibleRuntime);
+}
+
+#[tokio::test]
 async fn shutdown_wins_a_race_with_late_bootstrap_and_leaves_no_process_or_workdir() {
-    let _serial = lock_appcontainer_integration().await;
+    let _serial = lock_process_integration().await;
     let app_data = tempdir().unwrap();
     let sandbox_root = sandboxed_app_data_root(app_data.path()).unwrap();
     let work_root = sandbox_root.join("runtime-work");
@@ -185,7 +248,7 @@ async fn shutdown_wins_a_race_with_late_bootstrap_and_leaves_no_process_or_workd
 
 #[tokio::test]
 async fn refuses_to_import_credentials_through_a_reparse_point() {
-    let _serial = lock_appcontainer_integration().await;
+    let _serial = lock_process_integration().await;
     let app_data = tempdir().unwrap();
     let source_root = tempdir().unwrap();
     let actual = source_root.path().join("actual-codex-home");

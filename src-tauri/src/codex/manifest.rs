@@ -1,4 +1,6 @@
 use std::collections::HashSet;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 
 use semver::Version;
 use serde::Deserialize;
@@ -12,6 +14,12 @@ const RELEASE_URL: &str = "https://github.com/openai/codex/releases/tag/rust-v0.
 const LICENSE_URL: &str = "https://raw.githubusercontent.com/openai/codex/rust-v0.144.4/LICENSE";
 const NOTICE_URL: &str = "https://raw.githubusercontent.com/openai/codex/rust-v0.144.4/NOTICE";
 const DOWNLOAD_PREFIX: &str = "https://github.com/openai/codex/releases/download/rust-v0.144.4/";
+const UPSTREAM_COMMIT: &str = "8c68d4c87dc54d38861f5114e920c3de2efa5876";
+const SOURCE_ARCHIVE_SHA256: &str =
+    "14c173d78f0c22da73e4ca1a205836b525e1dd9fe7db9b4ddea62214b2cc5009";
+const PATCH_VERSION: &str = "smartcat-1";
+const PATCH_SHA256: &str = "277656cea5ca940c30cf692bff1bcbe398ca18a60ed57bcdc6f0a1a82388704a";
+const MAX_BUNDLED_RUNTIME_BYTES: u64 = 512 * 1024 * 1024;
 pub(crate) const MAX_DOWNLOAD_BYTES: u64 = 128 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -176,6 +184,142 @@ impl EmbeddedRuntimeManifest {
     }
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct VerifiedBundledRuntime {
+    path: PathBuf,
+    version: Version,
+}
+
+impl VerifiedBundledRuntime {
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(crate) fn version(&self) -> &Version {
+        &self.version
+    }
+}
+
+pub(crate) struct BundledRuntimeManifest;
+
+impl BundledRuntimeManifest {
+    pub(crate) fn load_and_verify(
+        manifest_path: &Path,
+        binary_path: &Path,
+        target: HostTarget,
+    ) -> Result<VerifiedBundledRuntime, RuntimeError> {
+        reject_link_or_reparse_ancestors(manifest_path)?;
+        reject_link_or_reparse_ancestors(binary_path)?;
+        let manifest_metadata =
+            std::fs::symlink_metadata(manifest_path).map_err(|_| RuntimeError::ManifestInvalid)?;
+        if !manifest_metadata.is_file()
+            || manifest_metadata.len() == 0
+            || manifest_metadata.len() > 64 * 1024
+        {
+            return Err(RuntimeError::ManifestInvalid);
+        }
+        let bytes = std::fs::read(manifest_path).map_err(|_| RuntimeError::ManifestInvalid)?;
+        if bytes.len() as u64 != manifest_metadata.len() {
+            return Err(RuntimeError::ManifestInvalid);
+        }
+        let manifest: BundledManifest =
+            serde_json::from_slice(&bytes).map_err(|_| RuntimeError::ManifestInvalid)?;
+        let expected_binary = if target == HostTarget::WindowsX86_64 {
+            format!("smartcat-codex-{}.exe", target.triple())
+        } else {
+            format!("smartcat-codex-{}", target.triple())
+        };
+        if manifest.schema_version != 1
+            || manifest.target != target.triple()
+            || manifest.binary != expected_binary
+            || manifest.upstream_tag != TAG
+            || manifest.upstream_commit != UPSTREAM_COMMIT
+            || manifest.source_archive_sha256 != SOURCE_ARCHIVE_SHA256
+            || manifest.patch_version != PATCH_VERSION
+            || manifest.patch_sha256 != PATCH_SHA256
+            || !manifest.cargo_locked
+            || manifest.size == 0
+            || manifest.size > MAX_BUNDLED_RUNTIME_BYTES
+            || !valid_sha256(&manifest.sha256)
+        {
+            return Err(RuntimeError::ManifestInvalid);
+        }
+        let binary_metadata =
+            std::fs::symlink_metadata(binary_path).map_err(|_| RuntimeError::ManifestInvalid)?;
+        if !binary_metadata.is_file() || binary_metadata.len() != manifest.size {
+            return Err(RuntimeError::ManifestInvalid);
+        }
+        let actual = sha256_file(binary_path, manifest.size)?;
+        if actual != manifest.sha256 {
+            return Err(RuntimeError::ChecksumMismatch);
+        }
+        Ok(VerifiedBundledRuntime {
+            path: binary_path.to_path_buf(),
+            version: Version::parse(VERSION).map_err(|_| RuntimeError::ManifestInvalid)?,
+        })
+    }
+}
+
+fn sha256_file(path: &Path, expected_size: u64) -> Result<String, RuntimeError> {
+    use sha2::{Digest, Sha256};
+
+    let mut file = std::fs::File::open(path).map_err(|_| RuntimeError::ManifestInvalid)?;
+    let mut digest = Sha256::new();
+    let mut total = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|_| RuntimeError::ManifestInvalid)?;
+        if read == 0 {
+            break;
+        }
+        total = total
+            .checked_add(read as u64)
+            .ok_or(RuntimeError::ManifestInvalid)?;
+        if total > expected_size {
+            return Err(RuntimeError::ManifestInvalid);
+        }
+        digest.update(&buffer[..read]);
+    }
+    if total != expected_size {
+        return Err(RuntimeError::ManifestInvalid);
+    }
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+fn valid_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn reject_link_or_reparse_ancestors(path: &Path) -> Result<(), RuntimeError> {
+    for ancestor in path.ancestors() {
+        match std::fs::symlink_metadata(ancestor) {
+            Ok(metadata) if metadata.file_type().is_symlink() || is_reparse(&metadata) => {
+                return Err(RuntimeError::ManifestInvalid)
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(RuntimeError::ManifestInvalid),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn is_reparse(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    metadata.file_attributes() & 0x400 != 0
+}
+
+#[cfg(not(windows))]
+fn is_reparse(_metadata: &std::fs::Metadata) -> bool {
+    false
+}
+
 fn validate_runtime(runtime: &ManifestRuntime, target: HostTarget) -> Result<(), RuntimeError> {
     let expected_url = format!("{DOWNLOAD_PREFIX}{}", target.asset_name());
     if runtime.url != expected_url
@@ -222,9 +366,26 @@ struct ManifestRuntime {
     archive_entry: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BundledManifest {
+    schema_version: u32,
+    target: String,
+    binary: String,
+    sha256: String,
+    size: u64,
+    upstream_tag: String,
+    upstream_commit: String,
+    source_archive_sha256: String,
+    patch_version: String,
+    patch_sha256: String,
+    cargo_locked: bool,
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{EmbeddedRuntimeManifest, HostTarget};
+    use super::{BundledRuntimeManifest, EmbeddedRuntimeManifest, HostTarget};
+    use sha2::{Digest, Sha256};
 
     #[test]
     fn embedded_manifest_selects_the_current_host_target() {
@@ -248,6 +409,35 @@ mod tests {
             EmbeddedRuntimeManifest::validate_for_host(&bad_entry, HostTarget::WindowsX86_64)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn bundled_runtime_manifest_binds_the_exact_sidecar_bytes_and_provenance() {
+        let root = tempfile::tempdir().unwrap();
+        let binary = root.path().join("smartcat-codex.exe");
+        std::fs::write(&binary, b"patched-codex-fixture").unwrap();
+        let hash = format!("{:x}", Sha256::digest(b"patched-codex-fixture"));
+        let manifest = root.path().join("runtime.json");
+        std::fs::write(
+            &manifest,
+            format!(
+                r#"{{"schemaVersion":1,"target":"x86_64-pc-windows-msvc","binary":"smartcat-codex-x86_64-pc-windows-msvc.exe","sha256":"{hash}","size":21,"upstreamTag":"rust-v0.144.4","upstreamCommit":"8c68d4c87dc54d38861f5114e920c3de2efa5876","sourceArchiveSha256":"14c173d78f0c22da73e4ca1a205836b525e1dd9fe7db9b4ddea62214b2cc5009","patchVersion":"smartcat-1","patchSha256":"277656cea5ca940c30cf692bff1bcbe398ca18a60ed57bcdc6f0a1a82388704a","cargoLocked":true}}"#
+            ),
+        )
+        .unwrap();
+
+        let verified =
+            BundledRuntimeManifest::load_and_verify(&manifest, &binary, HostTarget::WindowsX86_64)
+                .unwrap();
+        assert_eq!(verified.path(), binary.as_path());
+
+        std::fs::write(&binary, b"tampered").unwrap();
+        assert!(BundledRuntimeManifest::load_and_verify(
+            &manifest,
+            &binary,
+            HostTarget::WindowsX86_64,
+        )
+        .is_err());
     }
 
     fn manifest_fixture(hash: &str, archive_entry: &str) -> String {

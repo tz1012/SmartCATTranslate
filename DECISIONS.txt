@@ -118,3 +118,11 @@ SmartCAT Translate 설계 결정 기록
 열린 차단: 같은 AppContainer에서 고정 Codex 0.144.4 App Server는 허용된 전용 `CODEX_HOME`의 절대 경로와 현재 디렉터리 `.` 모두를 `canonicalize`할 때 Windows 오류 5로 종료한다. 부모 경로 ACL을 넓히거나 격리 없이 실행하면 외부 파일 읽기 불변식을 깨므로 채택하지 않는다.
 안전한 해소 조건: (1) AppContainer에서 전용 홈을 정상 처리하는 안정판 Codex로 고정 버전을 올리고 공급망 매니페스트를 다시 승인하거나, (2) 앱이 직접 소유하는 별도 최소 권한 브로커/가상화 경계를 설계·검증하거나, (3) 사용자 파일이 없는 별도 운영체제 계정/VM 경계로 실행해야 한다. 그 전까지 Windows 번역 백엔드는 초기화 실패로 닫힌다.
 네트워크 경계: AppContainer의 운영체제 기능은 임의 도메인까지 구분하지 못한다. App Server의 공식 계정·모델 HTTPS 통신을 위해 `internetClient`가 필요하고, 모든 번역 턴에는 안정 프로토콜이 지원하는 `readOnly` 및 `networkAccess: false`를 함께 적용한다.
+
+[D-023] SmartCAT 전용 Codex 0.144.4 하류 런타임
+상태: 확정 — D-017, D-019, D-022의 운영 런타임 선택·다운로드·AppContainer 부분을 대체함
+결정: 번역과 계정 연결에는 시스템 Codex나 공개 공식 바이너리를 사용하지 않고, OpenAI Codex `rust-v0.144.4`의 정확한 커밋 `8c68d4c87dc54d38861f5114e920c3de2efa5876`에서 감사 가능한 최소 패치 `smartcat-1`을 적용해 각 설치 대상에서 직접 빌드한 sidecar만 사용한다. 소스 보관 파일, 변경 전 파일과 패치의 SHA-256을 `runtime-patches/codex-0.144.4-smartcat/pin.json`에 고정하고 변화 시 빌드를 중단한다.
+컴파일 불변식: 최종 모델 요청 조립 경계에서 모든 구성·모델·공급자·기능 상태와 관계없이 도구 선언을 빈 목록으로 강제하고 병렬 도구 호출을 끈다. 사용자·프로젝트 지시문 탐색 함수는 원문 파일을 읽지 않고 항상 없음으로 끝나며 `thread/start`의 `instructionSources`는 빈 배열이어야 한다. 이 두 경계와 App Server 동작은 패치가 적용된 업스트림 소스 안의 시험으로 검증한다.
+실행 증명: 패치 전용 안정 메서드 `smartcat/attestation`은 정확한 업스트림 커밋, 패치 버전, `toolCount=0`, `instructionDiscovery=false`를 반환한다. 앱은 `initialize`를 완료한 바로 그 stdio 세션에서 이 값을 확인하며, 실행 전에 설치기에 포함된 바이너리의 크기와 SHA-256을 빌드 생성 매니페스트와 대조한다. stock 또는 변조된 Codex, 매니페스트 없는 sidecar, 다른 세션은 거부하며 시스템·다운로드 폴백은 없다.
+배포 경계: Windows x86_64, macOS x86_64, macOS arm64는 각 대상의 명시적 GitHub Actions 릴리스 작업에서 고정 소스·패치 시험, `cargo --locked` 빌드, 체크섬·provenance·SBOM 생성 후 Tauri `externalBin`으로 설치기에 포함한다. 공개 배포 서명·공증은 D-003과 D-014의 플랫폼 자격 증명 경계를 그대로 따른다. 커밋·보관 파일·패치·잠금 파일은 재현 가능한 입력으로 고정하지만 서로 다른 호스트의 바이트 동일성은 별도 증명 없이는 주장하지 않는다.
+보존 경계: 앱 전용 `CODEX_HOME`, 최소 ChatGPT 자격 증명 가져오기, 사용자 환경 제거, 빈 앱 소유 작업공간, `approvalPolicy=never`, 턴의 `readOnly`와 `networkAccess=false`, 서버 요청 및 허용 목록 밖 알림의 실패 폐쇄, 중단 실패 오염과 창 tombstone 규칙은 계속 적용한다. 이전 AppContainer와 Seatbelt 실행 구현은 제품 소스에서 제거하며 격리 없는 stock Codex 경로로 우회하지 않는다.

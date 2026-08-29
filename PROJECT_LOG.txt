@@ -268,3 +268,28 @@ TDD 및 검증
 - 요약: security: appcontainer-codex-isolation
 - 변경 파일: DECISIONS.txt, docs/superpowers/plans/2026-08-29-task-7-security-fix-round-2.md, PROJECT_LOG.txt, src-tauri/Cargo.lock, src-tauri/Cargo.toml, src-tauri/resources/codex-0.144.4-config.schema.json, src-tauri/src/app_state.rs, src-tauri/src/codex/bootstrap.rs, src-tauri/src/codex/process.rs, src-tauri/src/codex/runtime.rs, src-tauri/src/codex/translation.rs, src-tauri/src/codex/transport.rs, src-tauri/src/commands/translation.rs, src-tauri/src/lib.rs, src-tauri/test-support/fake_codex_process.rs, src-tauri/tests/codex_bootstrap.rs, src-tauri/tests/codex_transport.rs, src-tauri/tests/translation_coordinator.rs
 - 검증: cargo test && 110/110 passed && pnpm test && 17/17 passed
+
+[2026-08-29] Task 7 보안 검토 수정 3 — SmartCAT 전용 Codex 하류 런타임
+
+구현
+- 공식 Codex `rust-v0.144.4`의 정확한 태그, 커밋, 소스 보관 파일 SHA-256, 변경 전 파일 SHA-256과 하류 패치 SHA-256을 고정했다. 고정값이나 소스가 바뀌면 패치·빌드를 중단한다.
+- 최종 Responses 요청 조립 경계에서 도구 선언을 항상 빈 목록으로 만들고 병렬 도구 호출을 끈다. 사용자·프로젝트 지시문 탐색은 파일을 읽지 않고 없음으로 끝난다.
+- 같은 App Server 세션에서만 사용할 수 있는 `smartcat/attestation`을 추가하고 업스트림 커밋, 패치 버전, 도구 수 0, 지시문 탐색 비활성화를 앱이 확인한다. 시스템·stock Codex와 다운로드 폴백은 제거했다.
+- Windows x86_64, macOS x86_64, macOS arm64 대상의 고정 소스 검증, 잠금 빌드, checksum, provenance, CycloneDX SBOM과 Tauri sidecar 번들을 명시적 릴리스 작업에서 생성한다. 자동 공개는 하지 않는다.
+- 앱은 설치기에 포함된 대상별 sidecar와 빌드 생성 매니페스트만 사용한다. 크기·SHA-256·고정 provenance를 실행 전에 확인하고, initialize 뒤 같은 세션의 attestation까지 통과해야 계정과 번역 서비스를 설치한다.
+- 고정 App Server가 initialize 직후 보내는 `remoteControl/status/changed` 중 정확히 `disabled`인 구조 하나만 2개 프레임 제한 안에서 무시한다. ID가 있는 요청, 활성 상태, 다른 알림과 구조 변화는 계속 실패 폐쇄한다.
+- 개발 작업공간과 빌드 캐시는 사용자 지시에 따라 이동식 개발 드라이브로 옮겼다. 제품 소스와 설치 대상은 변경하지 않았고, 로컬 절대 경로는 제품 매니페스트와 기록에 넣지 않았다.
+
+TDD 및 검증
+- 업스트림 RED/GREEN: 최종 요청 도구 0개, 조상·사용자 지시문 무시, 같은 세션 attestation과 빈 `instructionSources` 시험이 각각 1/1 통과했다.
+- 앱 RED: 실제 acceptance 테스트의 모호한 Windows 경로 변환을 컴파일 실패로 확인해 최소 수정했다. 이어 `start()`만 호출해 stock을 성공으로 오판한 테스트를 RED로 확인하고 반드시 `initialize()`와 attestation까지 실행하도록 바로잡았다.
+- 앱 RED/GREEN: 실제 patched App Server가 attestation 전에 보내는 정확한 disabled lifecycle 알림 때문에 실패함을 재현했다. bounded exact allowlist를 추가한 뒤 allowlist 단위 시험 1/1, 실제 patched 수락 1/1, 실제 stock 거부 1/1이 통과했다.
+- 악성 원문 통합 시험은 원문이 기반 스레드·포크에 나타나지 않고 임시 턴에만 전달되며, 도구 이벤트가 오면 중단·구독 해제되는 것을 1/1 확인했다.
+- 전체 Rust 112/112, 런타임 빌드 스크립트 10/10, 프런트엔드 17/17, TypeScript/Vite 프로덕션 빌드, rustfmt, 표준 Clippy와 diff 검사가 통과했다. 새 Rust 1.98의 `-D warnings`만 기존 인증 트레잇의 `Result<(), ()>` 경고 1개로 실패했으며 이번 변경과 무관하다.
+- 실제 Windows 검증용 sidecar는 동일한 고정 patched 소스와 잠금 파일을 non-LTO release 프로필로 빌드해 버전·SHA-256을 확인했다. 유료 또는 모델 네트워크 호출은 하지 않았다.
+
+열린 검증 경계
+- 로컬 thin-LTO release 빌드는 모든 업스트림 보안 시험을 통과한 뒤 최종 링크 중 호스트 실행 세션이 외부에서 종료되어 제품용 바이너리·매니페스트·provenance·SBOM을 만들지 못했다. 사용자 지시에 따라 장시간 LTO를 즉시 반복하지 않았다.
+- 따라서 실제 로컬 acceptance는 동일 patched 소스의 non-LTO sidecar로 완료했고, 배포용 `--locked --release` thin-LTO 및 세 대상 checksum/provenance/SBOM 생성은 검증된 스크립트와 명시적 GitHub Actions 릴리스 관문에 남아 있다. 로컬 설치기 공개나 배포는 수행하지 않았다.
+- 커밋 전 자체 검토에서 항상 거짓인 조건 아래 남아 있던 이전 AppContainer·Seatbelt 구현과 관련 불필요 의존 기능을 제거했다. 제거 뒤 보안 집중 시험 7/7, 실제 patched 수락 1/1과 실제 stock 거부 1/1을 다시 통과했다. 릴리스 CI는 기존 인증 트레잇의 단위 오류 반환 린트 하나만 좁게 허용하고 그 밖의 모든 경고를 오류로 유지한다.
+- 공식 GitHub 러너 지원표와 폐기 공지를 재확인해 지원 종료된 macOS 13 Intel 러너를 macOS 15 Intel로 교체하고, Apple Silicon도 macOS 15 arm64 러너로 고정했다. 지원 러너 계약 시험이 기존 워크플로에서 9/10 RED가 된 뒤 수정 후 10/10 GREEN이 됐다.

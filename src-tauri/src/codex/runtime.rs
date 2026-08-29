@@ -43,6 +43,14 @@ impl RuntimeCandidate {
         }
     }
 
+    pub(crate) fn bundled(path: impl Into<PathBuf>, version: Version) -> Self {
+        Self {
+            path: path.into(),
+            version,
+            source: RuntimeSource::Bundled,
+        }
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -206,6 +214,22 @@ pub struct RuntimeResolver {
 }
 
 impl RuntimeResolver {
+    pub(crate) fn bundled_only(
+        candidate: RuntimeCandidate,
+        expected_protocol: impl Into<String>,
+        launcher: Arc<dyn RuntimeLauncher>,
+        failure_recorder: Arc<dyn RuntimeFailureRecorder>,
+    ) -> Self {
+        Self {
+            minimum_version: candidate.version.to_string(),
+            system_candidates: vec![candidate],
+            app_local: None,
+            expected_protocol: expected_protocol.into(),
+            launcher,
+            failure_recorder,
+        }
+    }
+
     pub fn system_only(
         system_candidates: Vec<RuntimeCandidate>,
         minimum_version: impl Into<String>,

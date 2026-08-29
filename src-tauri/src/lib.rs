@@ -18,13 +18,21 @@ pub fn run() {
         .manage(app_state::AppState::default())
         .setup(|app| {
             let app_data_root = app.path().app_local_data_dir()?;
+            let resource_root = app.path().resource_dir()?;
+            let executable_path = std::env::current_exe()?;
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let state = app_handle.state::<app_state::AppState>();
                 let event_sink = Arc::new(TauriAccountEventSink(app_handle.clone()));
-                if bootstrap_account_service(&state, app_data_root, event_sink.clone())
-                    .await
-                    .is_ok()
+                if bootstrap_account_service(
+                    &state,
+                    app_data_root,
+                    resource_root,
+                    executable_path,
+                    event_sink.clone(),
+                )
+                .await
+                .is_ok()
                 {
                     event_sink.account_state_changed(AccountChangeReason::AccountUpdated);
                 }

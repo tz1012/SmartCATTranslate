@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "patchVersion": "smartcat-1",
+  "upstream": {
+    "repository": "https://github.com/openai/codex",
+    "tag": "rust-v0.144.4",
+    "commit": "8c68d4c87dc54d38861f5114e920c3de2efa5876",
+    "archiveUrl": "https://codeload.github.com/openai/codex/tar.gz/refs/tags/rust-v0.144.4",
+    "archiveSha256": "14c173d78f0c22da73e4ca1a205836b525e1dd9fe7db9b4ddea62214b2cc5009"
+  },
+  "patchFile": "smartcat.patch",
+  "patchSha256": "277656cea5ca940c30cf692bff1bcbe398ca18a60ed57bcdc6f0a1a82388704a",
+  "prePatchFiles": {
+    "codex-rs/Cargo.lock": "175793a40a3147db1fee08fd9db0acc59312c344b3513dd7ee316f5446d8119e",
+    "codex-rs/core/src/client.rs": "e3788e78e4c702d31ebb31b1e96ce5dfec5eb19d96920e8bba58f64073cdd43e",
+    "codex-rs/core/src/client_tests.rs": "9ec3bba1ce9a5712295eabe4835220ae82c78c35c40845c2a8fc66722f6fc6ee",
+    "codex-rs/core/src/agents_md.rs": "a5a8f6be4c15208621907a61113b0720bb7b998e7dd1b192aacd340a7242189b",
+    "codex-rs/core/src/agents_md_tests.rs": "f8b0adaf32a4b1b478dd1c5d1ad2310cc6229e794377f626377cada1bfc93d2c",
+    "codex-rs/app-server-protocol/src/protocol/common.rs": "5679cbc5b3e935a2edd69fbe62b82b956eff4d5d050c9969b090ccc9d367fdee",
+    "codex-rs/app-server-protocol/src/protocol/v2/mod.rs": "4b53577fad1c9acc03e62232db14ef7a01395924615e05c44dbffb7a7d87fd3f",
+    "codex-rs/app-server/src/message_processor.rs": "2607559ee2d298d2fc7a46dced4cd205c4ef9475ca6b829aaaeac18368ec1df1",
+    "codex-rs/app-server/tests/common/test_app_server.rs": "2caae191687f350b8b410e48f522822bd6aa04bae724cdd0f9a44de8c87679a5",
+    "codex-rs/app-server/tests/suite/v2/thread_start.rs": "455f4adbb31c96989b53d00957e75311825a0b786bd72516a699aa452864e012"
+  },
+  "targets": {
+    "x86_64-pc-windows-msvc": {
+      "binary": "codex.exe"
+    },
+    "x86_64-apple-darwin": {
+      "binary": "codex"
+    },
+    "aarch64-apple-darwin": {
+      "binary": "codex"
+    }
+  }
+}

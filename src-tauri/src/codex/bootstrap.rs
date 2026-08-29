@@ -3,14 +3,13 @@ use std::sync::Arc;
 
 use crate::app_state::{AppState, AppStateError};
 use crate::codex::auth::{AccountEventSink, AccountService};
-use crate::codex::install::{AppLocalRuntimeInstaller, ProductionRuntimeDownloader};
-use crate::codex::manifest::{EmbeddedRuntimeManifest, HostTarget};
+use crate::codex::manifest::{BundledRuntimeManifest, HostTarget};
 use crate::codex::process::{
     sandboxed_app_data_root, ProcessRuntimeLauncher, CODEX_APP_SERVER_PROTOCOL,
 };
 use crate::codex::runtime::{
-    OfficialSystemDiscovery, ResolvedRuntime, RuntimeError, RuntimeFailureRecord,
-    RuntimeFailureRecorder, RuntimeResolver,
+    ResolvedRuntime, RuntimeCandidate, RuntimeError, RuntimeFailureRecord, RuntimeFailureRecorder,
+    RuntimeResolver,
 };
 use crate::codex::translation::{prepare_owned_empty_workspace, CodexTranslationBackend};
 use crate::codex::transport::{JsonlAppServerTransport, TransportError};
@@ -30,20 +29,32 @@ pub async fn bootstrap_with_resolver(
 pub async fn bootstrap_account_service(
     state: &AppState,
     app_data_root: PathBuf,
+    resource_root: PathBuf,
+    executable_path: PathBuf,
     event_sink: Arc<dyn AccountEventSink>,
 ) -> Result<(), BootstrapError> {
-    let pinned = EmbeddedRuntimeManifest::load_for_host(HostTarget::current())?;
-    let downloader = Arc::new(ProductionRuntimeDownloader::new()?);
-    let installer = AppLocalRuntimeInstaller::new(app_data_root.join("codex-runtime"), downloader)?;
+    let target = HostTarget::current();
+    let sidecar_name = if target == HostTarget::WindowsX86_64 {
+        "smartcat-codex.exe"
+    } else {
+        "smartcat-codex"
+    };
+    let sidecar_path = executable_path
+        .parent()
+        .ok_or(RuntimeError::ManifestInvalid)?
+        .join(sidecar_name);
+    let manifest_path = resource_root
+        .join("resources")
+        .join("smartcat-codex-runtime.json");
+    let bundled = BundledRuntimeManifest::load_and_verify(&manifest_path, &sidecar_path, target)?;
+    let candidate = RuntimeCandidate::bundled(bundled.path(), bundled.version().clone());
     let launcher = Arc::new(ProcessRuntimeLauncher::new(app_data_root.clone()));
-    let resolver = RuntimeResolver::with_verified_installer(
-        &OfficialSystemDiscovery::new(),
-        installer,
-        pinned.version().to_string(),
+    let resolver = RuntimeResolver::bundled_only(
+        candidate,
         CODEX_APP_SERVER_PROTOCOL,
         launcher,
         Arc::new(SilentRuntimeFailureRecorder),
-    )?;
+    );
     bootstrap_with_resolver(state, &resolver, event_sink, app_data_root).await
 }
 

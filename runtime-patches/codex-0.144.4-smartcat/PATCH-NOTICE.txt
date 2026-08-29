@@ -1,0 +1,15 @@
+SmartCAT Translate downstream Codex runtime patch
+
+This product bundles a downstream build based on OpenAI Codex rust-v0.144.4.
+The patch removes every model tool declaration at the final request assembly
+boundary, disables user and project instruction discovery, and adds a local
+App Server attestation method used only by SmartCAT Translate.
+
+The build process pins reproducible inputs: the upstream tag and commit, source
+archive hash, pre-patch file hashes, patch hash, Rust lockfile, and target. Build
+artifacts are checksummed and accompanied by provenance and an SBOM. We do not
+claim byte-identical output across different operating systems, toolchains, or
+hosts unless a release attestation demonstrates it.
+
+This is not an official OpenAI release. See the bundled Apache-2.0 LICENSE and
+upstream NOTICE. SmartCAT-specific changes are described by smartcat.patch.

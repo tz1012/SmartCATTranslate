@@ -3,7 +3,6 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
-#[cfg(target_os = "macos")]
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -15,7 +14,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-#[cfg(target_os = "macos")]
 use tokio::process::{Child, Command};
 use tokio::time::timeout;
 
@@ -24,6 +22,9 @@ use crate::codex::runtime::{
 };
 
 pub const CODEX_APP_SERVER_PROTOCOL: &str = "codex-app-server-jsonl-v2";
+pub const SMARTCAT_UPSTREAM_COMMIT: &str = "8c68d4c87dc54d38861f5114e920c3de2efa5876";
+pub const SMARTCAT_PATCH_VERSION: &str = "smartcat-1";
+const SMARTCAT_ATTESTATION_METHOD: &str = "smartcat/attestation";
 const MAX_HANDSHAKE_BYTES: usize = 64 * 1024;
 const MAX_AUTH_BYTES: u64 = 1024 * 1024;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -390,9 +391,6 @@ impl RuntimeLauncher for ProcessRuntimeLauncher {
         };
         let launcher = &isolated_launcher;
         launcher.prepare_isolated_home(candidate)?;
-        #[cfg(windows)]
-        let sandbox_executable =
-            stage_windows_sandbox_executable(candidate.path(), &launcher.app_data_root)?;
         let process_temp = launcher.app_data_root.join("process-temp");
         create_private_directory(&process_temp)?;
         let workdir = tempfile::Builder::new()
@@ -400,47 +398,11 @@ impl RuntimeLauncher for ProcessRuntimeLauncher {
             .tempdir_in(&launcher.work_root)
             .map_err(|_| RuntimeError::FilesystemFailed)?;
 
-        #[cfg(windows)]
-        let (child, reader, writer) = {
-            let arguments = vec![
-                OsString::from("app-server"),
-                OsString::from("--listen"),
-                OsString::from("stdio://"),
-            ];
-            let environment = isolated_environment(&launcher.codex_home, &process_temp)?;
-            let config_file = launcher.codex_home.join("config.toml");
-            let mut grants = vec![
-                (launcher.app_data_root.as_path(), WindowsGrant::Write),
-                (launcher.codex_home.as_path(), WindowsGrant::Write),
-                (launcher.work_root.as_path(), WindowsGrant::Write),
-                (process_temp.as_path(), WindowsGrant::Write),
-                (sandbox_executable.as_path(), WindowsGrant::ReadExecute),
-                (config_file.as_path(), WindowsGrant::ReadExecute),
-            ];
-            let auth_file = launcher.codex_home.join("auth.json");
-            if auth_file.exists() {
-                grants.push((auth_file.as_path(), WindowsGrant::Write));
-            }
-            let mut spawned = spawn_windows_appcontainer_command(
-                sandbox_executable.as_path(),
-                &arguments,
-                workdir.path(),
-                &environment,
-                grants.as_slice(),
-            )?;
-            let reader = spawned.stdout.take().ok_or(RuntimeError::SpawnFailed)?;
-            let writer = spawned.stdin.take().ok_or(RuntimeError::SpawnFailed)?;
-            (
-                ManagedProcess::AppContainer(spawned),
-                Box::new(reader) as Box<dyn tokio::io::AsyncRead + Send + Unpin>,
-                Box::new(writer) as Box<dyn tokio::io::AsyncWrite + Send + Unpin>,
-            )
-        };
-        #[cfg(target_os = "macos")]
+        #[cfg(any(windows, target_os = "macos"))]
         let (child, reader, writer) = {
             let mut command = Command::new(candidate.path());
             command
-                .args(sandbox_arguments(candidate.path(), workdir.path())?)
+                .args(["app-server", "--listen", "stdio://"])
                 .current_dir(workdir.path())
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
@@ -452,7 +414,7 @@ impl RuntimeLauncher for ProcessRuntimeLauncher {
             let writer = spawned.stdin.take().ok_or(RuntimeError::SpawnFailed)?;
             let reader = spawned.stdout.take().ok_or(RuntimeError::SpawnFailed)?;
             (
-                ManagedProcess::Tokio(spawned),
+                ManagedProcess(spawned),
                 Box::new(reader) as Box<dyn tokio::io::AsyncRead + Send + Unpin>,
                 Box::new(writer) as Box<dyn tokio::io::AsyncWrite + Send + Unpin>,
             )
@@ -467,69 +429,6 @@ impl RuntimeLauncher for ProcessRuntimeLauncher {
             initialized: false,
         }))
     }
-}
-
-#[cfg(windows)]
-fn stage_windows_sandbox_executable(
-    source: &Path,
-    app_data_root: &Path,
-) -> Result<PathBuf, RuntimeError> {
-    const MAX_RUNTIME_BYTES: u64 = 512 * 1024 * 1024;
-
-    reject_link_or_reparse_ancestors(source)?;
-    let metadata = std::fs::symlink_metadata(source).map_err(|_| RuntimeError::FilesystemFailed)?;
-    if !metadata.is_file()
-        || is_link_or_reparse(&metadata)
-        || metadata.len() == 0
-        || metadata.len() > MAX_RUNTIME_BYTES
-    {
-        return Err(RuntimeError::FilesystemFailed);
-    }
-    let runtime_dir = app_data_root.join("runtime-bin");
-    create_private_directory(&runtime_dir)?;
-    let destination = runtime_dir.join("codex-app-server.exe");
-    let temporary = runtime_dir.join(format!(".smartcat-{}.tmp", uuid::Uuid::new_v4()));
-    let result = (|| {
-        let copied =
-            std::fs::copy(source, &temporary).map_err(|_| RuntimeError::FilesystemFailed)?;
-        if copied != metadata.len() {
-            return Err(RuntimeError::FilesystemFailed);
-        }
-        let file = OpenOptions::new()
-            .write(true)
-            .open(&temporary)
-            .map_err(|_| RuntimeError::FilesystemFailed)?;
-        file.sync_all()
-            .map_err(|_| RuntimeError::FilesystemFailed)?;
-        drop(file);
-        set_private_permissions(&temporary, false)?;
-        atomic_move(&temporary, &destination, true)?;
-        set_private_permissions(&destination, false)?;
-        Ok(destination.clone())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temporary);
-    }
-    result
-}
-
-#[cfg(target_os = "macos")]
-fn sandbox_arguments(
-    executable: &Path,
-    workdir: &Path,
-) -> Result<Vec<std::ffi::OsString>, RuntimeError> {
-    Ok(vec![
-        "sandbox".into(),
-        "--permission-profile".into(),
-        TRANSLATION_PERMISSION_PROFILE.into(),
-        "--cd".into(),
-        workdir.as_os_str().to_owned(),
-        "--".into(),
-        executable.as_os_str().to_owned(),
-        "app-server".into(),
-        "--listen".into(),
-        "stdio://".into(),
-    ])
 }
 
 fn isolated_environment(
@@ -583,31 +482,19 @@ fn windows_directory() -> Result<PathBuf, RuntimeError> {
     Ok(path)
 }
 
-#[cfg(all(windows, test))]
-fn windows_command_interpreter() -> Result<PathBuf, RuntimeError> {
-    Ok(windows_directory()?.join("System32").join("cmd.exe"))
-}
-
 pub fn sandboxed_app_data_root(requested_root: &Path) -> Result<PathBuf, RuntimeError> {
     #[cfg(windows)]
     {
-        use sha2::{Digest, Sha256};
-
         if !requested_root.is_absolute() {
             return Err(RuntimeError::FilesystemFailed);
         }
         reject_link_or_reparse_ancestors(requested_root)?;
+        std::fs::create_dir_all(requested_root).map_err(|_| RuntimeError::FilesystemFailed)?;
         let canonical = requested_root
             .canonicalize()
             .map_err(|_| RuntimeError::FilesystemFailed)?;
-        let digest = Sha256::digest(canonical.as_os_str().to_string_lossy().as_bytes());
-        let instance = digest
-            .iter()
-            .take(16)
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
-        windows_appcontainer_storage_root()
-            .map(|root| root.join("SmartCATTranslate").join(instance))
+        reject_link_or_reparse_ancestors(&canonical)?;
+        Ok(canonical)
     }
     #[cfg(target_os = "macos")]
     {
@@ -618,650 +505,6 @@ pub fn sandboxed_app_data_root(requested_root: &Path) -> Result<PathBuf, Runtime
         let _ = requested_root;
         Err(RuntimeError::SandboxUnavailable)
     }
-}
-
-#[cfg(windows)]
-fn windows_appcontainer_storage_root() -> Result<PathBuf, RuntimeError> {
-    static STORAGE_ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-    if let Some(root) = STORAGE_ROOT.get() {
-        return Ok(root.clone());
-    }
-    let discovered = discover_windows_appcontainer_storage_root()?;
-    let _ = STORAGE_ROOT.set(discovered);
-    STORAGE_ROOT
-        .get()
-        .cloned()
-        .ok_or(RuntimeError::SandboxUnavailable)
-}
-
-#[cfg(windows)]
-fn discover_windows_appcontainer_storage_root() -> Result<PathBuf, RuntimeError> {
-    use windows_sys::Win32::Foundation::LocalFree;
-    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
-    use windows_sys::Win32::Security::Isolation::{
-        CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
-        GetAppContainerFolderPath,
-    };
-    use windows_sys::Win32::Security::{FreeSid, PSID};
-    use windows_sys::Win32::System::Com::CoTaskMemFree;
-
-    let _profile_guard = lock_appcontainer_profile();
-    let profile_name = wide_nul("SmartCATTranslate.Codex.0_144_4");
-    let display_name = wide_nul("SmartCAT Translate Codex Runtime");
-    let description = wide_nul("Isolated translation runtime");
-    let mut app_sid: PSID = std::ptr::null_mut();
-    let mut result =
-        unsafe { DeriveAppContainerSidFromAppContainerName(profile_name.as_ptr(), &mut app_sid) };
-    if result < 0 {
-        result = unsafe {
-            CreateAppContainerProfile(
-                profile_name.as_ptr(),
-                display_name.as_ptr(),
-                description.as_ptr(),
-                std::ptr::null(),
-                0,
-                &mut app_sid,
-            )
-        };
-    }
-    if result < 0 || app_sid.is_null() {
-        return Err(RuntimeError::SandboxUnavailable);
-    }
-    let mut sid_string = std::ptr::null_mut();
-    if unsafe { ConvertSidToStringSidW(app_sid, &mut sid_string) } == 0 || sid_string.is_null() {
-        unsafe { FreeSid(app_sid) };
-        return Err(RuntimeError::SandboxUnavailable);
-    }
-    let sid_length = unsafe {
-        let mut length = 0;
-        while *sid_string.add(length) != 0 {
-            length += 1;
-        }
-        length
-    };
-    let sid = unsafe { std::slice::from_raw_parts(sid_string, sid_length) }.to_vec();
-    unsafe {
-        LocalFree(sid_string.cast());
-        FreeSid(app_sid);
-    }
-    let mut folder = std::ptr::null_mut();
-    let result = unsafe { GetAppContainerFolderPath(sid.as_ptr(), &mut folder) };
-    if result < 0 || folder.is_null() {
-        return Err(RuntimeError::SandboxUnavailable);
-    }
-    let length = unsafe {
-        let mut length = 0;
-        while *folder.add(length) != 0 {
-            length += 1;
-        }
-        length
-    };
-    let value = String::from_utf16(unsafe { std::slice::from_raw_parts(folder, length) })
-        .map(PathBuf::from)
-        .map_err(|_| RuntimeError::SandboxUnavailable);
-    unsafe { CoTaskMemFree(folder.cast()) };
-    value
-}
-
-#[cfg(windows)]
-fn lock_appcontainer_profile() -> std::sync::MutexGuard<'static, ()> {
-    static PROFILE_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-    PROFILE_LOCK
-        .get_or_init(|| std::sync::Mutex::new(()))
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
-#[cfg(windows)]
-#[derive(Clone, Copy)]
-enum WindowsGrant {
-    Write,
-    ReadExecute,
-}
-
-#[cfg(windows)]
-struct WindowsAppContainerChild {
-    process: std::os::windows::io::OwnedHandle,
-    stdin: Option<tokio::fs::File>,
-    stdout: Option<tokio::fs::File>,
-    finished: bool,
-}
-
-#[cfg(windows)]
-impl WindowsAppContainerChild {
-    async fn wait(&mut self) -> Result<u32, RuntimeError> {
-        use std::os::windows::io::AsRawHandle;
-        use windows_sys::Win32::Foundation::{WAIT_FAILED, WAIT_OBJECT_0};
-        use windows_sys::Win32::System::Threading::{
-            GetExitCodeProcess, WaitForSingleObject, INFINITE,
-        };
-
-        let process = self.process.as_raw_handle() as usize;
-        let exit_code = tokio::task::spawn_blocking(move || unsafe {
-            let process = process as windows_sys::Win32::Foundation::HANDLE;
-            let wait = WaitForSingleObject(process, INFINITE);
-            if wait == WAIT_FAILED || wait != WAIT_OBJECT_0 {
-                return Err(RuntimeError::StopFailed);
-            }
-            let mut exit_code = 0_u32;
-            if GetExitCodeProcess(process, &mut exit_code) == 0 {
-                return Err(RuntimeError::StopFailed);
-            }
-            Ok(exit_code)
-        })
-        .await
-        .map_err(|_| RuntimeError::StopFailed)??;
-        self.finished = true;
-        Ok(exit_code)
-    }
-
-    async fn stop(&mut self) -> Result<(), RuntimeError> {
-        self.stdin.take();
-        self.stdout.take();
-        self.abort();
-        self.wait().await.map(|_| ())
-    }
-
-    fn abort(&mut self) {
-        use std::os::windows::io::AsRawHandle;
-        use windows_sys::Win32::System::Threading::{GetExitCodeProcess, TerminateProcess};
-
-        if self.finished {
-            return;
-        }
-        let process = self.process.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
-        let mut exit_code = 0_u32;
-        unsafe {
-            if GetExitCodeProcess(process, &mut exit_code) != 0 && exit_code == 259 {
-                let _ = TerminateProcess(process, 1);
-            }
-        }
-    }
-}
-
-#[cfg(windows)]
-impl Drop for WindowsAppContainerChild {
-    fn drop(&mut self) {
-        self.abort();
-    }
-}
-
-#[cfg(windows)]
-fn spawn_windows_appcontainer_command(
-    executable: &Path,
-    arguments: &[OsString],
-    cwd: &Path,
-    environment: &BTreeMap<OsString, OsString>,
-    grants: &[(&Path, WindowsGrant)],
-) -> Result<WindowsAppContainerChild, RuntimeError> {
-    use std::mem::size_of;
-    use std::os::windows::io::{FromRawHandle, OwnedHandle};
-    use windows_sys::Win32::Foundation::{
-        CloseHandle, SetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
-    };
-    use windows_sys::Win32::Security::Isolation::DeriveAppContainerSidFromAppContainerName;
-    use windows_sys::Win32::Security::{
-        CreateWellKnownSid, FreeSid, WinCapabilityInternetClientSid, PSID, SECURITY_ATTRIBUTES,
-        SECURITY_CAPABILITIES, SID_AND_ATTRIBUTES,
-    };
-    use windows_sys::Win32::Storage::FileSystem::{
-        CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
-    };
-    use windows_sys::Win32::System::Pipes::CreatePipe;
-    use windows_sys::Win32::System::SystemServices::SE_GROUP_ENABLED;
-    use windows_sys::Win32::System::Threading::{
-        CreateProcessW, DeleteProcThreadAttributeList, InitializeProcThreadAttributeList,
-        UpdateProcThreadAttribute, CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT,
-        EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION,
-        PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, STARTF_USESTDHANDLES, STARTUPINFOEXW,
-    };
-
-    if !executable.is_absolute() || !cwd.is_absolute() {
-        return Err(RuntimeError::SandboxUnavailable);
-    }
-    reject_link_or_reparse_ancestors(executable)?;
-    reject_link_or_reparse_ancestors(cwd)?;
-
-    let _profile_guard = lock_appcontainer_profile();
-    let profile_name = wide_nul("SmartCATTranslate.Codex.0_144_4");
-    let mut app_sid: PSID = std::ptr::null_mut();
-    let result =
-        unsafe { DeriveAppContainerSidFromAppContainerName(profile_name.as_ptr(), &mut app_sid) };
-    if result < 0 || app_sid.is_null() {
-        return Err(RuntimeError::SandboxUnavailable);
-    }
-    struct SidGuard(PSID);
-    impl Drop for SidGuard {
-        fn drop(&mut self) {
-            unsafe {
-                FreeSid(self.0);
-            }
-        }
-    }
-    let app_sid = SidGuard(app_sid);
-
-    for (path, grant) in grants {
-        grant_appcontainer_path(path, app_sid.0, *grant)?;
-    }
-
-    let mut internet_sid_bytes = 0_u32;
-    unsafe {
-        CreateWellKnownSid(
-            WinCapabilityInternetClientSid,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            &mut internet_sid_bytes,
-        );
-    }
-    if internet_sid_bytes == 0 || internet_sid_bytes > 1024 {
-        return Err(RuntimeError::SandboxUnavailable);
-    }
-    let mut internet_sid =
-        vec![0_usize; (internet_sid_bytes as usize).div_ceil(size_of::<usize>())];
-    if unsafe {
-        CreateWellKnownSid(
-            WinCapabilityInternetClientSid,
-            std::ptr::null_mut(),
-            internet_sid.as_mut_ptr().cast(),
-            &mut internet_sid_bytes,
-        )
-    } == 0
-    {
-        return Err(RuntimeError::SandboxUnavailable);
-    }
-    let mut capability = SID_AND_ATTRIBUTES {
-        Sid: internet_sid.as_mut_ptr().cast(),
-        Attributes: SE_GROUP_ENABLED as u32,
-    };
-    let mut security_capabilities = SECURITY_CAPABILITIES {
-        AppContainerSid: app_sid.0,
-        Capabilities: &mut capability,
-        CapabilityCount: 1,
-        Reserved: 0,
-    };
-
-    let security_attributes = SECURITY_ATTRIBUTES {
-        nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
-        lpSecurityDescriptor: std::ptr::null_mut(),
-        bInheritHandle: 1,
-    };
-    let mut stdout_read: HANDLE = std::ptr::null_mut();
-    let mut stdout_write: HANDLE = std::ptr::null_mut();
-    let mut stdin_read: HANDLE = std::ptr::null_mut();
-    let mut stdin_write: HANDLE = std::ptr::null_mut();
-    if unsafe { CreatePipe(&mut stdout_read, &mut stdout_write, &security_attributes, 0) } == 0
-        || unsafe { CreatePipe(&mut stdin_read, &mut stdin_write, &security_attributes, 0) } == 0
-    {
-        unsafe {
-            close_if_valid(stdout_read);
-            close_if_valid(stdout_write);
-            close_if_valid(stdin_read);
-            close_if_valid(stdin_write);
-        }
-        return Err(RuntimeError::SandboxUnavailable);
-    }
-    let stdout_read = unsafe { OwnedHandle::from_raw_handle(stdout_read.cast()) };
-    let stdout_write = unsafe { OwnedHandle::from_raw_handle(stdout_write.cast()) };
-    let stdin_read = unsafe { OwnedHandle::from_raw_handle(stdin_read.cast()) };
-    let stdin_write = unsafe { OwnedHandle::from_raw_handle(stdin_write.cast()) };
-    use std::os::windows::io::AsRawHandle;
-    if unsafe { SetHandleInformation(stdout_read.as_raw_handle().cast(), HANDLE_FLAG_INHERIT, 0) }
-        == 0
-        || unsafe {
-            SetHandleInformation(stdin_write.as_raw_handle().cast(), HANDLE_FLAG_INHERIT, 0)
-        } == 0
-    {
-        return Err(RuntimeError::SandboxUnavailable);
-    }
-
-    let nul = wide_nul("NUL");
-    let stderr = unsafe {
-        CreateFileW(
-            nul.as_ptr(),
-            windows_sys::Win32::Foundation::GENERIC_WRITE,
-            FILE_SHARE_READ | FILE_SHARE_WRITE,
-            &security_attributes,
-            OPEN_EXISTING,
-            FILE_ATTRIBUTE_NORMAL,
-            std::ptr::null_mut(),
-        )
-    };
-    if stderr == INVALID_HANDLE_VALUE {
-        return Err(RuntimeError::SandboxUnavailable);
-    }
-    let stderr = unsafe { OwnedHandle::from_raw_handle(stderr.cast()) };
-
-    let mut attribute_bytes = 0_usize;
-    unsafe {
-        InitializeProcThreadAttributeList(std::ptr::null_mut(), 1, 0, &mut attribute_bytes);
-    }
-    if attribute_bytes == 0 || attribute_bytes > 1024 * 1024 {
-        return Err(RuntimeError::SandboxUnavailable);
-    }
-    let mut attribute_storage = vec![0_usize; attribute_bytes.div_ceil(size_of::<usize>())];
-    let attribute_list = attribute_storage.as_mut_ptr().cast();
-    if unsafe { InitializeProcThreadAttributeList(attribute_list, 1, 0, &mut attribute_bytes) } == 0
-    {
-        return Err(RuntimeError::SandboxUnavailable);
-    }
-    struct AttributeListGuard(*mut core::ffi::c_void);
-    impl Drop for AttributeListGuard {
-        fn drop(&mut self) {
-            unsafe { DeleteProcThreadAttributeList(self.0) }
-        }
-    }
-    let _attribute_guard = AttributeListGuard(attribute_list);
-    if unsafe {
-        UpdateProcThreadAttribute(
-            attribute_list,
-            0,
-            PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES as usize,
-            (&mut security_capabilities as *mut SECURITY_CAPABILITIES).cast(),
-            size_of::<SECURITY_CAPABILITIES>(),
-            std::ptr::null_mut(),
-            std::ptr::null(),
-        )
-    } == 0
-    {
-        return Err(RuntimeError::SandboxUnavailable);
-    }
-
-    let mut startup = STARTUPINFOEXW::default();
-    startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
-    startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-    startup.StartupInfo.hStdInput = stdin_read.as_raw_handle().cast();
-    startup.StartupInfo.hStdOutput = stdout_write.as_raw_handle().cast();
-    startup.StartupInfo.hStdError = stderr.as_raw_handle().cast();
-    startup.lpAttributeList = attribute_list;
-
-    let application = wide_nul(executable.as_os_str());
-    let mut command_line = windows_command_line(executable.as_os_str(), arguments);
-    let cwd = wide_nul(cwd.as_os_str());
-    let environment = windows_environment_block(environment);
-    let mut process_info = PROCESS_INFORMATION::default();
-    let created = unsafe {
-        CreateProcessW(
-            application.as_ptr(),
-            command_line.as_mut_ptr(),
-            std::ptr::null(),
-            std::ptr::null(),
-            1,
-            CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT,
-            environment.as_ptr().cast(),
-            cwd.as_ptr(),
-            (&startup as *const STARTUPINFOEXW).cast(),
-            &mut process_info,
-        )
-    };
-    if created == 0 {
-        return Err(RuntimeError::SpawnFailed);
-    }
-    unsafe {
-        CloseHandle(process_info.hThread);
-    }
-    let process = unsafe { OwnedHandle::from_raw_handle(process_info.hProcess.cast()) };
-    drop(stdin_read);
-    drop(stdout_write);
-    drop(stderr);
-    let stdin = tokio::fs::File::from_std(std::fs::File::from(stdin_write));
-    let stdout = tokio::fs::File::from_std(std::fs::File::from(stdout_read));
-    Ok(WindowsAppContainerChild {
-        process,
-        stdin: Some(stdin),
-        stdout: Some(stdout),
-        finished: false,
-    })
-}
-
-#[cfg(windows)]
-unsafe fn close_if_valid(handle: windows_sys::Win32::Foundation::HANDLE) {
-    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
-    if !handle.is_null() && handle != INVALID_HANDLE_VALUE {
-        unsafe { CloseHandle(handle) };
-    }
-}
-
-#[cfg(windows)]
-fn wide_nul(value: impl AsRef<std::ffi::OsStr>) -> Vec<u16> {
-    use std::os::windows::ffi::OsStrExt;
-    value.as_ref().encode_wide().chain(Some(0)).collect()
-}
-
-#[cfg(windows)]
-fn windows_environment_block(environment: &BTreeMap<OsString, OsString>) -> Vec<u16> {
-    use std::os::windows::ffi::OsStrExt;
-    let mut block = Vec::new();
-    for (key, value) in environment {
-        block.extend(key.encode_wide());
-        block.push('=' as u16);
-        block.extend(value.encode_wide());
-        block.push(0);
-    }
-    if block.is_empty() {
-        block.push(0);
-    }
-    block.push(0);
-    block
-}
-
-#[cfg(windows)]
-fn windows_command_line(executable: &std::ffi::OsStr, arguments: &[OsString]) -> Vec<u16> {
-    let mut rendered = quote_windows_argument(executable);
-    for argument in arguments {
-        rendered.push(' ');
-        rendered.push_str(&quote_windows_argument(argument));
-    }
-    wide_nul(rendered)
-}
-
-#[cfg(windows)]
-fn quote_windows_argument(argument: &std::ffi::OsStr) -> String {
-    let value = argument.to_string_lossy();
-    if !value.is_empty()
-        && !value
-            .chars()
-            .any(|character| character.is_whitespace() || character == '"')
-    {
-        return value.into_owned();
-    }
-    let mut output = String::from("\"");
-    let mut backslashes = 0;
-    for character in value.chars() {
-        if character == '\\' {
-            backslashes += 1;
-            continue;
-        }
-        if character == '"' {
-            output.push_str(&"\\".repeat(backslashes * 2 + 1));
-        } else {
-            output.push_str(&"\\".repeat(backslashes));
-        }
-        backslashes = 0;
-        output.push(character);
-    }
-    output.push_str(&"\\".repeat(backslashes * 2));
-    output.push('"');
-    output
-}
-
-#[cfg(windows)]
-fn grant_appcontainer_path(
-    path: &Path,
-    app_sid: windows_sys::Win32::Security::PSID,
-    grant: WindowsGrant,
-) -> Result<(), RuntimeError> {
-    use std::os::windows::ffi::OsStrExt;
-    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-    use windows_sys::Win32::Foundation::{LocalFree, INVALID_HANDLE_VALUE};
-    use windows_sys::Win32::Security::Authorization::{
-        GetSecurityInfo, SetEntriesInAclW, SetSecurityInfo, EXPLICIT_ACCESS_W, SE_FILE_OBJECT,
-        TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
-    };
-    use windows_sys::Win32::Security::{
-        DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, SUB_CONTAINERS_AND_OBJECTS_INHERIT,
-    };
-    use windows_sys::Win32::Storage::FileSystem::{
-        CreateFileW, DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ,
-        FILE_GENERIC_WRITE, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
-        READ_CONTROL, WRITE_DAC,
-    };
-
-    let metadata = std::fs::symlink_metadata(path).map_err(|_| RuntimeError::SandboxUnavailable)?;
-    if is_link_or_reparse(&metadata) {
-        return Err(RuntimeError::SandboxUnavailable);
-    }
-    if matches!(grant, WindowsGrant::Write) {
-        set_low_integrity_path(path, metadata.is_dir())?;
-    }
-    let path_wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-    let handle = unsafe {
-        CreateFileW(
-            path_wide.as_ptr(),
-            READ_CONTROL | WRITE_DAC,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            std::ptr::null(),
-            OPEN_EXISTING,
-            if metadata.is_dir() {
-                FILE_FLAG_BACKUP_SEMANTICS
-            } else {
-                0
-            },
-            std::ptr::null_mut(),
-        )
-    };
-    if handle == INVALID_HANDLE_VALUE {
-        return Err(RuntimeError::SandboxUnavailable);
-    }
-    let handle = unsafe { OwnedHandle::from_raw_handle(handle.cast()) };
-    let mut old_dacl = std::ptr::null_mut();
-    let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
-    let get_result = unsafe {
-        GetSecurityInfo(
-            handle.as_raw_handle().cast(),
-            SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            &mut old_dacl,
-            std::ptr::null_mut(),
-            &mut descriptor,
-        )
-    };
-    if get_result != 0 {
-        return Err(RuntimeError::SandboxUnavailable);
-    }
-    let access = match grant {
-        WindowsGrant::ReadExecute => FILE_GENERIC_READ | FILE_GENERIC_EXECUTE,
-        WindowsGrant::Write => {
-            FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE | DELETE
-        }
-    };
-    let entry = EXPLICIT_ACCESS_W {
-        grfAccessPermissions: access,
-        grfAccessMode: 1,
-        grfInheritance: if metadata.is_dir() {
-            SUB_CONTAINERS_AND_OBJECTS_INHERIT
-        } else {
-            0
-        },
-        Trustee: TRUSTEE_W {
-            pMultipleTrustee: std::ptr::null_mut(),
-            MultipleTrusteeOperation: 0,
-            TrusteeForm: TRUSTEE_IS_SID,
-            TrusteeType: TRUSTEE_IS_UNKNOWN,
-            ptstrName: app_sid.cast(),
-        },
-    };
-    let mut new_dacl = std::ptr::null_mut();
-    let set_entries = unsafe { SetEntriesInAclW(1, &entry, old_dacl, &mut new_dacl) };
-    let set_result = if set_entries == 0 {
-        unsafe {
-            SetSecurityInfo(
-                handle.as_raw_handle().cast(),
-                SE_FILE_OBJECT,
-                DACL_SECURITY_INFORMATION,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                new_dacl,
-                std::ptr::null_mut(),
-            )
-        }
-    } else {
-        set_entries
-    };
-    unsafe {
-        if !new_dacl.is_null() {
-            LocalFree(new_dacl.cast());
-        }
-        if !descriptor.is_null() {
-            LocalFree(descriptor);
-        }
-    }
-    if set_result != 0 {
-        return Err(RuntimeError::SandboxUnavailable);
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-fn set_low_integrity_path(path: &Path, directory: bool) -> Result<(), RuntimeError> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Foundation::LocalFree;
-    use windows_sys::Win32::Security::Authorization::{
-        ConvertStringSecurityDescriptorToSecurityDescriptorW, SetNamedSecurityInfoW,
-        SDDL_REVISION_1, SE_FILE_OBJECT,
-    };
-    use windows_sys::Win32::Security::{
-        GetSecurityDescriptorSacl, LABEL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
-    };
-
-    let descriptor_text = wide_nul(if directory {
-        "S:(ML;OICI;NW;;;LW)"
-    } else {
-        "S:(ML;;NW;;;LW)"
-    });
-    let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
-    if unsafe {
-        ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            descriptor_text.as_ptr(),
-            SDDL_REVISION_1,
-            &mut descriptor,
-            std::ptr::null_mut(),
-        )
-    } == 0
-    {
-        return Err(RuntimeError::SandboxUnavailable);
-    }
-    let mut present = 0;
-    let mut defaulted = 0;
-    let mut sacl = std::ptr::null_mut();
-    let valid =
-        unsafe { GetSecurityDescriptorSacl(descriptor, &mut present, &mut sacl, &mut defaulted) }
-            != 0
-            && present != 0;
-    let mut path_wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-    let result = if valid {
-        unsafe {
-            SetNamedSecurityInfoW(
-                path_wide.as_mut_ptr(),
-                SE_FILE_OBJECT,
-                LABEL_SECURITY_INFORMATION,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                sacl,
-            )
-        }
-    } else {
-        1
-    };
-    unsafe {
-        LocalFree(descriptor);
-    }
-    if result != 0 {
-        return Err(RuntimeError::SandboxUnavailable);
-    }
-    Ok(())
 }
 
 fn default_credential_source() -> Option<PathBuf> {
@@ -1490,45 +733,27 @@ fn set_private_permissions(path: &Path, directory: bool) -> Result<(), RuntimeEr
     Ok(())
 }
 
-enum ManagedProcess {
-    #[cfg(windows)]
-    AppContainer(WindowsAppContainerChild),
-    #[cfg(target_os = "macos")]
-    Tokio(Child),
-}
+struct ManagedProcess(Child);
 
 impl ManagedProcess {
     async fn stop(&mut self) -> Result<(), RuntimeError> {
-        match self {
-            #[cfg(windows)]
-            Self::AppContainer(child) => child.stop().await,
-            #[cfg(target_os = "macos")]
-            Self::Tokio(child) => {
-                if child
-                    .try_wait()
-                    .map_err(|_| RuntimeError::StopFailed)?
-                    .is_none()
-                {
-                    child.start_kill().map_err(|_| RuntimeError::StopFailed)?;
-                }
-                child
-                    .wait()
-                    .await
-                    .map(|_| ())
-                    .map_err(|_| RuntimeError::StopFailed)
-            }
+        if self
+            .0
+            .try_wait()
+            .map_err(|_| RuntimeError::StopFailed)?
+            .is_none()
+        {
+            self.0.start_kill().map_err(|_| RuntimeError::StopFailed)?;
         }
+        self.0
+            .wait()
+            .await
+            .map(|_| ())
+            .map_err(|_| RuntimeError::StopFailed)
     }
 
     fn abort(&mut self) {
-        match self {
-            #[cfg(windows)]
-            Self::AppContainer(child) => child.abort(),
-            #[cfg(target_os = "macos")]
-            Self::Tokio(child) => {
-                let _ = child.start_kill();
-            }
-        }
+        let _ = self.0.start_kill();
     }
 }
 
@@ -1624,8 +849,70 @@ impl ProcessRuntimeSession {
         writer
             .flush()
             .await
-            .map_err(|_| RuntimeError::HandshakeFailed)
+            .map_err(|_| RuntimeError::HandshakeFailed)?;
+
+        let attestation = serde_json::to_vec(&json!({
+            "id": 1,
+            "method": SMARTCAT_ATTESTATION_METHOD,
+            "params": {}
+        }))
+        .map_err(|_| RuntimeError::HandshakeFailed)?;
+        writer
+            .write_all(&attestation)
+            .await
+            .map_err(|_| RuntimeError::HandshakeFailed)?;
+        writer
+            .write_all(b"\n")
+            .await
+            .map_err(|_| RuntimeError::HandshakeFailed)?;
+        writer
+            .flush()
+            .await
+            .map_err(|_| RuntimeError::HandshakeFailed)?;
+
+        let response = read_smartcat_attestation_response(reader).await?;
+        validate_smartcat_attestation(&response)
     }
+}
+
+async fn read_smartcat_attestation_response(
+    reader: &mut (dyn tokio::io::AsyncRead + Send + Unpin),
+) -> Result<Vec<u8>, RuntimeError> {
+    const MAX_FRAMES: usize = 2;
+
+    for _ in 0..MAX_FRAMES {
+        let frame = read_handshake_line(reader).await?;
+        if is_disabled_remote_control_status(&frame) {
+            continue;
+        }
+        return Ok(frame);
+    }
+    Err(RuntimeError::HandshakeFailed)
+}
+
+fn is_disabled_remote_control_status(frame: &[u8]) -> bool {
+    let Ok(Value::Object(message)) = serde_json::from_slice::<Value>(frame) else {
+        return false;
+    };
+    if message.len() != 2
+        || message.get("method").and_then(Value::as_str) != Some("remoteControl/status/changed")
+    {
+        return false;
+    }
+    let Some(Value::Object(params)) = message.get("params") else {
+        return false;
+    };
+    params.len() == 4
+        && params.get("status").and_then(Value::as_str) == Some("disabled")
+        && params
+            .get("serverName")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.is_empty())
+        && params
+            .get("installationId")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.is_empty())
+        && params.get("environmentId").is_some_and(Value::is_null)
 }
 
 async fn read_handshake_line(
@@ -1675,6 +962,26 @@ fn validate_initialize_response(frame: &[u8]) -> Result<(), RuntimeError> {
     Ok(())
 }
 
+fn validate_smartcat_attestation(frame: &[u8]) -> Result<(), RuntimeError> {
+    let value: Value = serde_json::from_slice(frame).map_err(|_| RuntimeError::HandshakeFailed)?;
+    if value.get("id").and_then(Value::as_u64) != Some(1) || value.get("error").is_some() {
+        return Err(RuntimeError::HandshakeFailed);
+    }
+    let result = value
+        .get("result")
+        .and_then(Value::as_object)
+        .ok_or(RuntimeError::HandshakeFailed)?;
+    if result.len() != 4
+        || result.get("upstreamCommit").and_then(Value::as_str) != Some(SMARTCAT_UPSTREAM_COMMIT)
+        || result.get("patchVersion").and_then(Value::as_str) != Some(SMARTCAT_PATCH_VERSION)
+        || result.get("toolCount").and_then(Value::as_u64) != Some(0)
+        || result.get("instructionDiscovery").and_then(Value::as_bool) != Some(false)
+    {
+        return Err(RuntimeError::HandshakeFailed);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod security_tests {
     use super::{
@@ -1683,75 +990,82 @@ mod security_tests {
     use serde_json::json;
     use tempfile::tempdir;
 
-    #[cfg(windows)]
-    #[tokio::test]
-    async fn windows_appcontainer_cannot_read_a_sibling_secret() {
-        use std::ffi::OsString;
-        use tokio::io::AsyncReadExt;
+    #[test]
+    fn smartcat_attestation_rejects_stock_or_drifted_app_servers() {
+        let expected = serde_json::json!({
+            "id": 1,
+            "result": {
+                "upstreamCommit": "8c68d4c87dc54d38861f5114e920c3de2efa5876",
+                "patchVersion": "smartcat-1",
+                "toolCount": 0,
+                "instructionDiscovery": false
+            }
+        });
+        assert!(
+            super::validate_smartcat_attestation(&serde_json::to_vec(&expected).unwrap()).is_ok()
+        );
 
-        let root = tempdir().unwrap();
-        let allowed = root.path().join("allowed");
-        std::fs::create_dir_all(&allowed).unwrap();
-        let secret = root.path().join("outside-secret.txt");
-        std::fs::write(&secret, b"SMARTCAT_OUTSIDE_SECRET_MUST_NOT_BE_READ").unwrap();
-        let command = super::windows_command_interpreter().unwrap();
-        let arguments = vec![
-            OsString::from("/d"),
-            OsString::from("/c"),
-            OsString::from("type"),
-            secret.as_os_str().to_owned(),
-        ];
-        let environment = super::isolated_environment(&allowed, &allowed).unwrap();
-        let mut child = super::spawn_windows_appcontainer_command(
-            &command,
-            &arguments,
-            &allowed,
-            &environment,
-            &[(&allowed, super::WindowsGrant::Write)],
-        )
-        .unwrap();
-        drop(child.stdin.take());
-        let mut output = Vec::new();
-        child
-            .stdout
-            .take()
-            .unwrap()
-            .read_to_end(&mut output)
-            .await
-            .unwrap();
-        let status = child.wait().await.unwrap();
-
-        assert_ne!(status, 0);
-        assert!(!String::from_utf8_lossy(&output).contains("SMARTCAT_OUTSIDE_SECRET"));
+        for rejected in [
+            serde_json::json!({"id": 1, "result": {}}),
+            serde_json::json!({"id": 1, "result": {
+                "upstreamCommit": "stock",
+                "patchVersion": "smartcat-1",
+                "toolCount": 0,
+                "instructionDiscovery": false
+            }}),
+            serde_json::json!({"id": 1, "result": {
+                "upstreamCommit": "8c68d4c87dc54d38861f5114e920c3de2efa5876",
+                "patchVersion": "smartcat-1",
+                "toolCount": 1,
+                "instructionDiscovery": false
+            }}),
+        ] {
+            assert!(
+                super::validate_smartcat_attestation(&serde_json::to_vec(&rejected).unwrap())
+                    .is_err()
+            );
+        }
     }
 
-    #[cfg(windows)]
-    #[tokio::test]
-    async fn windows_appcontainer_can_write_only_inside_its_granted_root() {
-        use std::ffi::OsString;
+    #[test]
+    fn only_the_exact_disabled_remote_control_lifecycle_notification_is_allowed() {
+        let allowed = serde_json::json!({
+            "method": "remoteControl/status/changed",
+            "params": {
+                "status": "disabled",
+                "serverName": "test-host",
+                "installationId": "test-installation",
+                "environmentId": null
+            }
+        });
+        assert!(super::is_disabled_remote_control_status(
+            &serde_json::to_vec(&allowed).unwrap()
+        ));
 
-        let root = tempdir().unwrap();
-        let allowed = root.path().join("allowed");
-        std::fs::create_dir_all(&allowed).unwrap();
-        let command = super::windows_command_interpreter().unwrap();
-        let output = allowed.join("written.txt");
-        let arguments = vec![
-            OsString::from("/d"),
-            OsString::from("/c"),
-            OsString::from(format!("echo isolated>{}", output.display())),
-        ];
-        let environment = super::isolated_environment(&allowed, &allowed).unwrap();
-        let mut child = super::spawn_windows_appcontainer_command(
-            &command,
-            &arguments,
-            &allowed,
-            &environment,
-            &[(&allowed, super::WindowsGrant::Write)],
-        )
-        .unwrap();
-        drop(child.stdin.take());
-        assert_eq!(child.wait().await.unwrap(), 0);
-        assert_eq!(std::fs::read_to_string(output).unwrap().trim(), "isolated");
+        for rejected in [
+            serde_json::json!({
+                "id": "server-request",
+                "method": "remoteControl/status/changed",
+                "params": allowed["params"].clone()
+            }),
+            serde_json::json!({
+                "method": "remoteControl/status/changed",
+                "params": {
+                    "status": "enabled",
+                    "serverName": "test-host",
+                    "installationId": "test-installation",
+                    "environmentId": null
+                }
+            }),
+            serde_json::json!({
+                "method": "another/notification",
+                "params": allowed["params"].clone()
+            }),
+        ] {
+            assert!(!super::is_disabled_remote_control_status(
+                &serde_json::to_vec(&rejected).unwrap()
+            ));
+        }
     }
 
     #[cfg(windows)]

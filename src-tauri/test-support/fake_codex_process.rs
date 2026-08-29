@@ -59,6 +59,27 @@ fn main() {
         std::process::exit(13);
     }
 
+    let attestation = lines.next().and_then(Result::ok).unwrap_or_default();
+    if !attestation.contains("\"method\":\"smartcat/attestation\"")
+        || !attestation.contains("\"id\":1")
+    {
+        std::process::exit(15);
+    }
+    let is_stock_fixture = std::env::current_exe()
+        .ok()
+        .and_then(|path| {
+            path.file_stem()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .is_some_and(|name| name.contains("stock-codex"));
+    if is_stock_fixture {
+        write_line(r#"{"id":1,"result":{}}"#);
+        std::process::exit(0);
+    }
+    write_line(
+        r#"{"id":1,"result":{"upstreamCommit":"8c68d4c87dc54d38861f5114e920c3de2efa5876","patchVersion":"smartcat-1","toolCount":0,"instructionDiscovery":false}}"#,
+    );
+
     for line in lines.map_while(Result::ok) {
         let Some(id) = numeric_id(&line) else {
             continue;

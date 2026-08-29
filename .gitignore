@@ -19,11 +19,14 @@ target/
 
 # App-local runtime and generated translation data
 .runtime/
+.runtime-cache/
 .local-data/
 artifacts/
 test-results/
 .worktrees/
 .superpowers/
+src-tauri/binaries/
+src-tauri/resources/smartcat-codex-runtime.json
 
 # Editor and operating-system files
 .idea/
