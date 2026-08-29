@@ -84,8 +84,15 @@ impl AppState {
         Some(ModelCatalogService::new(transport))
     }
 
-    pub(crate) async fn lock_settings_operation(&self) -> MutexGuard<'_, ()> {
-        self.settings_operation.lock().await
+    pub(crate) async fn lock_settings_operation(
+        &self,
+    ) -> Result<MutexGuard<'_, ()>, SettingsOperationError> {
+        let operation = self.settings_operation.lock().await;
+        if self.shutting_down.load(Ordering::Acquire) {
+            Err(SettingsOperationError::ShuttingDown)
+        } else {
+            Ok(operation)
+        }
     }
 
     pub(crate) fn translation_owner_registry(&self) -> SharedOwnerJobRegistry {
@@ -131,6 +138,8 @@ impl AppState {
 
     pub async fn shutdown(&self) -> Result<(), AppShutdownError> {
         self.shutting_down.store(true, Ordering::Release);
+        let settings_operation = self.settings_operation.lock().await;
+        drop(settings_operation);
         let installed = self.runtime.write().await.take();
         let Some(installed) = installed else {
             return Ok(());
@@ -157,6 +166,12 @@ impl AppState {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum SettingsOperationError {
+    #[error("the application is shutting down")]
+    ShuttingDown,
+}
+
 struct InstalledAccountRuntime {
     service: Arc<AccountService>,
     transport: Option<Arc<JsonlAppServerTransport>>,
@@ -177,4 +192,34 @@ pub enum AppShutdownError {
     Translation(TranslationError),
     #[error("the Codex transport could not stop")]
     Transport(TransportError),
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::AppState;
+
+    #[tokio::test]
+    async fn settings_operations_are_serialized_and_shutdown_waits_for_the_active_operation() {
+        let state = Arc::new(AppState::default());
+        let active = state.lock_settings_operation().await.unwrap();
+        let waiting_state = state.clone();
+        let waiting = tokio::spawn(async move {
+            let _operation = waiting_state.lock_settings_operation().await.unwrap();
+        });
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished());
+        drop(active);
+        waiting.await.unwrap();
+
+        let active = state.lock_settings_operation().await.unwrap();
+        let shutdown_state = state.clone();
+        let shutdown = tokio::spawn(async move { shutdown_state.shutdown().await });
+        tokio::task::yield_now().await;
+        assert!(!shutdown.is_finished());
+        drop(active);
+        shutdown.await.unwrap().unwrap();
+        assert!(state.lock_settings_operation().await.is_err());
+    }
 }

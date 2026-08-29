@@ -14,7 +14,7 @@ use smartcat_translate::commands::translation::{
 };
 use smartcat_translate::core::errors::TranslationError;
 use smartcat_translate::core::types::{
-    Quality, Tone, TranslationMode, TranslationProfile, TranslationRequest,
+    Quality, Tone, TranslationMode, TranslationModel, TranslationProfile, TranslationRequest,
 };
 use tempfile::tempdir;
 use tokio::sync::Notify;
@@ -34,6 +34,7 @@ fn request(text: &str) -> TranslationRequest {
         },
         mode: TranslationMode::Translate,
         secret: false,
+        model: TranslationModel::Automatic,
     }
 }
 
@@ -200,7 +201,7 @@ async fn malicious_source_cannot_trigger_tools_or_escape_the_ephemeral_turn() {
 }
 
 #[tokio::test]
-async fn streams_only_the_structured_translation_and_handles_events_before_response() {
+async fn applies_the_resolved_model_and_streams_only_the_structured_translation() {
     let long_delta = "가".repeat(80);
     let server_delta = long_delta.clone();
     let harness = spawn_fake_transport(move |mut reader, mut writer| async move {
@@ -217,6 +218,7 @@ async fn streams_only_the_structured_translation_and_handles_events_before_respo
         )
         .await;
         let turn = read_request(&mut reader).await;
+        assert_eq!(turn["params"]["model"], "account-model");
         assert_eq!(turn["params"]["approvalPolicy"], "never");
         assert_eq!(
             turn["params"]["sandboxPolicy"],
@@ -314,8 +316,10 @@ async fn streams_only_the_structured_translation_and_handles_events_before_respo
         .unwrap();
     let observer = RecordingObserver::default();
 
+    let mut model_request = request("hello");
+    model_request.model = TranslationModel::Specific("account-model".into());
     let result = backend
-        .translate_stream(request("hello"), &observer)
+        .translate_stream(model_request, &observer)
         .await
         .unwrap();
 

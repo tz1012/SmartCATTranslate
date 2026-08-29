@@ -12,7 +12,10 @@ use crate::codex::translation::{
     TranslationObserver,
 };
 use crate::core::errors::TranslationError;
-use crate::core::types::{TranslationRequest, TranslationResult};
+use crate::core::types::{TranslationMode, TranslationRequest, TranslationResult};
+use crate::settings::types::{
+    language_pair_action, resolve_model_for_job, LanguagePairAction, ModelCatalogAuthority,
+};
 
 const TRANSLATION_EVENT_NAME: &str = "translation-event";
 const TRANSLATION_SERVICE_UNAVAILABLE: &str = "translation_service_unavailable";
@@ -215,7 +218,10 @@ impl TranslationJobManager {
 
 #[cfg(test)]
 mod tests {
-    use super::OwnerJobRegistry;
+    use super::{validate_translation_action, OwnerJobRegistry};
+    use crate::core::types::{
+        Quality, Tone, TranslationMode, TranslationModel, TranslationProfile, TranslationRequest,
+    };
     use uuid::Uuid;
 
     #[test]
@@ -229,6 +235,29 @@ mod tests {
         assert_eq!(jobs_to_cancel, [job_id]);
         assert!(!registry.owner_is_live(job_id));
         assert!(registry.begin("main".to_owned(), Uuid::new_v4()).is_err());
+    }
+
+    #[test]
+    fn explicit_same_language_requires_the_rewrite_api_path() {
+        let mut request = TranslationRequest {
+            text: "same language".into(),
+            profile: TranslationProfile {
+                source_language: Some("ko".into()),
+                target_language: "ko".into(),
+                quality: Quality::Balanced,
+                tone: Tone::Natural,
+                protected_terms: Vec::new(),
+            },
+            mode: TranslationMode::Translate,
+            secret: false,
+            model: TranslationModel::Automatic,
+        };
+        assert_eq!(
+            validate_translation_action(&request),
+            Err("rewrite_suggested")
+        );
+        request.mode = TranslationMode::Rewrite;
+        assert_eq!(validate_translation_action(&request), Ok(()));
     }
 }
 
@@ -256,12 +285,35 @@ impl TranslationEventSink for TauriWindowEventSink {
 
 #[tauri::command]
 pub async fn translate_text(
+    app: tauri::AppHandle,
     window: tauri::Window,
     state: State<'_, AppState>,
-    request: TranslationRequest,
+    mut request: TranslationRequest,
 ) -> Result<Uuid, String> {
     let owner = window.label().to_owned();
+    validate_translation_action(&request).map_err(str::to_owned)?;
     validate_translation_request(&request).map_err(|error| error_code(&error).to_owned())?;
+    let selected_model = {
+        let _operation = state
+            .lock_settings_operation()
+            .await
+            .map_err(|_| "settings_shutting_down".to_owned())?;
+        crate::commands::settings::open_store(&app)?
+            .load()
+            .await
+            .map_err(|error| error.code().to_owned())?
+            .selected_model
+    };
+    request.model = match crate::commands::settings::read_authoritative_models(&state).await {
+        Ok(models) => {
+            resolve_model_for_job(&selected_model, ModelCatalogAuthority::Available(&models))
+        }
+        Err(code) if code == "model_catalog_signed_out" => {
+            resolve_model_for_job(&selected_model, ModelCatalogAuthority::SignedOut)
+        }
+        Err(_) => resolve_model_for_job(&selected_model, ModelCatalogAuthority::Unavailable),
+    }
+    .map_err(|error| error.code().to_owned())?;
     let job_id = state
         .reserve_window_translation_job(&owner)
         .map_err(|error| error_code(&error).to_owned())?;
@@ -276,6 +328,19 @@ pub async fn translate_text(
         .start_reserved(job_id, request, Arc::new(TauriWindowEventSink(window)))
         .await
         .map_err(|error| error_code(&error).to_owned())
+}
+
+fn validate_translation_action(request: &TranslationRequest) -> Result<(), &'static str> {
+    if request.mode == TranslationMode::Translate
+        && language_pair_action(
+            request.profile.source_language.as_deref(),
+            &request.profile.target_language,
+        ) == LanguagePairAction::RewriteSuggested
+    {
+        Err("rewrite_suggested")
+    } else {
+        Ok(())
+    }
 }
 
 #[tauri::command]

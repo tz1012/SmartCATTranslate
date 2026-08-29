@@ -1,21 +1,15 @@
-use std::collections::HashMap;
 use std::io::Write;
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use serde_json::Value;
-use tauri::Runtime;
 
-use super::types::{AppSettings, SettingsError};
-
-const SETTINGS_KEY: &str = "settings";
+use super::types::{AppSettings, SettingsError, MAX_SETTINGS_DOCUMENT_BYTES};
 
 #[async_trait]
 pub trait SettingsBackend: Send + Sync {
-    async fn get(&self, key: &str) -> Result<Option<Value>, String>;
-    async fn set(&self, key: &str, value: Value) -> Result<(), String>;
-    async fn save(&self) -> Result<(), String>;
+    async fn read(&self) -> Result<Option<Value>, String>;
+    async fn replace(&self, value: Value) -> Result<(), String>;
 }
 
 pub struct SettingsStore<B> {
@@ -30,7 +24,7 @@ impl<B: SettingsBackend> SettingsStore<B> {
     pub async fn load(&self) -> Result<AppSettings, SettingsError> {
         let value = self
             .backend
-            .get(SETTINGS_KEY)
+            .read()
             .await
             .map_err(|_| SettingsError::Persistence)?;
         let Some(value) = value else {
@@ -38,11 +32,15 @@ impl<B: SettingsBackend> SettingsStore<B> {
             self.persist(&settings).await?;
             return Ok(settings);
         };
-        let needs_migration = value.get("schemaVersion").is_none();
+        let (value, legacy_wrapper) = match value.get("settings") {
+            Some(settings) => (settings.clone(), true),
+            None => (value, false),
+        };
+        let missing_version = value.get("schemaVersion").is_none();
         let settings: AppSettings =
             serde_json::from_value(value).map_err(|_| SettingsError::InvalidDocument)?;
         settings.validate()?;
-        if needs_migration {
+        if legacy_wrapper || missing_version {
             self.persist(&settings).await?;
         }
         Ok(settings)
@@ -56,57 +54,90 @@ impl<B: SettingsBackend> SettingsStore<B> {
     async fn persist(&self, settings: &AppSettings) -> Result<(), SettingsError> {
         let value = serde_json::to_value(settings).map_err(|_| SettingsError::InvalidDocument)?;
         self.backend
-            .set(SETTINGS_KEY, value)
-            .await
-            .map_err(|_| SettingsError::Persistence)?;
-        self.backend
-            .save()
+            .replace(value)
             .await
             .map_err(|_| SettingsError::Persistence)
     }
 }
 
-pub struct TauriStoreBackend<R: Runtime> {
-    store: Arc<tauri_plugin_store::Store<R>>,
+#[derive(Clone, Debug)]
+pub struct FileSettingsBackend {
     path: PathBuf,
 }
 
-impl<R: Runtime> TauriStoreBackend<R> {
-    pub fn new(store: Arc<tauri_plugin_store::Store<R>>, path: PathBuf) -> Self {
-        Self { store, path }
+impl FileSettingsBackend {
+    pub fn new(path: PathBuf) -> Self {
+        Self { path }
     }
 }
 
 #[async_trait]
-impl<R: Runtime> SettingsBackend for TauriStoreBackend<R> {
-    async fn get(&self, key: &str) -> Result<Option<Value>, String> {
-        Ok(self.store.get(key))
+impl SettingsBackend for FileSettingsBackend {
+    async fn read(&self) -> Result<Option<Value>, String> {
+        let path = self.path.clone();
+        tauri::async_runtime::spawn_blocking(move || read_document(&path))
+            .await
+            .map_err(|_| "settings read task failed".to_owned())?
     }
 
-    async fn set(&self, key: &str, value: Value) -> Result<(), String> {
-        self.store.set(key, value);
-        Ok(())
+    async fn replace(&self, value: Value) -> Result<(), String> {
+        let path = self.path.clone();
+        tauri::async_runtime::spawn_blocking(move || replace_document(&path, &value))
+            .await
+            .map_err(|_| "settings write task failed".to_owned())?
     }
+}
 
-    async fn save(&self) -> Result<(), String> {
-        let parent = self
-            .path
-            .parent()
-            .ok_or_else(|| "invalid store path".to_owned())?;
-        std::fs::create_dir_all(parent).map_err(|_| "create store directory failed".to_owned())?;
-        let values: HashMap<String, Value> = self.store.entries().into_iter().collect();
-        let bytes = serde_json::to_vec(&values).map_err(|_| "serialize store failed".to_owned())?;
-        let mut temporary = tempfile::Builder::new()
-            .prefix(".smartcat-settings-")
-            .tempfile_in(parent)
-            .map_err(|_| "create temporary store failed".to_owned())?;
-        temporary
-            .write_all(&bytes)
-            .and_then(|_| temporary.as_file_mut().sync_all())
-            .map_err(|_| "write temporary store failed".to_owned())?;
-        temporary
-            .persist(&self.path)
-            .map_err(|_| "replace store failed".to_owned())?;
-        Ok(())
+fn read_document(path: &Path) -> Result<Option<Value>, String> {
+    match std::fs::metadata(path) {
+        Ok(metadata) if metadata.len() > MAX_SETTINGS_DOCUMENT_BYTES as u64 => {
+            return Err("settings document is too large".to_owned())
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err("settings metadata read failed".to_owned()),
     }
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|_| "settings document is invalid".to_owned()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err("settings read failed".to_owned()),
+    }
+}
+
+fn replace_document(path: &Path, value: &Value) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "invalid settings path".to_owned())?;
+    std::fs::create_dir_all(parent).map_err(|_| "create settings directory failed".to_owned())?;
+    let bytes = serde_json::to_vec(value).map_err(|_| "serialize settings failed".to_owned())?;
+    if bytes.len() > MAX_SETTINGS_DOCUMENT_BYTES {
+        return Err("settings document is too large".to_owned());
+    }
+    let mut temporary = tempfile::Builder::new()
+        .prefix(".smartcat-settings-")
+        .tempfile_in(parent)
+        .map_err(|_| "create temporary settings failed".to_owned())?;
+    temporary
+        .write_all(&bytes)
+        .and_then(|_| temporary.as_file_mut().sync_all())
+        .map_err(|_| "write temporary settings failed".to_owned())?;
+    temporary
+        .persist(path)
+        .map_err(|_| "replace settings failed".to_owned())?;
+    sync_parent(parent)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn sync_parent(parent: &Path) -> Result<(), String> {
+    std::fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|_| "sync settings directory failed".to_owned())
+}
+
+#[cfg(not(unix))]
+fn sync_parent(_parent: &Path) -> Result<(), String> {
+    Ok(())
 }

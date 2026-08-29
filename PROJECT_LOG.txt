@@ -338,3 +338,23 @@ TDD 및 검증
 - 요약: feature: translation-settings
 - 변경 파일: CHANGELOG.md, DECISIONS.txt, PROJECT_LOG.txt, src-tauri/Cargo.lock, src-tauri/Cargo.toml, src-tauri/src/app_state.rs, src-tauri/src/commands/mod.rs, src-tauri/src/commands/settings.rs, src-tauri/src/lib.rs, src-tauri/src/settings/mod.rs, src-tauri/src/settings/store.rs, src-tauri/src/settings/types.rs, src-tauri/tests/settings_store.rs, src/features/settings/GlossaryEditor.tsx, src/features/settings/languages.ts, src/features/settings/ModelSelector.tsx, src/features/settings/SettingsView.test.tsx, src/features/settings/SettingsView.tsx
 - 검증: cargo test --all-targets --features test-helper && 120/120 passed && pnpm test && 24/24 passed && pnpm records:test && 16/16 passed
+
+[2026-08-30] Task 8 검토 수정 1 — 내구 설정 저장, 실제 모델 적용과 경합 방지
+
+구현
+- 종료 시 별도 저장 경로가 원자 교체를 우회하던 플러그인 저장소를 제품 설정 경로에서 제거했다. 앱 전용 JSON 파일은 동일 디렉터리 임시 파일에 완전 기록·동기화한 뒤 원자 교체하며, 저장 실패 전에는 권위 있는 설정을 바꾸지 않는다. 설정 명령과 종료는 단일 작업 경계로 직렬화한다.
+- 저장 모델을 권위 있는 계정 모델 목록으로 해석해 실제 번역 요청과 `turn/start`에 적용한다. 명시적 모델이 사라지면 자동 선택으로 폴백하고, 목록 조회 실패와 로그아웃은 구분해 실패 폐쇄한다.
+- 모델 목록 조회 실패 시 화면의 저장 선택을 유지하고 상태를 표시한다. 권위 있는 성공 응답에서만 사용할 수 없는 선택을 폴백하며, 저장 세대 번호로 늦게 도착한 응답이 후속 편집을 덮어쓰는 것을 막는다.
+- 명시적 원문 언어와 대상 언어가 같거나 감지 언어가 대상 언어와 같으면 문장 개선을 제안한다. 실제 명령은 같은 언어의 일반 번역 경로를 `rewrite_suggested`로 거부한다.
+- 보호 용어와 용어집 합계를 번역 프롬프트의 1,000개·64 KiB 경계에 맞추고 설정 문서, 모델 목록, 필드, 커서와 페이지 수를 제한했다. 용어집 UUID 중복과 정규화된 원문 중복을 거부한다.
+- 브라우저 UUID 기능이 없는 경우에도 암호학적 난수로 RFC 4122 버전 4와 variant 비트를 강제한다.
+
+TDD 및 집중 검증
+- RED: 내구 저장 실패 뒤 보이는 값 변경, 앱 전용 파일 백엔드 부재, 번역 턴 모델 누락, 목록 오류의 선택 삭제, 저장 응답 경합, 같은 언어 명령 누락, 크기·중복·페이지 경계 누락과 UUID 모듈 부재를 각각 실패 시험으로 재현했다.
+- GREEN: 설정 저장소 15/15, 번역 조정기 29/29, 설정 직렬화·종료 경합 1/1, 설정 화면과 UUID 포함 프런트엔드 28/28가 통과했다.
+- 원문, 번역문, 인증 정보, 원시 App Server 페이로드와 전체 로컬 경로를 기록하지 않았다. Task 7의 도구 없는 런타임·실패 폐쇄 경계는 그대로 유지했다.
+
+[2026-08-30 03:10 Asia/Seoul] 변경 기록
+- 요약: fix: task8-settings-review
+- 변경 파일: CHANGELOG.md, DECISIONS.txt, PROJECT_LOG.txt, src-tauri/Cargo.lock, src-tauri/Cargo.toml, src-tauri/src/app_state.rs, src-tauri/src/codex/translation.rs, src-tauri/src/commands/settings.rs, src-tauri/src/commands/translation.rs, src-tauri/src/core/types.rs, src-tauri/src/lib.rs, src-tauri/src/settings/mod.rs, src-tauri/src/settings/store.rs, src-tauri/src/settings/types.rs, src-tauri/tests/settings_store.rs, src-tauri/tests/translation_coordinator.rs, src/features/settings/GlossaryEditor.tsx, src/features/settings/ModelSelector.tsx, src/features/settings/SettingsView.test.tsx, src/features/settings/SettingsView.tsx, src/features/settings/uuid.test.ts, src/features/settings/uuid.ts
+- 검증: cargo test; 125/125 passed; pnpm test; 28/28 passed; pnpm records:test; 16/16 passed

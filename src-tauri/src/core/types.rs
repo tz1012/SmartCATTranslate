@@ -17,6 +17,15 @@ pub struct TranslationRequest {
     pub profile: TranslationProfile,
     pub mode: TranslationMode,
     pub secret: bool,
+    #[serde(skip)]
+    pub model: TranslationModel,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum TranslationModel {
+    #[default]
+    Automatic,
+    Specific(String),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -52,7 +61,9 @@ pub enum TranslationMode {
 
 #[cfg(test)]
 mod tests {
-    use super::{Quality, Tone, TranslationMode, TranslationProfile, TranslationRequest};
+    use super::{
+        Quality, Tone, TranslationMode, TranslationModel, TranslationProfile, TranslationRequest,
+    };
 
     #[test]
     fn serializes_the_translation_request_with_camel_case_fields_and_values() {
@@ -67,6 +78,7 @@ mod tests {
             },
             mode: TranslationMode::Translate,
             secret: true,
+            model: TranslationModel::Automatic,
         };
 
         assert_eq!(

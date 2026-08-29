@@ -16,10 +16,8 @@ pub mod settings;
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_store::Builder::default().build())
         .manage(app_state::AppState::default())
         .setup(|app| {
-            commands::settings::open_store(app.handle())?;
             let app_data_root = app.path().app_local_data_dir()?;
             let resource_root = app.path().resource_dir()?;
             let executable_path = std::env::current_exe()?;

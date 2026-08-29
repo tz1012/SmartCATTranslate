@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { AppLocale, GlossaryEntry } from './SettingsView';
 import { languageLabel, SUPPORTED_LANGUAGES } from './languages';
+import { createUuidV4 } from './uuid';
 
 const copy = {
   ko: {
@@ -16,7 +17,7 @@ const copy = {
 } as const;
 
 function newId() {
-  return globalThis.crypto?.randomUUID?.() ?? `glossary-${Date.now()}`;
+  return createUuidV4();
 }
 
 export function GlossaryEditor({

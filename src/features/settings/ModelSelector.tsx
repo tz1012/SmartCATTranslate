@@ -15,26 +15,31 @@ export function ModelSelector({
   locale,
   choice,
   models,
+  catalogStatus,
   onChange,
 }: {
   locale: AppLocale;
   choice: ModelChoice;
   models: AvailableModel[];
+  catalogStatus: 'loading' | 'available' | 'unavailable' | 'signedOut';
   onChange: (choice: ModelChoice) => void;
 }) {
   const labels = copy[locale];
-  const missing = choice.type === 'specific' && !models.some((model) => model.id === choice.id);
+  const authoritative = catalogStatus === 'available';
+  const missing = authoritative && choice.type === 'specific' && !models.some((model) => model.id === choice.id);
+  const selectedValue = authoritative ? modelChoiceValue(choice, models) : choice.type === 'specific' ? choice.id : 'automatic';
   return (
     <fieldset>
       <legend>{labels.group}</legend>
       <label>{labels.select}
         <select
-          value={modelChoiceValue(choice, models)}
+          value={selectedValue}
           onChange={(event) => onChange(event.target.value === 'automatic'
             ? { type: 'automatic' }
             : { type: 'specific', id: event.target.value })}
         >
           <option value="automatic">{labels.automatic}</option>
+          {!authoritative && choice.type === 'specific' && <option value={choice.id}>{choice.id}</option>}
           {models.map((model) => <option key={model.id} value={model.id}>{model.displayName}</option>)}
         </select>
       </label>

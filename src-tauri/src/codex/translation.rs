@@ -17,7 +17,9 @@ use uuid::Uuid;
 use crate::codex::protocol::AppServerNotification;
 use crate::codex::transport::{AppServerTransport, TransportError};
 use crate::core::errors::TranslationError;
-use crate::core::types::{TranslationMode, TranslationRequest, TranslationResult};
+use crate::core::types::{
+    TranslationMode, TranslationModel, TranslationRequest, TranslationResult,
+};
 
 const OWNER_MARKER: &str = ".smartcat-translation-owner";
 const OWNER_MARKER_CONTENT: &[u8] = b"smartcat-translate-v1\n";
@@ -248,18 +250,19 @@ impl CodexTranslationBackend {
                 unsubscribe_with_timeout(&self.transport, &thread_id, self.cleanup_timeout()).await;
             return Err(TranslationError::Cancelled);
         }
-        let mut turn_request = Box::pin(self.transport.request(
-            "turn/start",
-            json!({
-                "threadId": thread_id,
-                "input": [{ "type": "text", "text": prompt }],
-                "cwd": self.workspace,
-                "approvalPolicy": "never",
-                "sandboxPolicy": restricted_sandbox(&self.workspace),
-                "effort": effort_for(&request),
-                "outputSchema": translation_output_schema()
-            }),
-        ));
+        let mut turn_params = json!({
+            "threadId": thread_id,
+            "input": [{ "type": "text", "text": prompt }],
+            "cwd": self.workspace,
+            "approvalPolicy": "never",
+            "sandboxPolicy": restricted_sandbox(&self.workspace),
+            "effort": effort_for(&request),
+            "outputSchema": translation_output_schema()
+        });
+        if let TranslationModel::Specific(model) = &request.model {
+            turn_params["model"] = Value::String(model.clone());
+        }
+        let mut turn_request = Box::pin(self.transport.request("turn/start", turn_params));
         let turn = tokio::select! {
             biased;
             changed = cancelled.changed() => {

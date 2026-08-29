@@ -1,8 +1,14 @@
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { invoke } from '@tauri-apps/api/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SettingsView, type AppSettings } from './SettingsView';
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => { resolve = resolvePromise; });
+  return { promise, resolve };
+}
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 
@@ -110,6 +116,24 @@ describe('SettingsView', () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('list_available_models'));
   });
 
+  it('preserves a saved model when the authoritative model list cannot be loaded', async () => {
+    const settings = { ...defaultSettings, selectedModel: { type: 'specific', id: 'saved-model' } as const };
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      if (command === 'get_settings') return structuredClone(settings);
+      if (command === 'list_available_models') throw new Error('offline');
+      if (command === 'save_settings') return structuredClone((args as { settings: AppSettings }).settings);
+      throw new Error(`unexpected command: ${command}`);
+    });
+    render(<SettingsView />);
+
+    expect(await screen.findByRole('status', { name: '모델 목록 상태' })).toHaveTextContent('모델 목록을 불러올 수 없습니다');
+    await userEvent.click(screen.getByRole('button', { name: '설정 저장' }));
+
+    expect(invoke).toHaveBeenCalledWith('save_settings', {
+      settings: expect.objectContaining({ selectedModel: { type: 'specific', id: 'saved-model' } }),
+    });
+  });
+
   it('offers rewrite or target-language change for a matching detected language', async () => {
     mockCommands();
     const onRewrite = vi.fn();
@@ -119,6 +143,46 @@ describe('SettingsView', () => {
     await userEvent.click(screen.getByRole('button', { name: '문장 개선' }));
     expect(onRewrite).toHaveBeenCalledOnce();
     expect(screen.getByRole('button', { name: '대상 언어 변경' })).toBeVisible();
+  });
+
+  it('offers rewrite when an explicitly selected source equals the target', async () => {
+    mockCommands();
+    render(<SettingsView />);
+    const profiles = await screen.findByRole('group', { name: '번역 프로필' });
+
+    await userEvent.selectOptions(within(profiles).getByLabelText('원문 언어'), 'ko');
+
+    expect(screen.getByText('문장을 개선할까요?')).toBeVisible();
+  });
+
+  it('ignores an older save response after a newer edit and save', async () => {
+    const first = deferred<AppSettings>();
+    const second = deferred<AppSettings>();
+    let saveIndex = 0;
+    mockCommands();
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      if (command === 'get_settings') return structuredClone(defaultSettings);
+      if (command === 'list_available_models') return [];
+      if (command === 'save_settings') {
+        saveIndex += 1;
+        return saveIndex === 1 ? first.promise : second.promise;
+      }
+      throw new Error(`unexpected command: ${command} ${String(args)}`);
+    });
+    const user = userEvent.setup();
+    render(<SettingsView />);
+    await screen.findByRole('heading', { name: '설정' });
+
+    await user.click(screen.getByRole('button', { name: '설정 저장' }));
+    await user.selectOptions(screen.getByLabelText('테마'), 'dark');
+    await user.click(screen.getByRole('button', { name: '설정 저장' }));
+    second.resolve({ ...defaultSettings, theme: 'dark' });
+    await waitFor(() => expect(screen.getByLabelText('테마')).toHaveValue('dark'));
+    await act(async () => {
+      first.resolve({ ...defaultSettings, theme: 'system' });
+      await first.promise;
+    });
+    expect(screen.getByLabelText('테마')).toHaveValue('dark');
   });
 
   it('supports saving a language pair beyond Korean and English', async () => {

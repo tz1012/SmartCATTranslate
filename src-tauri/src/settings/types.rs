@@ -3,15 +3,21 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::core::types::{Quality, Tone, TranslationProfile};
+use crate::core::types::{Quality, Tone, TranslationModel, TranslationProfile};
 
 pub const SETTINGS_SCHEMA_VERSION: u32 = 1;
 pub const DEFAULT_HISTORY_RETENTION_DAYS: u16 = 30;
 const MAX_HISTORY_RETENTION_DAYS: u16 = 365;
 const MAX_PROFILES: usize = 64;
-const MAX_GLOSSARY_ENTRIES: usize = 10_000;
+const MAX_GLOSSARY_ENTRIES: usize = 1_000;
 const MAX_LABEL_CHARS: usize = 120;
-const MAX_TERM_CHARS: usize = 512;
+const MAX_TERM_CHARS: usize = 1_024;
+const MAX_TERM_BYTES: usize = 4_096;
+const MAX_AGGREGATE_TERMS: usize = 1_000;
+const MAX_AGGREGATE_TERM_BYTES: usize = 64 * 1_024;
+const MAX_LANGUAGE_CHARS: usize = 64;
+const MAX_LANGUAGE_BYTES: usize = 256;
+pub const MAX_SETTINGS_DOCUMENT_BYTES: usize = 256 * 1_024;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -180,6 +186,10 @@ impl AppSettings {
             field,
             profile,
         });
+        if let Err(error) = self.validate() {
+            self.profiles.pop();
+            return Err(error);
+        }
         Ok(id)
     }
 
@@ -212,25 +222,30 @@ impl AppSettings {
 
     pub fn add_glossary_entry(&mut self, mut entry: GlossaryEntry) -> Result<Uuid, SettingsError> {
         if self.glossary.len() >= MAX_GLOSSARY_ENTRIES {
-            return Err(SettingsError::TooManyGlossaryEntries);
+            return Err(SettingsError::SizeLimit);
         }
         normalize_glossary_entry(&mut entry)?;
+        let entry_key = (
+            entry.source_language.to_ascii_lowercase(),
+            entry.target_language.to_ascii_lowercase(),
+            entry.source_term.to_lowercase(),
+        );
         let duplicate = self.glossary.iter().any(|existing| {
-            existing
-                .source_language
-                .eq_ignore_ascii_case(&entry.source_language)
-                && existing
-                    .target_language
-                    .eq_ignore_ascii_case(&entry.target_language)
-                && existing
-                    .source_term
-                    .eq_ignore_ascii_case(&entry.source_term)
+            (
+                existing.source_language.to_ascii_lowercase(),
+                existing.target_language.to_ascii_lowercase(),
+                existing.source_term.trim().to_lowercase(),
+            ) == entry_key
         });
         if duplicate {
             return Err(SettingsError::DuplicateGlossarySource);
         }
         let id = entry.id;
         self.glossary.push(entry);
+        if let Err(error) = self.validate() {
+            self.glossary.pop();
+            return Err(error);
+        }
         Ok(id)
     }
 
@@ -257,12 +272,25 @@ impl AppSettings {
             return Err(SettingsError::InvalidProfiles);
         }
         if self.glossary.len() > MAX_GLOSSARY_ENTRIES {
-            return Err(SettingsError::TooManyGlossaryEntries);
+            return Err(SettingsError::SizeLimit);
         }
         let mut profile_ids = HashSet::new();
+        let mut aggregate_term_count = 0_usize;
+        let mut aggregate_term_bytes = 0_usize;
         for profile in &self.profiles {
             normalized_label(profile.name.clone())?;
             validate_translation_profile(&profile.profile)?;
+            aggregate_term_count = aggregate_term_count
+                .checked_add(profile.profile.protected_terms.len())
+                .ok_or(SettingsError::SizeLimit)?;
+            aggregate_term_bytes = profile.profile.protected_terms.iter().try_fold(
+                aggregate_term_bytes,
+                |total, term| {
+                    total
+                        .checked_add(term.len())
+                        .ok_or(SettingsError::SizeLimit)
+                },
+            )?;
             if !profile_ids.insert(profile.id) {
                 return Err(SettingsError::InvalidProfiles);
             }
@@ -271,9 +299,20 @@ impl AppSettings {
             return Err(SettingsError::InvalidDefaultProfile);
         }
         let mut glossary_keys = HashSet::new();
+        let mut glossary_ids = HashSet::new();
         for original in &self.glossary {
+            if !glossary_ids.insert(original.id) {
+                return Err(SettingsError::DuplicateGlossaryId);
+            }
             let mut entry = original.clone();
             normalize_glossary_entry(&mut entry)?;
+            aggregate_term_count = aggregate_term_count
+                .checked_add(1)
+                .ok_or(SettingsError::SizeLimit)?;
+            aggregate_term_bytes = aggregate_term_bytes
+                .checked_add(entry.source_term.len())
+                .and_then(|total| total.checked_add(entry.target_term.len()))
+                .ok_or(SettingsError::SizeLimit)?;
             let key = (
                 entry.source_language.to_ascii_lowercase(),
                 entry.target_language.to_ascii_lowercase(),
@@ -288,6 +327,15 @@ impl AppSettings {
                 return Err(SettingsError::InvalidModel);
             }
         }
+        if aggregate_term_count > MAX_AGGREGATE_TERMS
+            || aggregate_term_bytes > MAX_AGGREGATE_TERM_BYTES
+            || serde_json::to_vec(self)
+                .map_err(|_| SettingsError::InvalidDocument)?
+                .len()
+                > MAX_SETTINGS_DOCUMENT_BYTES
+        {
+            return Err(SettingsError::SizeLimit);
+        }
         Ok(())
     }
 }
@@ -297,29 +345,39 @@ fn validate_translation_profile(profile: &TranslationProfile) -> Result<(), Sett
         validate_language_tag(source)?;
     }
     validate_language_tag(&profile.target_language)?;
-    if profile.protected_terms.len() > MAX_GLOSSARY_ENTRIES
+    if profile
+        .protected_terms
+        .iter()
+        .any(|term| term.trim().is_empty())
+    {
+        return Err(SettingsError::InvalidProtectedTerm);
+    }
+    if profile.protected_terms.len() > MAX_AGGREGATE_TERMS
         || profile
             .protected_terms
             .iter()
-            .any(|term| term.trim().is_empty() || term.chars().count() > MAX_TERM_CHARS)
+            .any(|term| term.chars().count() > MAX_TERM_CHARS || term.len() > MAX_TERM_BYTES)
     {
-        return Err(SettingsError::InvalidProtectedTerm);
+        return Err(SettingsError::SizeLimit);
     }
     Ok(())
 }
 
 fn normalize_glossary_entry(entry: &mut GlossaryEntry) -> Result<(), SettingsError> {
+    if entry.source_term.chars().count() > MAX_TERM_CHARS
+        || entry.source_term.len() > MAX_TERM_BYTES
+        || entry.target_term.chars().count() > MAX_TERM_CHARS
+        || entry.target_term.len() > MAX_TERM_BYTES
+    {
+        return Err(SettingsError::SizeLimit);
+    }
     entry.source_language = entry.source_language.trim().to_ascii_lowercase();
     entry.target_language = entry.target_language.trim().to_ascii_lowercase();
     validate_language_tag(&entry.source_language)?;
     validate_language_tag(&entry.target_language)?;
     entry.source_term = entry.source_term.trim().to_owned();
     entry.target_term = entry.target_term.trim().to_owned();
-    if entry.source_term.is_empty()
-        || entry.source_term.chars().count() > MAX_TERM_CHARS
-        || entry.target_term.chars().count() > MAX_TERM_CHARS
-        || (!entry.protect_only && entry.target_term.is_empty())
-    {
+    if entry.source_term.is_empty() || (!entry.protect_only && entry.target_term.is_empty()) {
         return Err(SettingsError::InvalidGlossaryEntry);
     }
     Ok(())
@@ -334,6 +392,9 @@ fn normalized_label(value: String) -> Result<String, SettingsError> {
 }
 
 fn validate_language_tag(value: &str) -> Result<(), SettingsError> {
+    if value.chars().count() > MAX_LANGUAGE_CHARS || value.len() > MAX_LANGUAGE_BYTES {
+        return Err(SettingsError::SizeLimit);
+    }
     let mut parts = value.split('-');
     let first = parts.next().unwrap_or_default();
     if !(2..=8).contains(&first.len()) || !first.bytes().all(|byte| byte.is_ascii_alphabetic()) {
@@ -381,6 +442,54 @@ pub fn resolve_model_choice(choice: &ModelChoice, models: &[AvailableModel]) -> 
     }
 }
 
+pub enum ModelCatalogAuthority<'a> {
+    Available(&'a [AvailableModel]),
+    Unavailable,
+    SignedOut,
+}
+
+pub fn resolve_model_for_job(
+    choice: &ModelChoice,
+    authority: ModelCatalogAuthority<'_>,
+) -> Result<TranslationModel, ModelSelectionError> {
+    if matches!(authority, ModelCatalogAuthority::SignedOut) {
+        return Err(ModelSelectionError::SignedOut);
+    }
+    match choice {
+        ModelChoice::Automatic => Ok(TranslationModel::Automatic),
+        ModelChoice::Specific { .. } if matches!(authority, ModelCatalogAuthority::Unavailable) => {
+            Err(ModelSelectionError::CatalogUnavailable)
+        }
+        ModelChoice::Specific { id } => {
+            let ModelCatalogAuthority::Available(models) = authority else {
+                unreachable!("handled unavailable catalog above")
+            };
+            Ok(if models.iter().any(|model| model.id == *id) {
+                TranslationModel::Specific(id.clone())
+            } else {
+                TranslationModel::Automatic
+            })
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum ModelSelectionError {
+    #[error("the account is signed out")]
+    SignedOut,
+    #[error("the authoritative model catalog is unavailable")]
+    CatalogUnavailable,
+}
+
+impl ModelSelectionError {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::SignedOut => "model_catalog_signed_out",
+            Self::CatalogUnavailable => "model_catalog_unavailable",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LanguagePairAction {
     Translate,
@@ -423,6 +532,10 @@ pub enum SettingsError {
     DuplicateGlossarySource,
     #[error("too many glossary entries")]
     TooManyGlossaryEntries,
+    #[error("duplicate glossary identifier")]
+    DuplicateGlossaryId,
+    #[error("settings size limit exceeded")]
+    SizeLimit,
     #[error("invalid model selection")]
     InvalidModel,
     #[error("settings persistence failed")]
@@ -447,6 +560,8 @@ impl SettingsError {
             Self::InvalidGlossaryEntry => "invalid_glossary_entry",
             Self::DuplicateGlossarySource => "duplicate_glossary_source",
             Self::TooManyGlossaryEntries => "too_many_glossary_entries",
+            Self::DuplicateGlossaryId => "duplicate_glossary_id",
+            Self::SizeLimit => "settings_size_limit",
             Self::InvalidModel => "invalid_model",
             Self::Persistence => "settings_persistence_failed",
             Self::InvalidDocument => "invalid_settings_document",
