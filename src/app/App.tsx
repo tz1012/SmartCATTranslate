@@ -1,39 +1,23 @@
+import { useCallback, useState } from 'react';
 import { AccountPanel } from '../features/account/AccountPanel';
+import { TextWorkspace } from '../features/translation/TextWorkspace';
 
 export type AppLocale = 'ko' | 'en';
 
-const copy = {
-  ko: {
-    workspace: '텍스트 번역',
-    source: '원문',
-    translation: '번역문',
-  },
-  en: {
-    workspace: 'Text translation',
-    source: 'Source text',
-    translation: 'Translation',
-  },
-} as const;
-
-export function App({ locale = 'ko' }: { locale?: AppLocale }) {
-  const labels = copy[locale];
+export function App({ locale }: { locale?: AppLocale }) {
+  const [savedLocale, setSavedLocale] = useState<AppLocale>('ko');
+  const accountLocale = locale ?? savedLocale;
+  const acceptSavedLocale = useCallback((loadedLocale: AppLocale) => {
+    if (locale === undefined) setSavedLocale(loadedLocale);
+  }, [locale]);
 
   return (
     <main>
-      <header>
+      <header className="app-header">
         <h1>SmartCAT Translate</h1>
       </header>
-      <AccountPanel locale={locale} />
-      <section className="translation-grid" aria-label={labels.workspace}>
-        <label>
-          {labels.source}
-          <textarea aria-label={labels.source} />
-        </label>
-        <label>
-          {labels.translation}
-          <textarea aria-label={labels.translation} readOnly />
-        </label>
-      </section>
+      <AccountPanel locale={accountLocale} />
+      <TextWorkspace locale={locale} onLocaleLoaded={acceptSavedLocale} />
     </main>
   );
 }

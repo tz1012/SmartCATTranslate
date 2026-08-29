@@ -377,3 +377,31 @@ TDD 및 검증
 - 요약: fix: task8-preflight-refresh
 - 변경 파일: CHANGELOG.md, DECISIONS.txt, PROJECT_LOG.txt, src-tauri/src/codex/translation.rs, src-tauri/src/commands/translation.rs, src-tauri/tests/translation_coordinator.rs, src/features/settings/SettingsView.test.tsx, src/features/settings/SettingsView.tsx
 - 검증: cargo test; 131/131 passed; pnpm test; 32/32 passed; pnpm build; exit 0
+
+[2026-08-30] Task 9 — 인증된 전체 텍스트 번역 작업 화면
+
+구현
+- 기존 계정 화면 아래에 작은 두 칸 텍스트 작업 화면을 연결했다. 텍스트·이미지·문서·화면 캡처·기록 탭, 원문·대상 언어, 언어 전환, 원문과 번역문, 현재 계정·단축키 상태를 표시한다. 후속 범위의 탭은 아직 실행되지 않도록 비활성 상태로 구분했다.
+- 저장된 기본 프로필을 읽어 원문 자동 감지, 대상 언어, 품질과 문체를 실제 `translate_text` 요청에 전달한다. 현재 언어쌍과 일치하는 보호 전용 용어집 항목은 프로필 보호 용어에 합친다. 모델 선택은 기존 Rust 명령의 권위 있는 사전 확인을 그대로 사용한다.
+- 번역 이벤트를 화면당 한 번 구독하고 현재 작업 식별자의 조각만 이어 붙인다. 완료 결과는 조각을 교체하며, 다른 작업과 완료 뒤 늦게 온 이벤트는 무시한다. 명령 응답보다 먼저 온 이벤트도 제한된 버퍼에서 작업 식별자를 확인한 뒤 적용한다.
+- 중복 시작을 막고 번역 중 두 번째 동작, Escape, 화면 해제와 창 종료 경계에서 취소한다. 화면 해제 뒤 응답과 계정 상태의 오래된 응답은 세대 번호로 버리고 모든 이벤트 구독을 해제한다.
+- 빈 원문과 Rust 백엔드와 동일한 200,000자·1,000,000바이트 경계를 로컬에서 검사한다. 오류 코드만 한국어·영어 사용자 문구로 바꾸며 서버 오류의 자유 텍스트는 화면이나 기록에 사용하지 않는다.
+- 같은 언어쌍이나 자동 감지된 같은 언어는 문장 개선과 대상 언어 변경을 제안한다. Ctrl/Cmd+Enter 번역, Escape 취소, 번역문 복사·텍스트 파일 저장·전체 지우기와 화면 읽기 상태 안내를 제공한다.
+- 620픽셀 아래에서 원문과 결과를 세로로 배치하며 밝은색·어두운색 시스템 테마를 따르는 간결한 작업 화면을 적용했다.
+
+TDD 및 검증
+- RED: 텍스트 작업 화면 모듈 부재를 먼저 확인하고 기본 프로필 명령 계약을 GREEN으로 만들었다. 이어 스트리밍, 이른 이벤트, 취소·해제, 중복 시작, 복사·저장·지우기, 입력 한도, 로그아웃 갱신, 오류·재시도, 언어 전환·문장 개선, 보호 용어집, 영어 화면 시험이 각각 기존 최소 화면에서 실패함을 확인했다.
+- GREEN: 텍스트 작업 화면 집중 시험 14/14, 앱 마운트 시험 3/3, 전체 프런트엔드 47/47와 TypeScript/Vite 프로덕션 빌드가 통과했다.
+- 브라우저 E2E는 개발 서버가 이동식 개발 볼륨의 첫 변환을 두 화면에서 동시에 수행해 30초 안에 응답하지 못하는 원인을 재현했다. 같은 프로덕션 번들을 미리 만든 뒤 정적 미리보기 서버로 제공하도록 고쳐 1100×760과 390×844에서 정확한 스트리밍 결과와 클립보드 복사를 2/2 확인했다.
+- 번역 원문, 번역문, 계정 정보, 인증 정보와 전체 로컬 경로를 개발 기록이나 오류 출력에 남기지 않았다. 실제 모델 네트워크 호출은 하지 않았고 E2E는 Tauri 경계를 메모리 모형으로 대체했다.
+- Rust 1.98의 엄격한 Clippy가 기존 브라우저 열기 경계의 단위 오류 타입을 거부한 RED를 확인했다. 명시적인 내용 없는 `BrowserOpenError`로 바꾸어 사용자 오류 코드와 로그인 보안 수명주기는 유지하면서 포맷, 엄격한 Clippy와 전체 Rust 131/131을 통과했다.
+
+[2026-08-30 04:14 Asia/Seoul] 변경 기록
+- 요약: feature: text-workspace
+- 변경 파일: CHANGELOG.md, package.json, playwright.config.ts, pnpm-lock.yaml, PROJECT_LOG.txt, src/app/App.test.tsx, src/app/App.tsx, src/features/settings/defaultProfile.ts, src/features/translation/TextWorkspace.test.tsx, src/features/translation/TextWorkspace.tsx, src/features/translation/translationApi.ts, src/features/translation/useTranslationJob.ts, src/styles.css, tests/e2e/text-translation.spec.ts
+- 검증: pnpm test && 47/47 passed
+
+[2026-08-30 04:39 Asia/Seoul] 변경 기록
+- 요약: fix: stable-browser-open-error
+- 변경 파일: CHANGELOG.md, package.json, playwright.config.ts, pnpm-lock.yaml, PROJECT_LOG.txt, src-tauri/src/codex/auth.rs, src-tauri/src/commands/account.rs, src-tauri/tests/codex_auth.rs, src/app/App.test.tsx, src/app/App.tsx, src/features/settings/defaultProfile.ts, src/features/translation/TextWorkspace.test.tsx, src/features/translation/TextWorkspace.tsx, src/features/translation/translationApi.ts, src/features/translation/useTranslationJob.ts, src/styles.css, tests/e2e/text-translation.spec.ts
+- 검증: cargo fmt; cargo clippy; cargo test 131/131 passed

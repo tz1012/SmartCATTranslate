@@ -3,8 +3,8 @@ use tauri::{AppHandle, Emitter, Runtime, State};
 
 use crate::app_state::AppState;
 use crate::codex::auth::{
-    start_login_and_open, AccountChangeReason, AccountEventSink, AccountSnapshot, BrowserOpener,
-    RateLimitState,
+    start_login_and_open, AccountChangeReason, AccountEventSink, AccountSnapshot, BrowserOpenError,
+    BrowserOpener, RateLimitState,
 };
 
 const SERVICE_UNAVAILABLE: &str = "account_service_unavailable";
@@ -66,8 +66,8 @@ pub async fn cancel_chatgpt_login(state: State<'_, AppState>) -> Result<CancelLo
 struct TauriBrowserOpener;
 
 impl BrowserOpener for TauriBrowserOpener {
-    fn open(&self, url: &url::Url) -> Result<(), ()> {
-        tauri_plugin_opener::open_url(url.as_str(), None::<&str>).map_err(|_| ())
+    fn open(&self, url: &url::Url) -> Result<(), BrowserOpenError> {
+        tauri_plugin_opener::open_url(url.as_str(), None::<&str>).map_err(|_| BrowserOpenError)
     }
 }
 

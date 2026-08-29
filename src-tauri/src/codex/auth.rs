@@ -65,8 +65,11 @@ pub trait AccountEventSink: Send + Sync + 'static {
     fn account_state_changed(&self, reason: AccountChangeReason);
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BrowserOpenError;
+
 pub trait BrowserOpener: Send + Sync {
-    fn open(&self, url: &Url) -> Result<(), ()>;
+    fn open(&self, url: &Url) -> Result<(), BrowserOpenError>;
 }
 
 pub struct LoginStart {

@@ -5,7 +5,8 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use smartcat_translate::codex::auth::{
     start_login_and_open, validate_browser_login_url, AccountChangeReason, AccountEventSink,
-    AccountService, AccountSnapshot, AccountState, AuthError, BrowserOpener, RateLimitState,
+    AccountService, AccountSnapshot, AccountState, AuthError, BrowserOpenError, BrowserOpener,
+    RateLimitState,
 };
 use smartcat_translate::codex::protocol::AppServerNotification;
 use smartcat_translate::codex::transport::{AppServerTransport, TransportError};
@@ -120,10 +121,10 @@ struct FakeOpener {
 }
 
 impl BrowserOpener for FakeOpener {
-    fn open(&self, _url: &url::Url) -> Result<(), ()> {
+    fn open(&self, _url: &url::Url) -> Result<(), BrowserOpenError> {
         *self.opened.lock().unwrap() += 1;
         if self.fail {
-            Err(())
+            Err(BrowserOpenError)
         } else {
             Ok(())
         }
