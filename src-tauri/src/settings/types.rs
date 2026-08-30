@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 pub use crate::core::types::Field;
 use crate::core::types::{Quality, Tone, TranslationModel, TranslationProfile};
-use crate::hotkeys::{BlockedApp, Blocklist};
+use crate::hotkeys::{BlockedApp, Blocklist, HotkeyBinding, SequenceEngine};
 
 pub const SETTINGS_SCHEMA_VERSION: u32 = 1;
 pub const DEFAULT_HISTORY_RETENTION_DAYS: u16 = 30;
@@ -19,6 +19,7 @@ const MAX_AGGREGATE_TERMS: usize = 1_000;
 const MAX_AGGREGATE_TERM_BYTES: usize = 64 * 1_024;
 const MAX_LANGUAGE_CHARS: usize = 64;
 const MAX_LANGUAGE_BYTES: usize = 256;
+const MAX_HOTKEY_BINDINGS: usize = 32;
 pub const MAX_SETTINGS_DOCUMENT_BYTES: usize = 256 * 1_024;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -118,6 +119,7 @@ pub struct AppSettings {
     pub close_behavior: CloseBehavior,
     pub quick_access_position: QuickAccessPosition,
     pub history_retention_days: u16,
+    pub hotkeys: Vec<HotkeyBinding>,
     pub blocked_apps: Vec<BlockedApp>,
 }
 
@@ -147,6 +149,7 @@ impl Default for AppSettings {
             close_behavior: CloseBehavior::KeepInTray,
             quick_access_position: QuickAccessPosition::Popup,
             history_retention_days: DEFAULT_HISTORY_RETENTION_DAYS,
+            hotkeys: Vec::new(),
             blocked_apps: Vec::new(),
         }
     }
@@ -266,6 +269,22 @@ impl AppSettings {
         }
         if self.glossary.len() > MAX_GLOSSARY_ENTRIES {
             return Err(SettingsError::SizeLimit);
+        }
+        if self.hotkeys.len() > MAX_HOTKEY_BINDINGS
+            || self
+                .hotkeys
+                .iter()
+                .map(|binding| binding.id)
+                .collect::<HashSet<_>>()
+                .len()
+                != self.hotkeys.len()
+            || self
+                .hotkeys
+                .iter()
+                .any(|binding| self.profile(binding.profile_id).is_none())
+            || SequenceEngine::new(self.hotkeys.clone()).is_err()
+        {
+            return Err(SettingsError::InvalidHotkeys);
         }
         if self
             .blocked_apps
@@ -541,6 +560,8 @@ pub enum SettingsError {
     InvalidModel,
     #[error("invalid blocked applications")]
     InvalidBlockedApps,
+    #[error("invalid hotkey bindings")]
+    InvalidHotkeys,
     #[error("settings persistence failed")]
     Persistence,
     #[error("settings document is invalid")]
@@ -567,6 +588,7 @@ impl SettingsError {
             Self::SizeLimit => "settings_size_limit",
             Self::InvalidModel => "invalid_model",
             Self::InvalidBlockedApps => "invalid_blocked_apps",
+            Self::InvalidHotkeys => "invalid_hotkeys",
             Self::Persistence => "settings_persistence_failed",
             Self::InvalidDocument => "invalid_settings_document",
         }

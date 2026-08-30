@@ -24,7 +24,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 async-trait = "0.1"
-chrono = { version = "0.4", default-features = false, features = ["std"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 flate2 = "1"
 regex = "1"
 reqwest = { version = "0.13", default-features = false, features = ["native-tls-no-alpn"] }

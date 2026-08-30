@@ -13,9 +13,9 @@ body {
   margin: 0;
 }
 
-button, select, textarea { font: inherit; }
+button, select, textarea, input { font: inherit; }
 
-button, select {
+button, select, input {
   min-height: 2.5rem;
   border: 1px solid #c9d3df;
   border-radius: 0.55rem;
@@ -140,6 +140,27 @@ main {
 
 label { display: grid; gap: 0.35rem; color: #4b586b; font-size: 0.82rem; font-weight: 650; }
 select { width: 100%; padding-inline: 0.65rem; }
+input { width: 100%; min-height: 2.5rem; padding: 0.45rem 0.65rem; }
+
+.hotkey-settings > p { margin: 0; color: #526175; font-size: 0.86rem; }
+.hotkey-recorder { display: flex; flex-wrap: wrap; align-items: center; gap: 0.55rem; padding: 0.65rem; border: 1px dashed #93a6ba; border-radius: 0.65rem; }
+.hotkey-recorder:focus-visible { outline: 3px solid rgb(30 111 204 / 24%); }
+.hotkey-recorder output { flex: 1 1 12rem; min-width: 0; padding: 0.55rem 0.7rem; border-radius: 0.45rem; background: #eef5fc; font-weight: 700; }
+.conflict-cause { display: grid; gap: 0.2rem; margin-top: 0.5rem; padding: 0.65rem 0.75rem; border-left: 4px solid #c57b10; border-radius: 0.4rem; background: #fff8e8; font-size: 0.84rem; }
+.conflict-cause.blocking { border-color: #c4332b; background: #fff0ee; }
+.conflict-cause.advisory { border-color: #3979b9; background: #eef6ff; }
+.conflict-cause p, .conflict-cause small { margin: 0; }
+.hotkey-alternatives, .hotkey-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.45rem; }
+.hotkey-alternatives strong { flex-basis: 100%; }
+.danger-action { border-color: #bd3028; color: #a3241d; }
+.force-warning, .permission-note { padding: 0.7rem; border: 1px solid #e1bc65; border-radius: 0.6rem; background: #fff9e7; }
+.force-warning p, .permission-note p { margin: 0 0 0.55rem; }
+.blocklist-editor { display: grid; gap: 0.55rem; padding-top: 0.5rem; border-top: 1px solid #d7e0ea; }
+.blocklist-editor h3, .blocklist-editor p { margin: 0; }
+.blocked-app { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; padding: 0.55rem 0.65rem; border-radius: 0.5rem; background: #f5f7fa; }
+.blocked-app span { display: grid; min-width: 0; }
+.blocked-app small { overflow: hidden; color: #69768a; text-overflow: ellipsis; }
+.blocklist-add { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; align-items: end; gap: 0.5rem; }
 .swap-button { width: 2.5rem; padding: 0; color: #176fc5; font-size: 1.15rem; }
 
 .rewrite-suggestion {
@@ -204,23 +225,28 @@ textarea {
   textarea { min-height: 11rem; }
   .rewrite-suggestion { align-items: stretch; flex-direction: column; }
   .workspace-actions button { flex: 1 1 auto; }
+  .blocklist-add { grid-template-columns: 1fr; }
 }
 
 main[data-theme="dark"] { color: #e7edf5; background: #111827; color-scheme: dark; }
-main[data-theme="dark"] :is(.text-workspace, .account-panel, #app-panel-settings > section, button, select) { color: #e7edf5; background: #182233; border-color: #344258; }
+main[data-theme="dark"] :is(.text-workspace, .account-panel, #app-panel-settings > section, button, select, input) { color: #e7edf5; background: #182233; border-color: #344258; }
 main[data-theme="dark"] :is(.workspace-meta, .result-pane textarea) { background: #141e2c; }
 main[data-theme="dark"] :is(.workspace-tabs, .language-bar, .translation-pane + .translation-pane, .workspace-actions, #app-panel-settings fieldset) { border-color: #344258; }
 main[data-theme="dark"] textarea { color: #f0f4fa; }
 main[data-theme="dark"] :is(label, .workspace-status) { color: #bcc7d5; }
 main[data-theme="dark"] .rewrite-suggestion { color: #fff2bd; background: #3b3218; }
+main[data-theme="dark"] :is(.hotkey-recorder output, .blocked-app) { background: #222f42; }
+main[data-theme="dark"] :is(.conflict-cause, .force-warning, .permission-note) { color: #f4dfad; background: #332b18; }
 
 @media (prefers-color-scheme: dark) {
   :root { color: #e7edf5; background: #111827; }
   main[data-theme="system"] { color: #e7edf5; background: #111827; color-scheme: dark; }
-  main[data-theme="system"] :is(.text-workspace, .account-panel, #app-panel-settings > section, button, select) { color: #e7edf5; background: #182233; border-color: #344258; }
+  main[data-theme="system"] :is(.text-workspace, .account-panel, #app-panel-settings > section, button, select, input) { color: #e7edf5; background: #182233; border-color: #344258; }
   main[data-theme="system"] :is(.workspace-meta, .result-pane textarea) { background: #141e2c; }
   main[data-theme="system"] :is(.workspace-tabs, .language-bar, .translation-pane + .translation-pane, .workspace-actions, #app-panel-settings fieldset) { border-color: #344258; }
   main[data-theme="system"] textarea { color: #f0f4fa; }
   main[data-theme="system"] :is(label, .workspace-status) { color: #bcc7d5; }
   main[data-theme="system"] .rewrite-suggestion { color: #fff2bd; background: #3b3218; }
+  main[data-theme="system"] :is(.hotkey-recorder output, .blocked-app) { background: #222f42; }
+  main[data-theme="system"] :is(.conflict-cause, .force-warning, .permission-note) { color: #f4dfad; background: #332b18; }
 }

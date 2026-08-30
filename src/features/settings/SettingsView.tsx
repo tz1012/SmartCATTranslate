@@ -7,6 +7,7 @@ import { GlossaryEditor } from './GlossaryEditor';
 import { languageLabel, SUPPORTED_LANGUAGES } from './languages';
 import { ModelSelector, modelChoiceValue } from './ModelSelector';
 import { createUuidV4 } from './uuid';
+import { HotkeySettings } from '../hotkeys/HotkeySettings';
 
 export type AppLocale = 'ko' | 'en';
 export type Theme = 'system' | 'light' | 'dark';
@@ -262,6 +263,7 @@ export function SettingsView({
 
       {rewriteSuggested && <aside aria-live="polite"><p>{labels.rewritePrompt}</p><button type="button" onClick={onRewrite}>{labels.rewrite}</button><button type="button" onClick={() => updateTranslationProfile({ targetLanguage: selectedProfile.profile.targetLanguage === 'ko' ? 'en' : 'ko' })}>{labels.changeTarget}</button></aside>}
       <GlossaryEditor locale={locale} entries={settings.glossary} onChange={(glossary) => editSettings((current) => ({ ...current, glossary }))} />
+      <HotkeySettings locale={locale} defaultProfileId={settings.defaultProfileId} />
       <ModelSelector locale={locale} choice={settings.selectedModel} models={models} catalogStatus={modelCatalogStatus} onChange={(selectedModel) => editSettings((current) => ({ ...current, selectedModel }))} />
       {modelCatalogStatus === 'unavailable' && <div><p role="status" aria-label={labels.modelListStatus}>{labels.modelListError}</p><button type="button" onClick={() => void refreshModels()}>{labels.retryModels}</button></div>}
       {modelCatalogStatus === 'signedOut' && <div><p role="status" aria-label={labels.modelListStatus}>{labels.signedOutModels}</p><button type="button" onClick={() => void refreshModels()}>{labels.retryModels}</button></div>}

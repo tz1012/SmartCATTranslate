@@ -16,6 +16,7 @@ pub struct AppState {
     shutting_down: AtomicBool,
     translation_owners: SharedOwnerJobRegistry,
     settings_operation: Mutex<()>,
+    hotkeys_suspended: AtomicBool,
 }
 
 impl Default for AppState {
@@ -25,6 +26,7 @@ impl Default for AppState {
             shutting_down: AtomicBool::new(false),
             translation_owners: new_owner_job_registry(),
             settings_operation: Mutex::new(()),
+            hotkeys_suspended: AtomicBool::new(false),
         }
     }
 }
@@ -97,6 +99,14 @@ impl AppState {
 
     pub(crate) fn translation_owner_registry(&self) -> SharedOwnerJobRegistry {
         self.translation_owners.clone()
+    }
+
+    pub(crate) fn set_hotkeys_suspended(&self, suspended: bool) {
+        self.hotkeys_suspended.store(suspended, Ordering::Release);
+    }
+
+    pub fn hotkeys_suspended(&self) -> bool {
+        self.hotkeys_suspended.load(Ordering::Acquire)
     }
 
     pub(crate) fn reserve_window_translation_job(
