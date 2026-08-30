@@ -13,7 +13,9 @@ pub const MAX_CATALOG_ENTRIES: usize = 1_024;
 const MAX_CATALOG_VERSION_BYTES: usize = 64;
 const MAX_TEXT_BYTES: usize = 1_024;
 const MAX_PROCESS_NAME_BYTES: usize = 128;
+const MAX_BUNDLE_ID_BYTES: usize = 255;
 const MAX_PROCESS_NAMES_PER_ENTRY: usize = 16;
+const MAX_BUNDLE_IDS_PER_ENTRY: usize = 16;
 const MAX_ALTERNATIVES: usize = 3;
 const PRIMARY_SOURCE_HOSTS: [&str; 6] = [
     "learn.microsoft.com",
@@ -27,7 +29,7 @@ const PRIMARY_SOURCE_HOSTS: [&str; 6] = [
 // This is the SHA-256 of resources/shortcut-catalog.json. Updating the reviewed
 // catalog therefore requires an explicit source change as well as new data.
 const SHORTCUT_CATALOG_SHA256: &str =
-    "5d93551fbecb1928f20fca51a59074874606799d53ae3864c35b971f43ddb355";
+    "262d9b4ad07b97d3f35d8e212b9a1a9bd84e869a452218c10a3c1fae58986524";
 const EMBEDDED_CATALOG: &[u8] = include_bytes!("../../resources/shortcut-catalog.json");
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -51,6 +53,7 @@ pub struct CatalogEntry {
     pub kind: CatalogKind,
     pub application: String,
     pub process_names: Vec<String>,
+    pub bundle_ids: Vec<String>,
     pub trigger: String,
     pub feature: String,
     pub source_url: String,
@@ -148,14 +151,20 @@ fn validate_document(document: &CatalogDocument, as_of: NaiveDate) -> Result<(),
         validate_text(&entry.application)?;
         validate_text(&entry.feature)?;
         validate_text(&entry.trigger)?;
-        if entry.process_names.len() > MAX_PROCESS_NAMES_PER_ENTRY {
+        if entry.process_names.len() > MAX_PROCESS_NAMES_PER_ENTRY
+            || entry.bundle_ids.len() > MAX_BUNDLE_IDS_PER_ENTRY
+        {
             return Err(CatalogError::InvalidProcessName);
         }
         match entry.kind {
-            CatalogKind::Application if entry.process_names.is_empty() => {
+            CatalogKind::Application
+                if entry.process_names.is_empty() && entry.bundle_ids.is_empty() =>
+            {
                 return Err(CatalogError::InvalidProcessName);
             }
-            CatalogKind::OsReserved if !entry.process_names.is_empty() => {
+            CatalogKind::OsReserved
+                if !entry.process_names.is_empty() || !entry.bundle_ids.is_empty() =>
+            {
                 return Err(CatalogError::InvalidProcessName);
             }
             _ => {}
@@ -167,10 +176,20 @@ fn validate_document(document: &CatalogDocument, as_of: NaiveDate) -> Result<(),
         {
             return Err(CatalogError::InvalidProcessName);
         }
+        if entry
+            .bundle_ids
+            .iter()
+            .any(|identifier| sanitize_bundle_id(identifier).is_none())
+        {
+            return Err(CatalogError::InvalidProcessName);
+        }
 
         let parsed =
             super::parse_trigger(&entry.trigger).map_err(|_| CatalogError::InvalidTrigger)?;
         let normalized_trigger = parsed.to_string();
+        if entry.trigger != normalized_trigger {
+            return Err(CatalogError::InvalidTrigger);
+        }
         let source = Url::parse(&entry.source_url).map_err(|_| CatalogError::InvalidSource)?;
         let source_host = source.host_str().unwrap_or_default();
         if source.scheme() != "https"
@@ -227,6 +246,21 @@ fn sanitize_process_name(value: &str) -> Option<String> {
     Some(trimmed.to_lowercase())
 }
 
+fn sanitize_bundle_id(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty()
+        || trimmed.len() > MAX_BUNDLE_ID_BYTES
+        || trimmed.starts_with('.')
+        || trimmed.ends_with('.')
+        || !trimmed
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
+    {
+        return None;
+    }
+    Some(trimmed.to_ascii_lowercase())
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum CatalogError {
     #[error("shortcut catalog is too large")]
@@ -259,16 +293,63 @@ pub enum CatalogError {
     DuplicateEntry,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "status", rename_all = "camelCase")]
+pub enum RegistrationProbeStatus {
+    Available,
+    Occupied { observer_available: bool },
+    UnsupportedSequence { observer_available: bool },
+    PermissionDenied,
+    Invalid,
+    OsReserved,
+    BackendError,
+}
+
 pub trait RegistrationProbe: Send + Sync {
-    /// Performs the platform registration trial and immediately releases a
-    /// successful trial. Task 4 supplies the native implementation.
-    fn can_register(&self, trigger: &Trigger) -> bool;
+    /// Separates direct single-chord registration from the observer fallback
+    /// required by sequences or an occupied chord. Task 4 supplies the native
+    /// implementation and must not place backend details in this result.
+    fn probe(&self, trigger: &Trigger) -> RegistrationProbeStatus;
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AppIdentity {
+    executable_basename: Option<String>,
+    bundle_id: Option<String>,
+}
+
+impl AppIdentity {
+    pub fn new(executable_basename: Option<&str>, bundle_id: Option<&str>) -> Option<Self> {
+        let executable_basename = match executable_basename {
+            Some(value) => Some(sanitize_process_name(value)?),
+            None => None,
+        };
+        let bundle_id = match bundle_id {
+            Some(value) => Some(sanitize_bundle_id(value)?),
+            None => None,
+        };
+        if executable_basename.is_none() && bundle_id.is_none() {
+            return None;
+        }
+        Some(Self {
+            executable_basename,
+            bundle_id,
+        })
+    }
+
+    pub fn executable_basename(&self) -> Option<&str> {
+        self.executable_basename.as_deref()
+    }
+
+    pub fn bundle_id(&self) -> Option<&str> {
+        self.bundle_id.as_deref()
+    }
 }
 
 pub trait AppInspector: Send + Sync {
-    /// Returns executable/process names only. Window titles, paths and
-    /// keystrokes are outside this contract.
-    fn running_process_names(&self) -> Vec<String>;
+    /// Returns sanitized executable basenames and optional bundle identifiers.
+    /// Window titles, full paths and keystrokes are outside this contract.
+    fn running_apps(&self) -> Vec<AppIdentity>;
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -335,12 +416,12 @@ impl<'a> ConflictAnalyzer<'a> {
     }
 
     pub fn analyze(&self, trigger: &Trigger) -> ConflictReport {
-        let running_processes = self.running_processes();
-        let (level, causes, can_force) = self.classify(trigger, &running_processes);
+        let running_apps = self.running_apps();
+        let (level, causes, can_force) = self.classify(trigger, &running_apps);
         let alternatives = if level == ConflictLevel::None {
             Vec::new()
         } else {
-            self.suggest_alternatives_with_apps(trigger, &running_processes)
+            self.suggest_alternatives_with_apps(trigger, &running_apps)
         };
         ConflictReport {
             level,
@@ -351,14 +432,13 @@ impl<'a> ConflictAnalyzer<'a> {
     }
 
     pub fn suggest_alternatives(&self, trigger: &Trigger) -> Vec<Trigger> {
-        self.suggest_alternatives_with_apps(trigger, &self.running_processes())
+        self.suggest_alternatives_with_apps(trigger, &self.running_apps())
     }
 
-    fn running_processes(&self) -> BTreeSet<String> {
+    fn running_apps(&self) -> BTreeSet<AppIdentity> {
         self.app_inspector
-            .running_process_names()
+            .running_apps()
             .into_iter()
-            .filter_map(|name| sanitize_process_name(&name))
             .take(1_024)
             .collect()
     }
@@ -366,75 +446,160 @@ impl<'a> ConflictAnalyzer<'a> {
     fn classify(
         &self,
         trigger: &Trigger,
-        running_processes: &BTreeSet<String>,
+        running_apps: &BTreeSet<AppIdentity>,
     ) -> (ConflictLevel, Vec<ConflictCause>, bool) {
-        let normalized = trigger.to_string();
         let mut causes = Vec::new();
-        let mut has_non_forceable_reservation = false;
+        let reservations = self.os_reservations(trigger);
+        let mut hard_block = !reservations.is_empty();
 
-        if let Some(entry) = self.os_reservation(trigger, &normalized) {
+        for entry in reservations {
             causes.push(cause_from_entry(entry, ConflictSeverity::Blocking));
-            has_non_forceable_reservation = true;
         }
 
-        if !has_non_forceable_reservation && !self.registration_probe.can_register(trigger) {
-            causes.push(ConflictCause {
-                severity: ConflictSeverity::Blocking,
-                description: "다른 프로그램이 사용 중일 수 있습니다.".to_owned(),
-                application: None,
-                feature: None,
-                source_url: None,
-                verified_at: None,
-            });
-        }
+        let probe_status = if hard_block {
+            RegistrationProbeStatus::OsReserved
+        } else {
+            self.registration_probe.probe(trigger)
+        };
+        let observer_force_available = match probe_status {
+            RegistrationProbeStatus::Available => false,
+            RegistrationProbeStatus::Occupied { observer_available } => {
+                causes.push(fixed_probe_cause("다른 프로그램이 사용 중일 수 있습니다."));
+                observer_available
+            }
+            RegistrationProbeStatus::UnsupportedSequence { observer_available } => {
+                causes.push(fixed_probe_cause(
+                    "이 연속 단축키는 직접 등록할 수 없어 키 관찰 기능이 필요합니다.",
+                ));
+                observer_available
+            }
+            RegistrationProbeStatus::PermissionDenied => {
+                causes.push(fixed_probe_cause(
+                    "단축키를 확인할 운영체제 권한이 없습니다.",
+                ));
+                hard_block = true;
+                false
+            }
+            RegistrationProbeStatus::Invalid => {
+                causes.push(fixed_probe_cause(
+                    "운영체제에서 지원하지 않는 단축키입니다.",
+                ));
+                hard_block = true;
+                false
+            }
+            RegistrationProbeStatus::OsReserved => {
+                if causes.is_empty() {
+                    causes.push(self.generic_os_cause());
+                }
+                hard_block = true;
+                false
+            }
+            RegistrationProbeStatus::BackendError => {
+                causes.push(fixed_probe_cause(
+                    "단축키 충돌을 확인하는 중 오류가 발생했습니다.",
+                ));
+                hard_block = true;
+                false
+            }
+        };
 
+        let mut has_application_conflict = false;
         for entry in self.catalog.entries().iter().filter(|entry| {
             entry.platform == self.platform
                 && entry.kind == CatalogKind::Application
-                && entry.trigger == normalized
-                && entry.process_names.iter().any(|process| {
-                    sanitize_process_name(process)
-                        .is_some_and(|process| running_processes.contains(&process))
-                })
+                && entry_matches_running_app(entry, running_apps)
+                && super::parse_trigger(&entry.trigger)
+                    .is_ok_and(|catalog_trigger| triggers_overlap(trigger, &catalog_trigger))
         }) {
             causes.push(cause_from_entry(entry, ConflictSeverity::Warning));
+            has_application_conflict = true;
         }
 
-        let level = if has_non_forceable_reservation
-            || causes
-                .iter()
-                .any(|cause| cause.severity == ConflictSeverity::Blocking)
-        {
+        let probe_conflict = probe_status != RegistrationProbeStatus::Available;
+        let level = if hard_block || probe_conflict {
             ConflictLevel::Confirmed
-        } else if causes.is_empty() {
-            ConflictLevel::None
-        } else {
+        } else if has_application_conflict {
             ConflictLevel::Possible
+        } else {
+            ConflictLevel::None
         };
-        let can_force = level != ConflictLevel::None && !has_non_forceable_reservation;
+        let can_force = !hard_block
+            && match probe_status {
+                RegistrationProbeStatus::Available => has_application_conflict,
+                RegistrationProbeStatus::Occupied { .. }
+                | RegistrationProbeStatus::UnsupportedSequence { .. } => observer_force_available,
+                RegistrationProbeStatus::PermissionDenied
+                | RegistrationProbeStatus::Invalid
+                | RegistrationProbeStatus::OsReserved
+                | RegistrationProbeStatus::BackendError => false,
+            };
         (level, causes, can_force)
     }
 
-    fn os_reservation<'b>(
-        &'b self,
-        trigger: &Trigger,
-        normalized: &str,
-    ) -> Option<&'b CatalogEntry> {
+    fn os_reservations<'b>(&'b self, trigger: &Trigger) -> Vec<&'b CatalogEntry> {
+        let mut matches = Vec::new();
+        let mut seen = BTreeSet::new();
+        if self.platform == Platform::Windows && contains_meta(trigger) {
+            if let Some(entry) = self.os_source_entry("Meta+L") {
+                seen.insert(entry.trigger.clone());
+                matches.push(entry);
+            }
+        }
+        if self.platform == Platform::Windows && contains_f12(trigger) {
+            if let Some(entry) = self.os_source_entry("F12") {
+                seen.insert(entry.trigger.clone());
+                matches.push(entry);
+            }
+        }
+        for entry in self.catalog.entries().iter().filter(|entry| {
+            entry.platform == self.platform && entry.kind == CatalogKind::OsReserved
+        }) {
+            if seen.contains(&entry.trigger) {
+                continue;
+            }
+            if super::parse_trigger(&entry.trigger)
+                .is_ok_and(|reserved| triggers_overlap(trigger, &reserved))
+            {
+                seen.insert(entry.trigger.clone());
+                matches.push(entry);
+            }
+        }
+        matches
+    }
+
+    fn os_source_entry(&self, trigger: &str) -> Option<&CatalogEntry> {
         self.catalog.entries().iter().find(|entry| {
-            if entry.platform != self.platform || entry.kind != CatalogKind::OsReserved {
-                return false;
-            }
-            if self.platform == Platform::Windows && contains_f12(trigger) {
-                return entry.trigger == "F12";
-            }
-            entry.trigger == normalized
+            entry.platform == self.platform
+                && entry.kind == CatalogKind::OsReserved
+                && entry.trigger == trigger
         })
+    }
+
+    fn generic_os_cause(&self) -> ConflictCause {
+        let source =
+            self.catalog.entries().iter().find(|entry| {
+                entry.platform == self.platform && entry.kind == CatalogKind::OsReserved
+            });
+        ConflictCause {
+            severity: ConflictSeverity::Blocking,
+            description: "운영체제가 예약한 단축키입니다.".to_owned(),
+            application: Some(
+                match self.platform {
+                    Platform::Windows => "Windows",
+                    Platform::Macos => "macOS",
+                }
+                .to_owned(),
+            ),
+            feature: None,
+            source_url: source.map(|entry| entry.source_url.clone()),
+            verified_at: source.map(|entry| entry.verified_at.clone()),
+        }
     }
 
     fn suggest_alternatives_with_apps(
         &self,
         trigger: &Trigger,
-        running_processes: &BTreeSet<String>,
+        running_apps: &BTreeSet<AppIdentity>,
     ) -> Vec<Trigger> {
         let mut suggestions = Vec::with_capacity(MAX_ALTERNATIVES);
         let mut seen = BTreeSet::new();
@@ -451,7 +616,7 @@ impl<'a> ConflictAnalyzer<'a> {
             if !seen.insert(normalized) {
                 continue;
             }
-            if self.classify(&candidate, running_processes).0 == ConflictLevel::None {
+            if self.classify(&candidate, running_apps).0 == ConflictLevel::None {
                 suggestions.push(candidate);
             }
         }
@@ -474,12 +639,75 @@ fn cause_from_entry(entry: &CatalogEntry, severity: ConflictSeverity) -> Conflic
     }
 }
 
-fn contains_f12(trigger: &Trigger) -> bool {
-    let is_f12 = |chord: &Chord| chord.key == KeyCode::Physical(PhysicalKey::F12);
-    match trigger {
-        Trigger::Chord { chord } => is_f12(chord),
-        Trigger::Sequence { steps, .. } => steps.iter().any(is_f12),
+fn fixed_probe_cause(description: &str) -> ConflictCause {
+    ConflictCause {
+        severity: ConflictSeverity::Blocking,
+        description: description.to_owned(),
+        application: None,
+        feature: None,
+        source_url: None,
+        verified_at: None,
     }
+}
+
+fn entry_matches_running_app(entry: &CatalogEntry, running_apps: &BTreeSet<AppIdentity>) -> bool {
+    running_apps.iter().any(|identity| {
+        identity.executable_basename().is_some_and(|running| {
+            entry.process_names.iter().any(|catalog| {
+                sanitize_process_name(catalog).is_some_and(|catalog| catalog == running)
+            })
+        }) || identity.bundle_id().is_some_and(|running| {
+            entry.bundle_ids.iter().any(|catalog| {
+                sanitize_bundle_id(catalog).is_some_and(|catalog| catalog == running)
+            })
+        })
+    })
+}
+
+fn triggers_overlap(left: &Trigger, right: &Trigger) -> bool {
+    let left = trigger_steps(left);
+    let right = trigger_steps(right);
+    if left.len() == 1 {
+        return right.contains(&left[0]);
+    }
+    if right.len() == 1 {
+        return left.contains(&right[0]);
+    }
+
+    if contains_contiguous(left, right) || contains_contiguous(right, left) {
+        return true;
+    }
+
+    let maximum = left.len().min(right.len());
+    (1..=maximum).any(|length| {
+        left[left.len() - length..] == right[..length]
+            || right[right.len() - length..] == left[..length]
+    })
+}
+
+fn contains_contiguous(haystack: &[Chord], needle: &[Chord]) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
+}
+
+fn trigger_steps(trigger: &Trigger) -> &[Chord] {
+    match trigger {
+        Trigger::Chord { chord } => std::slice::from_ref(chord),
+        Trigger::Sequence { steps, .. } => steps,
+    }
+}
+
+fn contains_meta(trigger: &Trigger) -> bool {
+    trigger_steps(trigger)
+        .iter()
+        .any(|chord| chord.modifiers.meta)
+}
+
+fn contains_f12(trigger: &Trigger) -> bool {
+    trigger_steps(trigger)
+        .iter()
+        .any(|chord| chord.key == KeyCode::Physical(PhysicalKey::F12))
 }
 
 fn modifier_candidates(trigger: &Trigger, platform: Platform) -> Vec<Trigger> {
@@ -537,9 +765,9 @@ fn with_added_modifiers(trigger: &Trigger, addition: u8) -> Option<Trigger> {
 
 fn function_key_candidates(trigger: &Trigger, platform: Platform) -> Vec<Trigger> {
     let mut keys = Vec::new();
-    if let Some(number) = primary_function_number(trigger) {
-        for distance in 1..=12 {
-            if number > distance {
+    if let Some(number) = primary_function_number(trigger).filter(|number| *number >= 13) {
+        for distance in 1..=11 {
+            if number > 13 + distance - 1 {
                 keys.push(number - distance);
             }
             if number + distance <= 24 {
@@ -547,14 +775,28 @@ fn function_key_candidates(trigger: &Trigger, platform: Platform) -> Vec<Trigger
             }
         }
     } else {
-        keys.extend([8, 9, 10, 11, 13, 14, 15, 16]);
+        keys.extend(13..=24);
     }
+    keys.extend([11, 10]);
+    let modifiers = match platform {
+        Platform::Windows => Modifiers {
+            ctrl: true,
+            alt: true,
+            shift: true,
+            meta: false,
+        },
+        Platform::Macos => Modifiers {
+            ctrl: true,
+            alt: true,
+            shift: true,
+            meta: true,
+        },
+    };
     keys.into_iter()
-        .filter(|number| !(platform == Platform::Windows && *number == 12))
         .filter_map(function_key)
         .filter_map(|key| {
             Trigger::chord(Chord {
-                modifiers: Modifiers::default(),
+                modifiers,
                 key: KeyCode::Physical(key),
             })
             .ok()

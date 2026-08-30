@@ -27,6 +27,7 @@
         "kind",
         "application",
         "processNames",
+        "bundleIds",
         "trigger",
         "feature",
         "sourceUrl",
@@ -40,6 +41,16 @@
           "type": "array",
           "maxItems": 16,
           "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+        },
+        "bundleIds": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255,
+            "pattern": "^[A-Za-z0-9.-]+$"
+          }
         },
         "trigger": { "type": "string", "minLength": 1, "maxLength": 1024 },
         "feature": { "type": "string", "minLength": 1, "maxLength": 1024 },

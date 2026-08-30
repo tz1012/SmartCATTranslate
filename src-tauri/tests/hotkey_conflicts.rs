@@ -1,44 +1,72 @@
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use chrono::NaiveDate;
 use sha2::{Digest, Sha256};
 use smartcat_translate::hotkeys::{
-    parse_trigger, AppInspector, CatalogError, ConflictAnalyzer, ConflictLevel, ConflictSeverity,
-    Platform, RegistrationProbe, ShortcutCatalog,
+    parse_trigger, AppIdentity, AppInspector, CatalogError, ConflictAnalyzer, ConflictLevel,
+    ConflictSeverity, Platform, RegistrationProbe, RegistrationProbeStatus, ShortcutCatalog,
 };
 
 const AS_OF: &str = "2026-08-30";
 
 #[derive(Default)]
 struct SelectiveProbe {
-    blocked: BTreeSet<String>,
+    statuses: BTreeMap<String, RegistrationProbeStatus>,
     observed: Mutex<Vec<String>>,
 }
 
 impl SelectiveProbe {
     fn blocking(triggers: &[&str]) -> Self {
         Self {
-            blocked: triggers.iter().map(|value| (*value).to_owned()).collect(),
+            statuses: triggers
+                .iter()
+                .map(|value| {
+                    (
+                        (*value).to_owned(),
+                        RegistrationProbeStatus::Occupied {
+                            observer_available: true,
+                        },
+                    )
+                })
+                .collect(),
+            observed: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn with_status(trigger: &str, status: RegistrationProbeStatus) -> Self {
+        Self {
+            statuses: BTreeMap::from([(trigger.to_owned(), status)]),
             observed: Mutex::new(Vec::new()),
         }
     }
 }
 
 impl RegistrationProbe for SelectiveProbe {
-    fn can_register(&self, trigger: &smartcat_translate::hotkeys::Trigger) -> bool {
+    fn probe(&self, trigger: &smartcat_translate::hotkeys::Trigger) -> RegistrationProbeStatus {
         let normalized = trigger.to_string();
         self.observed.lock().unwrap().push(normalized.clone());
-        !self.blocked.contains(&normalized)
+        self.statuses
+            .get(&normalized)
+            .copied()
+            .unwrap_or(RegistrationProbeStatus::Available)
     }
 }
 
-struct RunningApps(Vec<String>);
+struct RunningApps(Vec<AppIdentity>);
 
 impl AppInspector for RunningApps {
-    fn running_process_names(&self) -> Vec<String> {
+    fn running_apps(&self) -> Vec<AppIdentity> {
         self.0.clone()
     }
+}
+
+fn executable(name: &str) -> AppIdentity {
+    AppIdentity::new(Some(name), None).unwrap()
+}
+
+fn bundle(identifier: &str) -> AppIdentity {
+    AppIdentity::new(None, Some(identifier)).unwrap()
 }
 
 fn date() -> NaiveDate {
@@ -59,7 +87,7 @@ fn distinguishes_confirmed_registration_failure_and_running_app_causes() {
     // Mutation caught: dropping either the registration layer or running-app/catalog layer.
     let catalog = ShortcutCatalog::from_embedded(date()).unwrap();
     let probe = SelectiveProbe::blocking(&["Ctrl+L"]);
-    let apps = RunningApps(vec!["chrome.exe".to_owned()]);
+    let apps = RunningApps(vec![executable("chrome.exe")]);
 
     let report = analyzer(Platform::Windows, &catalog, &probe, &apps)
         .analyze(&parse_trigger("Ctrl+L").unwrap());
@@ -111,7 +139,7 @@ fn possible_catalog_conflicts_block_by_default_and_require_explicit_force() {
     // Mutation caught: silently saving a likely collision or force-enabling a reserved shortcut.
     let catalog = ShortcutCatalog::from_embedded(date()).unwrap();
     let probe = SelectiveProbe::default();
-    let apps = RunningApps(vec!["Code.exe".to_owned()]);
+    let apps = RunningApps(vec![executable("Code.exe")]);
 
     let report = analyzer(Platform::Windows, &catalog, &probe, &apps)
         .analyze(&parse_trigger("Ctrl+Shift+P").unwrap());
@@ -168,23 +196,188 @@ fn classifies_windows_and_macos_reserved_combinations_as_non_forceable() {
 }
 
 #[test]
-fn matches_only_sanitized_process_names_and_never_exposes_titles_or_paths() {
-    // Mutation caught: accepting a full path/window title as process identity and echoing it.
+fn app_identity_accepts_only_sanitized_basename_or_bundle_id() {
+    // Mutation caught: accepting a full path, title, control character or oversized identity.
+    assert!(AppIdentity::new(Some("Code.exe"), Some("com.microsoft.VSCode")).is_some());
+    assert!(AppIdentity::new(Some("C:\\Program Files\\Code.exe"), None).is_none());
+    assert!(AppIdentity::new(Some("Code.exe\nsecret"), None).is_none());
+    assert!(AppIdentity::new(Some(&"x".repeat(129)), None).is_none());
+    assert!(AppIdentity::new(None, Some("com.microsoft.VSCode/secret")).is_none());
+    assert!(AppIdentity::new(None, None).is_none());
+}
+
+#[test]
+fn matches_vscode_executable_aliases_and_bundle_identifier() {
+    // Mutation caught: relying only on Code.exe and missing real platform identities.
     let catalog = ShortcutCatalog::from_embedded(date()).unwrap();
     let probe = SelectiveProbe::default();
-    let apps = RunningApps(vec![
-        "C:\\Program Files\\Google\\Chrome\\chrome.exe".to_owned(),
-        "Document title - Google Chrome".to_owned(),
-        "chrome.exe\nsecret".to_owned(),
-    ]);
+    for (platform, identity, trigger) in [
+        (Platform::Windows, executable("Code.exe"), "Ctrl+Shift+P"),
+        (Platform::Windows, executable("Code"), "Ctrl+Shift+P"),
+        (
+            Platform::Windows,
+            executable("Electron.exe"),
+            "Ctrl+Shift+P",
+        ),
+        (
+            Platform::Macos,
+            bundle("com.microsoft.VSCode"),
+            "Shift+Meta+P",
+        ),
+    ] {
+        let report = analyzer(platform, &catalog, &probe, &RunningApps(vec![identity]))
+            .analyze(&parse_trigger(trigger).unwrap());
+        assert_eq!(report.level, ConflictLevel::Possible, "{platform:?}");
+        assert_eq!(
+            report.causes[0].application.as_deref(),
+            Some("Visual Studio Code")
+        );
+    }
+}
 
-    let report = analyzer(Platform::Windows, &catalog, &probe, &apps)
+#[test]
+fn checks_every_sequence_step_and_catalog_prefix_overlap() {
+    // Mutation caught: comparing only the whole normalized trigger string.
+    let catalog = ShortcutCatalog::from_embedded(date()).unwrap();
+    let probe = SelectiveProbe::with_status(
+        "Ctrl+L, C",
+        RegistrationProbeStatus::UnsupportedSequence {
+            observer_available: true,
+        },
+    );
+    let chrome = RunningApps(vec![executable("chrome.exe")]);
+    let chrome_report = analyzer(Platform::Windows, &catalog, &probe, &chrome)
+        .analyze(&parse_trigger("Ctrl+L, C").unwrap());
+    assert!(chrome_report.causes.iter().any(|cause| {
+        cause.application.as_deref() == Some("Google Chrome")
+            && cause.feature.as_deref() == Some("주소 표시줄로 이동")
+    }));
+
+    let deep_l = RunningApps(vec![executable("DeepL.exe")]);
+    for trigger in [
+        "Ctrl+C",
+        "Ctrl+C, C, Ctrl+X",
+        "Ctrl+X, Ctrl+C",
+        "Ctrl+X, Ctrl+C, C, Ctrl+V",
+    ] {
+        let report = analyzer(
+            Platform::Windows,
+            &catalog,
+            &SelectiveProbe::default(),
+            &deep_l,
+        )
+        .analyze(&parse_trigger(trigger).unwrap());
+        assert!(
+            report
+                .causes
+                .iter()
+                .any(|cause| cause.application.as_deref() == Some("DeepL")),
+            "{trigger}"
+        );
+    }
+}
+
+#[test]
+fn every_reserved_step_is_non_forceable_and_windows_meta_is_a_broad_rule() {
+    // Mutation caught: checking only exact catalog rows such as Meta+L.
+    let catalog = ShortcutCatalog::from_embedded(date()).unwrap();
+    let probe = SelectiveProbe::default();
+    let none = RunningApps(Vec::new());
+    for (platform, trigger) in [
+        (Platform::Windows, "Ctrl+Meta+C"),
+        (Platform::Windows, "Meta+L, C"),
+        (Platform::Macos, "Meta+Space, C"),
+        (Platform::Macos, "Ctrl+Meta+Q, C"),
+    ] {
+        let report =
+            analyzer(platform, &catalog, &probe, &none).analyze(&parse_trigger(trigger).unwrap());
+        assert_eq!(report.level, ConflictLevel::Confirmed, "{trigger}");
+        assert!(!report.can_force, "{trigger}");
+        assert!(!report.registration_allowed(true), "{trigger}");
+    }
+}
+
+#[test]
+fn force_depends_on_structured_probe_status_and_observer_availability() {
+    // Mutation caught: one bool treating every registration failure as forceable.
+    let catalog = ShortcutCatalog::from_embedded(date()).unwrap();
+    let none = RunningApps(Vec::new());
+    let cases = [
+        (
+            RegistrationProbeStatus::Occupied {
+                observer_available: true,
+            },
+            true,
+        ),
+        (
+            RegistrationProbeStatus::Occupied {
+                observer_available: false,
+            },
+            false,
+        ),
+        (
+            RegistrationProbeStatus::UnsupportedSequence {
+                observer_available: true,
+            },
+            true,
+        ),
+        (
+            RegistrationProbeStatus::UnsupportedSequence {
+                observer_available: false,
+            },
+            false,
+        ),
+        (RegistrationProbeStatus::PermissionDenied, false),
+        (RegistrationProbeStatus::Invalid, false),
+        (RegistrationProbeStatus::OsReserved, false),
+        (RegistrationProbeStatus::BackendError, false),
+    ];
+    for (status, can_force) in cases {
+        let probe = SelectiveProbe::with_status("Ctrl+Alt+9", status);
+        let report = analyzer(Platform::Windows, &catalog, &probe, &none)
+            .analyze(&parse_trigger("Ctrl+Alt+9").unwrap());
+        assert_eq!(report.level, ConflictLevel::Confirmed, "{status:?}");
+        assert_eq!(report.can_force, can_force, "{status:?}");
+        assert_eq!(report.registration_allowed(true), can_force, "{status:?}");
+        assert!(!format!("{report:?}").contains("BackendError"));
+    }
+
+    let available = analyzer(
+        Platform::Windows,
+        &catalog,
+        &SelectiveProbe::default(),
+        &none,
+    )
+    .analyze(&parse_trigger("Ctrl+Alt+9").unwrap());
+    assert_eq!(available.level, ConflictLevel::None);
+}
+
+#[test]
+fn alternatives_avoid_bare_function_keys_and_known_running_app_shortcuts() {
+    // Mutation caught: falling back to common bare F8/F9 or Word's Ctrl+Shift+L.
+    let catalog = ShortcutCatalog::from_embedded(date()).unwrap();
+
+    let vscode_probe = SelectiveProbe::blocking(&["Ctrl+Shift+P"]);
+    let vscode = RunningApps(vec![executable("Code.exe")]);
+    let vscode_report = analyzer(Platform::Windows, &catalog, &vscode_probe, &vscode)
+        .analyze(&parse_trigger("Ctrl+Shift+P").unwrap());
+    let vscode_alternatives = vscode_report
+        .alternatives
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    assert!(!vscode_alternatives.contains(&"F8".to_owned()));
+    assert!(!vscode_alternatives.contains(&"F9".to_owned()));
+    assert!(vscode_alternatives.iter().all(|value| value.contains('+')));
+
+    let word_probe = SelectiveProbe::blocking(&["Ctrl+L"]);
+    let word = RunningApps(vec![executable("WINWORD.EXE")]);
+    let word_report = analyzer(Platform::Windows, &catalog, &word_probe, &word)
         .analyze(&parse_trigger("Ctrl+L").unwrap());
-
-    assert_eq!(report.level, ConflictLevel::None);
-    assert!(report.causes.is_empty());
-    assert!(format!("{report:?}").find("Program Files").is_none());
-    assert!(format!("{report:?}").find("Document title").is_none());
+    assert!(!word_report
+        .alternatives
+        .iter()
+        .any(|trigger| trigger.to_string() == "Ctrl+Shift+L"));
 }
 
 #[test]
@@ -192,7 +385,7 @@ fn alternatives_are_reanalyzed_and_skip_every_blocked_or_known_collision() {
     // Mutation caught: recommending candidates without running the same layered checks.
     let catalog = ShortcutCatalog::from_embedded(date()).unwrap();
     let probe = SelectiveProbe::blocking(&["Ctrl+L", "Ctrl+Shift+L", "Ctrl+Alt+L"]);
-    let apps = RunningApps(vec!["chrome.exe".to_owned()]);
+    let apps = RunningApps(vec![executable("chrome.exe")]);
 
     let report = analyzer(Platform::Windows, &catalog, &probe, &apps)
         .analyze(&parse_trigger("Ctrl+L").unwrap());
@@ -223,7 +416,7 @@ fn every_seeded_application_collision_has_three_available_alternatives() {
         .filter(|entry| entry.kind == smartcat_translate::hotkeys::CatalogKind::Application)
     {
         let probe = SelectiveProbe::blocking(&[&entry.trigger]);
-        let apps = RunningApps(vec![entry.process_names[0].clone()]);
+        let apps = RunningApps(vec![executable(&entry.process_names[0])]);
         let report = analyzer(entry.platform, &catalog, &probe, &apps)
             .analyze(&parse_trigger(&entry.trigger).unwrap());
         assert_eq!(
@@ -261,9 +454,18 @@ fn embedded_catalog_has_a_bounded_schema_version_and_verified_hash() {
 
     let catalog = ShortcutCatalog::from_embedded(date()).unwrap();
     assert_eq!(catalog.schema_version(), 1);
-    assert_eq!(catalog.catalog_version(), "2026.08.30.1");
+    assert_eq!(catalog.catalog_version(), "2026.08.30.2");
     assert_eq!(catalog.sha256(), format!("{:x}", Sha256::digest(bytes)));
     assert!(catalog.entries().len() >= 13);
+    let powerpoint = catalog
+        .entries()
+        .iter()
+        .find(|entry| entry.application == "Microsoft PowerPoint")
+        .unwrap();
+    assert_eq!(
+        powerpoint.source_url,
+        "https://support.microsoft.com/en-us/accessibility/powerpoint/use-keyboard-shortcuts-to-create-powerpoint-presentations"
+    );
 }
 
 #[test]
@@ -283,6 +485,10 @@ fn catalog_validation_rejects_missing_sources_stale_dates_duplicates_and_bad_has
     let mut value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     value["entries"][0]["verifiedAt"] = serde_json::Value::String("2024-12-29".to_owned());
     assert_verified_catalog_error(&value, CatalogError::StaleEntry);
+
+    let mut value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    value["entries"][4]["trigger"] = serde_json::Value::String(" ctrl+l ".to_owned());
+    assert_verified_catalog_error(&value, CatalogError::InvalidTrigger);
 
     let mut value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let duplicate = value["entries"][0].clone();
@@ -314,6 +520,7 @@ fn catalog_rejects_oversized_documents_and_entry_collections_before_use() {
         "kind": "application",
         "application": "x",
         "processNames": ["x"],
+        "bundleIds": [],
         "trigger": "F8",
         "feature": "x",
         "sourceUrl": "https://x.io",
