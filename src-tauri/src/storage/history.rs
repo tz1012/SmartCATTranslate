@@ -85,13 +85,28 @@ impl HistoryStore {
         Self {
             database,
             crypto,
-            retention_days: Arc::new(AtomicU16::new(30)),
+            // Zero means the persisted setting has not been loaded yet. Until it is,
+            // save/list are deliberately non-destructive.
+            retention_days: Arc::new(AtomicU16::new(0)),
         }
     }
 
-    pub fn set_retention_days(&self, days: u16) {
-        self.retention_days
-            .store(days.clamp(1, 365), Ordering::Release);
+    pub fn configure_retention(&self, days: u16) -> Result<(), HistoryError> {
+        if !(1..=365).contains(&days) {
+            DiagnosticEvent::new(
+                DiagnosticEventName::HistoryMaintenance,
+                DiagnosticOutcome::Failed,
+            )
+            .with_error_code("history_retention_invalid")
+            .emit();
+            return Err(HistoryError::Invalid);
+        }
+        self.retention_days.store(days, Ordering::Release);
+        Ok(())
+    }
+
+    pub fn retention_configured(&self) -> bool {
+        self.retention_days.load(Ordering::Acquire) != 0
     }
 
     pub fn save(&self, record: NewHistoryRecord) -> Result<Option<String>, HistoryError> {
@@ -260,8 +275,7 @@ impl HistoryStore {
     }
 
     pub fn purge_expired(&self, retention_days: u16) -> Result<u64, HistoryError> {
-        let retention_days = retention_days.clamp(1, 365);
-        self.set_retention_days(retention_days);
+        self.configure_retention(retention_days)?;
         let cutoff = (Utc::now() - Duration::days(i64::from(retention_days))).to_rfc3339();
         let removed =
             self.database
@@ -280,6 +294,15 @@ impl HistoryStore {
 
     fn purge_current(&self) -> Result<u64, HistoryError> {
         let days = self.retention_days.load(Ordering::Acquire);
+        if days == 0 {
+            DiagnosticEvent::new(
+                DiagnosticEventName::HistoryMaintenance,
+                DiagnosticOutcome::Failed,
+            )
+            .with_error_code("history_retention_pending")
+            .emit();
+            return Ok(0);
+        }
         self.purge_expired(days)
     }
 }

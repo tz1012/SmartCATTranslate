@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { listen } from '@tauri-apps/api/event';
 import {
   deleteRecoveryJob,
   listRecoverableJobs,
@@ -27,7 +28,24 @@ export function RecoveryPrompt({
   const [jobs, setJobs] = useState<RecoverableJob[]>([]);
 
   useEffect(() => {
-    void listRecoverableJobs().then(setJobs).catch(() => undefined);
+    let disposed = false;
+    let stop: (() => void) | undefined;
+    const refresh = () => {
+      void listRecoverableJobs()
+        .then((values) => {
+          if (!disposed) setJobs(values);
+        })
+        .catch(() => undefined);
+    };
+    refresh();
+    void listen('recovery-updated', refresh).then((unlisten) => {
+      if (disposed) unlisten();
+      else stop = unlisten;
+    });
+    return () => {
+      disposed = true;
+      stop?.();
+    };
   }, []);
 
   if (!jobs.length) return null;
@@ -38,6 +56,13 @@ export function RecoveryPrompt({
       <p>
         <strong>{job.displayName}</strong> · {job.stage} · {job.completed}/{job.total} · {recoveryAge(job.createdAt, ko)}
       </p>
+      {job.secret && (
+        <p role="status">
+          {ko
+            ? '시크릿 복구 정보는 메모리에만 있으며 앱을 종료하거나 다시 시작하면 사라집니다.'
+            : 'Secret recovery stays in memory only and disappears when the app closes or restarts.'}
+        </p>
+      )}
       {!job.canResume && (
         <p role="alert">
           {ko ? '원본 또는 번역 설정이 변경되어 새 작업만 시작할 수 있습니다.' : 'The source or translation settings changed. Start a new job.'}

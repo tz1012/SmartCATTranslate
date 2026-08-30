@@ -22,7 +22,9 @@ use crate::{
         DocumentResumeRequest, DocumentRetentionPayload, DocumentStage, PdfRasterSpool,
         TranslatedSegment,
     },
-    storage::{CanonicalTranslationOptions, CleanupService, DocumentRecoveryContext, JobStore},
+    storage::{
+        CanonicalTranslationOptions, CleanupService, DocumentRecoveryContext, JobStage, JobStore,
+    },
 };
 use zeroize::Zeroizing;
 
@@ -149,10 +151,41 @@ pub async fn translate_document(
     )
     .await;
     jobs.finish(job_id);
+    let record_id = job_id.simple().to_string();
+    let retryable = outcome
+        .as_ref()
+        .err()
+        .is_some_and(|code| retryable_document_error(code));
+    if let Some(store) = app.try_state::<Arc<JobStore>>() {
+        let terminal = match &outcome {
+            Ok(_) => JobStage::Completed,
+            Err(code) if code == "document_cancelled" => JobStage::Cancelled,
+            Err(_) if retryable => JobStage::Paused,
+            Err(_) => JobStage::Failed,
+        };
+        if store.transition_terminal(&record_id, terminal).is_err() {
+            DiagnosticEvent::new(DiagnosticEventName::JobLifecycle, DiagnosticOutcome::Failed)
+                .with_job_kind(JobKind::Document)
+                .with_error_code("recovery_terminal_write_failed")
+                .emit();
+        }
+        if retryable {
+            if let Some(previous) = &resume_record_id {
+                let _ = store.delete(previous);
+            }
+        }
+    }
+    documents::wipe_translated_results(
+        &mut translated_results
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    );
+    let cleanup_result = cleanup.on_job_complete(&record_id);
+    crate::commands::history::emit_privacy_status(&app);
     match &outcome {
         Ok(report) => {
             if let Some(store) = app.try_state::<Arc<JobStore>>() {
-                let _ = store.delete(&job_id.simple().to_string());
+                let _ = store.delete(&record_id);
                 if let Some(record_id) = &resume_record_id {
                     let _ = store.delete(record_id);
                 }
@@ -191,6 +224,11 @@ pub async fn translate_document(
             )
             .with_job_kind(JobKind::Document)
             .with_stage("completed")
+            .with_error_code(if cleanup_result.is_err() {
+                "temporary_cleanup_pending"
+            } else {
+                ""
+            })
             .emit();
         }
         Err(code) => {
@@ -213,21 +251,15 @@ pub async fn translate_document(
                 .emit();
         }
     }
-    let retryable = outcome
-        .as_ref()
-        .err()
-        .is_some_and(|code| retryable_document_error(code));
-    if secret || !retryable {
+    if !retryable && outcome.is_err() {
         if let Some(store) = app.try_state::<Arc<JobStore>>() {
-            let _ = store.delete(&job_id.simple().to_string());
+            let _ = store.delete(&record_id);
+            if let Some(previous) = &resume_record_id {
+                let _ = store.delete(previous);
+            }
         }
     }
-    documents::wipe_translated_results(
-        &mut translated_results
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()),
-    );
-    let _ = cleanup.on_job_complete(&job_id.simple().to_string());
+    let _ = app.emit("recovery-updated", ());
     outcome
 }
 
@@ -589,11 +621,15 @@ pub fn cancel_document_translation(
     let cancelled = jobs.cancel(job_id);
     if cancelled {
         if let Some(store) = app.try_state::<Arc<JobStore>>() {
-            let _ = store.delete(&job_id.simple().to_string());
+            let record_id = job_id.simple().to_string();
+            let _ = store.transition_terminal(&record_id, JobStage::Cancelled);
+            let _ = store.delete(&record_id);
         }
         if let Some(cleanup) = app.try_state::<CleanupService>() {
             let _ = cleanup.on_job_cancel(&job_id.simple().to_string());
         }
+        crate::commands::history::emit_privacy_status(&app);
+        let _ = app.emit("recovery-updated", ());
     }
     cancelled
 }

@@ -167,6 +167,7 @@ pub fn complete_screen_capture<R: Runtime>(
         Ok(decoded) => decoded,
         Err(error) => {
             let _ = cleanup.on_job_cancel(&job_id.simple().to_string());
+            crate::commands::history::emit_privacy_status(&app);
             return Err(error.code().to_owned());
         }
     };
@@ -224,6 +225,7 @@ pub fn choose_image<R: Runtime>(
         Ok(decoded) => decoded,
         Err(error) => {
             let _ = cleanup.on_job_cancel(&job_id.simple().to_string());
+            crate::commands::history::emit_privacy_status(&app);
             return Err(error.code().to_owned());
         }
     };
@@ -338,7 +340,7 @@ pub async fn translate_image(
         job.translation_job = None;
     })
     .ok_or_else(|| "capture_job_not_found".to_owned())?;
-    cleanup_capture_source(&app, &jobs, job_id);
+    cleanup_capture_source(&app, job_id);
     emit_progress(&app, job_id, "complete", 100);
     DiagnosticEvent::new(
         DiagnosticEventName::JobLifecycle,
@@ -450,7 +452,7 @@ pub async fn cancel_image_translation(
                 .await;
         }
     }
-    cleanup_capture_source(&app, &jobs, job_id);
+    cleanup_capture_source(&app, job_id);
     DiagnosticEvent::new(
         DiagnosticEventName::JobLifecycle,
         DiagnosticOutcome::Cancelled,
@@ -561,14 +563,11 @@ fn emit_progress(app: &tauri::AppHandle, job_id: Uuid, stage: &'static str, perc
     );
 }
 
-fn cleanup_capture_source<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-    _jobs: &CaptureJobStore,
-    job_id: Uuid,
-) {
+fn cleanup_capture_source<R: Runtime>(app: &tauri::AppHandle<R>, job_id: Uuid) {
     if let Some(cleanup) = app.try_state::<CleanupService>() {
         let _ = cleanup.on_job_complete(&job_id.simple().to_string());
     }
+    crate::commands::history::emit_privacy_status(app);
 }
 
 fn close_overlays<R: Runtime>(app: &tauri::AppHandle<R>) {

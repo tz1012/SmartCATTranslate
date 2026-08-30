@@ -852,3 +852,18 @@ TDD 및 검증
 - 사용자 속도 지시에 따라 새 실패 테스트·실패 주입·전체 회귀·장시간 smoke는 추가하거나 실행하지 않았다.
 - Rust formatter PASS, `pnpm build` PASS(63 modules, Vite 1.27s).
 - warm D cache 확인 뒤 `cargo check --lib --offline`은 의존성 컴파일이 60초를 넘겨 사용자 지시에 따라 중단했다. 제품 compile 오류는 출력되기 전이었으므로 Rust 통과를 주장하지 않는다.
+
+[2026-08-31] Tasks 1–4 검토 보강 2 — 보존 선확인·terminal 상태·정리 재시도
+
+구현
+- history 보존 기간은 설정 로드 전 0 sentinel로 두어 save/list/startup purge를 막고, 저장된 1~365일 값을 검증한 뒤에만 purge한다. 설정 읽기나 검증 실패는 무삭제와 typed warning으로 처리한다.
+- 문서 recovery는 성공 Completed, 사용자 취소 Cancelled, 비재시도 실패 Failed를 commit한 뒤 삭제하고 재시도 가능 실패는 Paused와 직전 active stage를 유지한다. Paused 재개는 그 단계로 복귀한다.
+- 시크릿 문서 recovery의 context/checkpoint/result는 같은 프로세스 메모리에서 RecoveryPrompt/list/prepare/resume까지 연결하고 앱 종료 시 모두 제거한다. UI에는 재시작 후 복구할 수 없음을 표시한다.
+- temporary cleanup 실패는 UUID-only pending metadata에 동기화하고 typed diagnostic과 개인정보 경고를 표시하며 다음 시작에 먼저 재시도한다. 완료 UI는 cleanup 결과가 기록된 뒤에만 전송한다.
+- OS key decode와 CryptoBox 소유 키는 Zeroizing buffer만 사용하고 남은 history/secret UI 파일을 읽기 쉬운 형식으로 정리했다.
+
+검증
+- Rust formatter PASS, `pnpm build` PASS(63 modules).
+- 지정된 D shared target의 `cargo check --lib --offline`은 120초 동안 의존성을 계속 컴파일했으나 제품 crate에 도달하기 전에 ceiling으로 중단했다. 출력된 코드 오류는 0개이며 Rust 통과를 주장하지 않는다.
+- `pnpm privacy:check` PASS(5 files), `pnpm records:test` PASS(16/16), `pnpm records:check` PASS, `git diff --check` PASS.
+- 사용자 지시에 따라 새 실패 테스트·실패 주입·전체 회귀·장시간 smoke는 추가하거나 실행하지 않았다.

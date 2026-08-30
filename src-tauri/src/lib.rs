@@ -62,7 +62,6 @@ pub fn run() {
             let history_store =
                 Arc::new(storage::HistoryStore::new(database.clone(), crypto.clone()));
             let job_store = Arc::new(storage::JobStore::new(database, crypto));
-            let _ = history_store.purge_expired(30);
             let _ = job_store.purge_expired();
             document_jobs_for_setup.install_resume_backend(Arc::new(
                 storage::EncryptedDocumentResumeBackend::new(
@@ -72,10 +71,10 @@ pub fn run() {
             ));
             let cleanup = storage::CleanupService::new(app_data_root.join("private-temp"))?;
             commands::documents::set_private_permissions(cleanup.root(), true);
-            let _ = cleanup.on_start();
             app.manage(history_store);
             app.manage(job_store);
-            app.manage(cleanup);
+            app.manage(cleanup.clone());
+            let _ = cleanup.on_start();
             let resource_root = app.path().resource_dir()?;
             let executable_path = std::env::current_exe()?;
             let app_handle = app.handle().clone();
@@ -104,17 +103,41 @@ pub fn run() {
                         .set_account_ready(account_ready);
                 }
                 let _ = commands::windows::restart_quick_hotkeys(app_handle.clone()).await;
-                if let Ok(store) = commands::settings::open_store(&app_handle) {
-                    if let Ok(settings) = store.load().await {
+                match commands::settings::open_store(&app_handle) {
+                    Ok(store) => match store.load().await {
+                        Ok(settings) => {
                         if let Some(history) = app_handle.try_state::<Arc<storage::HistoryStore>>() {
-                            history.set_retention_days(settings.history_retention_days);
-                            let _ = history.purge_expired(settings.history_retention_days);
+                                if history
+                                    .purge_expired(settings.history_retention_days)
+                                    .is_err()
+                                {
+                                    crate::core::diagnostics::DiagnosticEvent::new(
+                                        crate::core::diagnostics::DiagnosticEventName::HistoryMaintenance,
+                                        crate::core::diagnostics::DiagnosticOutcome::Failed,
+                                    )
+                                    .with_error_code("history_retention_invalid")
+                                    .emit();
+                                }
                         }
                         app_handle
                             .state::<lifecycle::LifecycleState>()
                             .set_locale(settings.locale, state.hotkeys_suspended());
-                    }
+                        }
+                        Err(_) => crate::core::diagnostics::DiagnosticEvent::new(
+                            crate::core::diagnostics::DiagnosticEventName::HistoryMaintenance,
+                            crate::core::diagnostics::DiagnosticOutcome::Failed,
+                        )
+                        .with_error_code("history_retention_pending")
+                        .emit(),
+                    },
+                    Err(_) => crate::core::diagnostics::DiagnosticEvent::new(
+                        crate::core::diagnostics::DiagnosticEventName::HistoryMaintenance,
+                        crate::core::diagnostics::DiagnosticOutcome::Failed,
+                    )
+                    .with_error_code("history_retention_pending")
+                    .emit(),
                 }
+                commands::history::emit_privacy_status(&app_handle);
             });
             Ok(())
         })
@@ -147,6 +170,7 @@ pub fn run() {
             commands::history::delete_history,
             commands::history::delete_all_history,
             commands::history::get_history_policy,
+            commands::history::get_privacy_status,
             commands::history::purge_history,
             commands::history::list_recoverable_jobs,
             commands::history::prepare_document_recovery,
@@ -197,6 +221,9 @@ pub fn run() {
             }
         }
         if matches!(event, tauri::RunEvent::Exit) {
+            if let Some(jobs) = app_handle.try_state::<Arc<storage::JobStore>>() {
+                jobs.clear_secret();
+            }
             let state = app_handle.state::<app_state::AppState>();
             let _ = tauri::async_runtime::block_on(state.shutdown());
         }

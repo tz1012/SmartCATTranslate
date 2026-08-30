@@ -317,3 +317,11 @@ XLSX 위치: workbook relationship으로 worksheet part와 실제 sheet name을 
 [D-052] 진행 checkpoint와 임시 데이터의 단일 소유권
 상태: 확정
 결정: 문서 pipeline의 단계 및 완료 batch callback은 암호화 JobStore transaction commit이 끝난 뒤 반환하고 그 다음 UI progress를 보낸다. durable payload는 source fingerprint, canonical option hash/snapshot과 encrypted resume refs를 포함한다. 시크릿 payload는 동일 생명주기의 메모리 맵에만 둔다. document/capture plaintext temporary data는 CleanupService의 canonical private root 아래 UUID 직계 자식만 사용하며 성공·취소와 7일 startup purge에서 제거한다.
+
+[D-053] 보존 설정 선확인과 복구 terminal 상태
+상태: 확정
+결정: history 자동 purge는 저장된 보존 기간을 성공적으로 읽고 1~365일 범위를 검증한 뒤에만 실행한다. 읽기·검증 실패는 무삭제와 개인정보 상태 경고로 실패 보수적으로 처리한다. 문서 작업은 retryable 실패를 Paused로 유지하고 성공·사용자 취소·비재시도 실패를 각각 Completed·Cancelled·Failed로 확정한 뒤 해당 recovery를 삭제한다.
+
+[D-054] 시크릿 메모리 복구와 삭제 재시도
+상태: 확정
+결정: 시크릿 문서 checkpoint는 SQLite에 기록하지 않고 같은 프로세스의 RecoveryPrompt/list/prepare/resume에서만 사용하며 성공·취소·비재시도 실패·앱 종료에 zeroize 후 삭제한다. private temp 삭제 실패는 UUID만 포함한 content-free pending metadata와 typed diagnostic으로 기록하고 사용자에게 개인정보 상태를 알린 뒤 startup에 재시도한다.

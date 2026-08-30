@@ -60,7 +60,13 @@ impl JobCheckpoint {
                 | (JobStage::Validate, JobStage::Save)
                 | (JobStage::Save, JobStage::Completed)
         );
-        if sequential || (active && matches!(next, JobStage::Cancelled | JobStage::Failed)) {
+        if sequential
+            || (active
+                && matches!(
+                    next,
+                    JobStage::Cancelled | JobStage::Failed | JobStage::Completed
+                ))
+        {
             self.previous_active_stage = None;
             self.stage = next;
             return Ok(());
@@ -123,6 +129,18 @@ struct DocumentRecoveryPayload {
     translated_results: HashMap<String, TranslatedSegment>,
 }
 
+impl Drop for DocumentRecoveryPayload {
+    fn drop(&mut self) {
+        crate::documents::wipe_translated_results(&mut self.translated_results);
+    }
+}
+
+struct SecretDocumentRecovery {
+    created_at: String,
+    context: DocumentRecoveryContext,
+    payload: DocumentRecoveryPayload,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecoverableJob {
@@ -135,6 +153,7 @@ pub struct RecoverableJob {
     pub created_at: String,
     pub can_resume: bool,
     pub disabled_reason: Option<String>,
+    pub secret: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -164,7 +183,7 @@ pub enum JobError {
 pub struct JobStore {
     database: StorageDatabase,
     crypto: Arc<CryptoBox>,
-    secret: Arc<Mutex<HashMap<String, DocumentRecoveryPayload>>>,
+    secret: Arc<Mutex<HashMap<String, SecretDocumentRecovery>>>,
 }
 
 impl JobStore {
@@ -197,16 +216,24 @@ impl JobStore {
             let mut values = self.secret.lock().unwrap_or_else(|p| p.into_inner());
             let mut job_state = values
                 .get(&record_id)
-                .map(|value| value.job_state.clone())
+                .map(|value| value.payload.job_state.clone())
                 .unwrap_or_else(initial_job_state);
             advance_job_state(&mut job_state, payload.checkpoint.stage)?;
             remember_completed_unit(&mut job_state, &payload.checkpoint);
+            let created_at = values
+                .get(&record_id)
+                .map(|value| value.created_at.clone())
+                .unwrap_or_else(|| Utc::now().to_rfc3339());
             values.insert(
                 record_id.clone(),
-                DocumentRecoveryPayload {
-                    job_state,
-                    checkpoint: payload.checkpoint.clone(),
-                    translated_results: payload.translated_results.clone(),
+                SecretDocumentRecovery {
+                    created_at,
+                    context: context.clone(),
+                    payload: DocumentRecoveryPayload {
+                        job_state,
+                        checkpoint: payload.checkpoint.clone(),
+                        translated_results: payload.translated_results.clone(),
+                    },
                 },
             );
             diagnostic_checkpoint(&payload.checkpoint, DiagnosticOutcome::Succeeded);
@@ -231,7 +258,7 @@ impl JobStore {
                     .open_json::<DocumentRecoveryPayload>(&blob, &aad(&record_id, "payload"))
             })
             .transpose()?
-            .map(|value| value.job_state)
+            .map(|value| value.job_state.clone())
             .unwrap_or_else(initial_job_state);
         advance_job_state(&mut job_state, payload.checkpoint.stage)?;
         remember_completed_unit(&mut job_state, &payload.checkpoint);
@@ -318,12 +345,65 @@ impl JobStore {
                         "options_changed".into()
                     }
                 }),
+                secret: false,
             });
         }
+        drop(statement);
+        drop(connection);
+        let secret = self.secret.lock().unwrap_or_else(|p| p.into_inner());
+        for (id, value) in secret.iter() {
+            let source_matches = source_fingerprint(Path::new(&value.context.source_path))
+                .as_deref()
+                == Some(value.context.source_fingerprint.as_str());
+            let option_matches = value.context.option_snapshot.hash().ok().as_deref()
+                == Some(value.context.option_hash.as_str());
+            let can_resume = source_matches && option_matches;
+            jobs.push(RecoverableJob {
+                record_id: id.clone(),
+                display_name: value.context.display_name.clone(),
+                kind: "document".into(),
+                stage: format!("{:?}", value.payload.job_state.stage).to_ascii_lowercase(),
+                completed: value.payload.checkpoint.completed,
+                total: value.payload.checkpoint.total,
+                created_at: value.created_at.clone(),
+                can_resume,
+                disabled_reason: (!can_resume).then(|| {
+                    if !source_matches {
+                        "source_changed".into()
+                    } else {
+                        "options_changed".into()
+                    }
+                }),
+                secret: true,
+            });
+        }
+        jobs.sort_by(|a, b| b.created_at.cmp(&a.created_at));
         Ok(jobs)
     }
 
     pub fn prepare_document(&self, record_id: &str) -> Result<PreparedDocumentRecovery, JobError> {
+        if !valid_id(record_id) {
+            return Err(JobError::Invalid);
+        }
+        if let Some(value) = self
+            .secret
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(record_id)
+        {
+            if source_fingerprint(Path::new(&value.context.source_path)).as_deref()
+                != Some(value.context.source_fingerprint.as_str())
+                || value.context.option_snapshot.hash()? != value.context.option_hash
+            {
+                return Err(JobError::ResumeMismatch);
+            }
+            return Ok(PreparedDocumentRecovery {
+                record_id: record_id.to_owned(),
+                source_path: value.context.source_path.clone(),
+                options: value.context.options.clone(),
+                option_hash: value.context.option_hash.clone(),
+            });
+        }
         let (fingerprint, option_hash, metadata) = self.read_metadata(record_id)?;
         if source_fingerprint(Path::new(&metadata.source_path)).as_deref()
             != Some(fingerprint.as_str())
@@ -345,6 +425,34 @@ impl JobStore {
         source_path: &str,
         option_hash: &str,
     ) -> Result<DocumentRetentionPayload, JobError> {
+        if !valid_id(record_id) {
+            return Err(JobError::Invalid);
+        }
+        {
+            let mut secret = self.secret.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(value) = secret.get_mut(record_id) {
+                if value.context.source_path != source_path
+                    || value.context.option_hash != option_hash
+                    || value.context.option_snapshot.hash()? != value.context.option_hash
+                    || source_fingerprint(Path::new(source_path)).as_deref()
+                        != Some(value.context.source_fingerprint.as_str())
+                {
+                    return Err(JobError::ResumeMismatch);
+                }
+                if value.payload.job_state.stage == JobStage::Paused {
+                    let resume_stage = value
+                        .payload
+                        .job_state
+                        .previous_active_stage
+                        .ok_or(JobError::InvalidTransition)?;
+                    value.payload.job_state.transition(resume_stage)?;
+                }
+                return Ok(DocumentRetentionPayload {
+                    checkpoint: value.payload.checkpoint.clone(),
+                    translated_results: value.payload.translated_results.clone(),
+                });
+            }
+        }
         let (fingerprint, stored_hash, metadata) = self.read_metadata(record_id)?;
         if metadata.source_path != source_path
             || stored_hash != option_hash
@@ -360,12 +468,84 @@ impl JobStore {
             |row| row.get(0),
         )?;
         drop(connection);
-        let payload: DocumentRecoveryPayload =
+        let mut payload: DocumentRecoveryPayload =
             self.crypto.open_json(&blob, &aad(record_id, "payload"))?;
+        if payload.job_state.stage == JobStage::Paused {
+            let resume_stage = payload
+                .job_state
+                .previous_active_stage
+                .ok_or(JobError::InvalidTransition)?;
+            payload.job_state.transition(resume_stage)?;
+            let resumed_blob = self
+                .crypto
+                .seal_json(&payload, &aad(record_id, "payload"))?;
+            self.database
+                .0
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .execute(
+                    "UPDATE recovery_jobs SET stage=?1,payload_blob=?2 WHERE id=?3",
+                    params![
+                        format!("{:?}", resume_stage).to_ascii_lowercase(),
+                        resumed_blob,
+                        record_id
+                    ],
+                )?;
+        }
         Ok(DocumentRetentionPayload {
-            checkpoint: payload.checkpoint,
-            translated_results: payload.translated_results,
+            checkpoint: payload.checkpoint.clone(),
+            translated_results: std::mem::take(&mut payload.translated_results),
         })
+    }
+
+    pub fn transition_terminal(&self, record_id: &str, next: JobStage) -> Result<bool, JobError> {
+        if !valid_id(record_id)
+            || !matches!(
+                next,
+                JobStage::Paused | JobStage::Cancelled | JobStage::Failed | JobStage::Completed
+            )
+        {
+            return Err(JobError::Invalid);
+        }
+        if let Some(value) = self
+            .secret
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get_mut(record_id)
+        {
+            if value.payload.job_state.stage != next {
+                value.payload.job_state.transition(next)?;
+            }
+            return Ok(true);
+        }
+        let mut connection = self.database.0.lock().unwrap_or_else(|p| p.into_inner());
+        let blob = connection
+            .query_row(
+                "SELECT payload_blob FROM recovery_jobs WHERE id=?1",
+                [record_id],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .optional()?;
+        let Some(blob) = blob else { return Ok(false) };
+        let mut payload: DocumentRecoveryPayload =
+            self.crypto.open_json(&blob, &aad(record_id, "payload"))?;
+        if payload.job_state.stage != next {
+            payload.job_state.transition(next)?;
+        }
+        let payload_blob = self
+            .crypto
+            .seal_json(&payload, &aad(record_id, "payload"))?;
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "UPDATE recovery_jobs SET stage=?1,payload_blob=?2 WHERE id=?3",
+            params![
+                format!("{:?}", next).to_ascii_lowercase(),
+                payload_blob,
+                record_id
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(true)
     }
 
     pub fn delete(&self, record_id: &str) -> Result<bool, JobError> {
@@ -387,6 +567,14 @@ impl JobStore {
             > 0
             || removed_secret)
     }
+
+    pub fn clear_secret(&self) {
+        self.secret
+            .lock()
+            .unwrap_or_else(|value| value.into_inner())
+            .clear();
+    }
+
     pub fn purge_expired(&self) -> Result<u64, JobError> {
         Ok(self
             .database

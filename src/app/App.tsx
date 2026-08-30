@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { AccountPanel } from '../features/account/AccountPanel';
 import { SettingsView, type Theme } from '../features/settings/SettingsView';
@@ -10,21 +11,34 @@ import { RecoveryPrompt } from '../features/history/RecoveryPrompt';
 import type { PreparedDocumentRecovery } from '../features/history/historyApi';
 
 export type AppLocale = 'ko' | 'en';
+type PrivacyStatus = { cleanupPending: boolean; retentionPending: boolean };
 
 export function App({ locale }: { locale?: AppLocale }) {
   const [savedLocale, setSavedLocale] = useState<AppLocale>('ko');
   const [savedTheme, setSavedTheme] = useState<Theme>('system');
   const [activeView, setActiveView] = useState<'translate' | 'capture' | 'documents' | 'history' | 'settings'>('translate');
-  const [recovery,setRecovery]=useState<PreparedDocumentRecovery>();
+  const [recovery, setRecovery] = useState<PreparedDocumentRecovery>();
+  const [privacyStatus, setPrivacyStatus] = useState<PrivacyStatus>();
   const [translationActive, setTranslationActive] = useState(false);
   const accountLocale = locale ?? savedLocale;
   useEffect(() => {
     let disposed = false;
-    let stop: (() => void) | undefined;
+    let stopSettings: (() => void) | undefined;
+    let stopPrivacy: (() => void) | undefined;
     void listen('open-settings', () => setActiveView('settings')).then((unlisten) => {
-      if (disposed) unlisten(); else stop = unlisten;
+      if (disposed) unlisten();
+      else stopSettings = unlisten;
     });
-    return () => { disposed = true; stop?.(); };
+    void invoke<PrivacyStatus>('get_privacy_status').then(setPrivacyStatus).catch(() => undefined);
+    void listen<PrivacyStatus>('privacy-status', (event) => setPrivacyStatus(event.payload)).then((unlisten) => {
+      if (disposed) unlisten();
+      else stopPrivacy = unlisten;
+    });
+    return () => {
+      disposed = true;
+      stopSettings?.();
+      stopPrivacy?.();
+    };
   }, []);
   const acceptPreferences = useCallback((loadedLocale: AppLocale, loadedTheme: Theme) => {
     if (locale === undefined) setSavedLocale(loadedLocale);
@@ -40,7 +54,24 @@ export function App({ locale }: { locale?: AppLocale }) {
         <h1>SmartCAT Translate</h1>
       </header>
       <AccountPanel locale={accountLocale} />
-      <RecoveryPrompt locale={accountLocale} onContinue={(value)=>{setRecovery(value);setActiveView('documents');}}/>
+      {(privacyStatus?.cleanupPending || privacyStatus?.retentionPending) && (
+        <aside className="privacy-warning" role="alert">
+          {privacyStatus.cleanupPending
+            ? accountLocale === 'ko'
+              ? '임시 파일 정리가 보류되었습니다. 앱이 시작될 때 안전하게 다시 시도합니다.'
+              : 'Temporary-file cleanup is pending and will be retried safely at startup.'
+            : accountLocale === 'ko'
+              ? '기록 보관 설정을 확인하는 중입니다. 확인 전에는 기록을 자동 삭제하지 않습니다.'
+              : 'History retention is being verified. No history is automatically deleted until then.'}
+        </aside>
+      )}
+      <RecoveryPrompt
+        locale={accountLocale}
+        onContinue={(value) => {
+          setRecovery(value);
+          setActiveView('documents');
+        }}
+      />
       <nav className="app-navigation" role="tablist" aria-label={labels.navigation} aria-busy={translationActive}>
         <button id="app-tab-translate" type="button" role="tab" aria-selected={activeView === 'translate'} aria-controls="app-panel-translate" onClick={() => setActiveView('translate')}>{labels.translate}</button>
         <button id="app-tab-capture" type="button" role="tab" aria-selected={activeView === 'capture'} aria-controls="app-panel-capture" onClick={() => setActiveView('capture')}>{labels.capture}</button>

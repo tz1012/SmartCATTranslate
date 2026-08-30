@@ -33,11 +33,12 @@ impl KeyStore for OsKeyStore {
                         .decode(encoded.as_bytes())
                         .map_err(|_| KeyStoreError::InvalidKey)?,
                 );
-                let key: [u8; 32] = decoded
-                    .as_slice()
-                    .try_into()
-                    .map_err(|_| KeyStoreError::InvalidKey)?;
-                Ok(Zeroizing::new(key))
+                if decoded.len() != 32 {
+                    return Err(KeyStoreError::InvalidKey);
+                }
+                let mut key = Zeroizing::new([0_u8; 32]);
+                key.copy_from_slice(decoded.as_slice());
+                Ok(key)
             }
             Err(keyring::Error::NoEntry) => {
                 let mut key = Zeroizing::new([0_u8; 32]);
@@ -56,14 +57,16 @@ impl KeyStore for OsKeyStore {
 pub struct MemoryKeyStore(Mutex<Zeroizing<[u8; 32]>>);
 
 impl MemoryKeyStore {
-    pub fn new(key: [u8; 32]) -> Self {
-        Self(Mutex::new(Zeroizing::new(key)))
+    pub fn new(key: Zeroizing<[u8; 32]>) -> Self {
+        Self(Mutex::new(key))
     }
 }
 
 impl KeyStore for MemoryKeyStore {
     fn load_or_create(&self) -> Result<Zeroizing<[u8; 32]>, KeyStoreError> {
         let key = self.0.lock().unwrap_or_else(|p| p.into_inner());
-        Ok(Zeroizing::new(**key))
+        let mut owned = Zeroizing::new([0_u8; 32]);
+        owned.copy_from_slice(key.as_ref());
+        Ok(owned)
     }
 }

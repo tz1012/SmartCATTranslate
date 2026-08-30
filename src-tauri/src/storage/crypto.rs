@@ -30,12 +30,6 @@ pub struct CryptoBox {
 }
 
 impl CryptoBox {
-    pub fn from_key(key: [u8; 32]) -> Self {
-        Self {
-            key: Zeroizing::new(key),
-        }
-    }
-
     pub fn from_zeroizing(key: Zeroizing<[u8; 32]>) -> Self {
         Self { key }
     }

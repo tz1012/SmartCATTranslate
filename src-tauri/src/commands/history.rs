@@ -1,12 +1,20 @@
 use crate::{
     commands::settings::open_store,
     storage::{
-        HistoryPage, HistoryPolicy, HistoryStore, JobStore, NewHistoryRecord,
+        CleanupService, HistoryPage, HistoryPolicy, HistoryStore, JobStore, NewHistoryRecord,
         PreparedDocumentRecovery, RecoverableJob,
     },
 };
+use serde::Serialize;
 use std::sync::Arc;
-use tauri::Manager;
+use tauri::{Emitter, Manager, Runtime};
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrivacyStatus {
+    pub cleanup_pending: bool,
+    pub retention_pending: bool,
+}
 
 #[tauri::command]
 pub fn save_history_record(
@@ -64,10 +72,35 @@ pub async fn get_history_policy(app: tauri::AppHandle) -> Result<HistoryPolicy, 
         .load()
         .await
         .map_err(|e| e.code().to_owned())?;
+    if let Some(history) = app.try_state::<Arc<HistoryStore>>() {
+        history
+            .configure_retention(settings.history_retention_days)
+            .map_err(|_| "history_retention_invalid".to_owned())?;
+    }
     Ok(HistoryPolicy {
         enabled: true,
         retention_days: settings.history_retention_days,
     })
+}
+
+#[tauri::command]
+pub fn get_privacy_status(app: tauri::AppHandle) -> PrivacyStatus {
+    privacy_status(&app)
+}
+
+pub(crate) fn emit_privacy_status<R: Runtime>(app: &tauri::AppHandle<R>) {
+    let _ = app.emit("privacy-status", privacy_status(app));
+}
+
+fn privacy_status<R: Runtime>(app: &tauri::AppHandle<R>) -> PrivacyStatus {
+    PrivacyStatus {
+        cleanup_pending: app
+            .try_state::<CleanupService>()
+            .is_some_and(|cleanup| cleanup.has_pending()),
+        retention_pending: app
+            .try_state::<Arc<HistoryStore>>()
+            .is_none_or(|history| !history.retention_configured()),
+    }
 }
 #[tauri::command]
 pub async fn purge_history(app: tauri::AppHandle) -> Result<u64, String> {

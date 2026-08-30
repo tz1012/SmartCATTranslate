@@ -363,4 +363,6 @@ main[data-theme="dark"] .document-progress { color: #dce8f5; background: #223149
 .history-view textarea { min-height:6rem; }
 .recovery-prompt { margin:.8rem;padding:.9rem;border:1px solid #d59b31;border-radius:.75rem;background:#fff9e7; }
 .recovery-prompt h2 { margin-top:0; }
+.privacy-warning { margin:.8rem;padding:.8rem .9rem;border:1px solid #d59b31;border-radius:.75rem;background:#fff9e7; }
 main[data-theme="dark"] :is(.history-view li,.secret-mode-switch,.recovery-prompt) { color:#e7edf5;background:#182233;border-color:#344258; }
+main[data-theme="dark"] .privacy-warning { color:#e7edf5;background:#182233;border-color:#d59b31; }
