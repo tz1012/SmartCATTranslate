@@ -46,7 +46,7 @@ Initial Tasks 5–7 milestone: `113aad9 feat: add consent-based signed release p
 - Added an exact existing `refs/tags/app-vSEMVER` resolver that rejects branch/SHA dispatch inputs and proves tag, `package.json`, Cargo, and Tauri versions match before any protected Environment secret is accessible. Every package/publish checkout uses the verified commit SHA.
 - Removed setup-time LKG marking. Install now writes versioned pending state; a one-shot frontend hydration/main-window-ready handshake marks LKG only for the target version and clears pending/rollback. Recovery is offered only when the previous version remains active for a newer valid pending target. Restart authorization is backend-issued, bound to version/install token, short-lived, and consumed once by install.
 - Protected secret checks and use are platform-scoped. Each package leg signs a disposable canary with the updater private key and verifies it against the configured public key through maintained `minisign-verify`; temporary canary material is deleted and never uploaded.
-- Signed release legs now execute platform acceptance before artifact upload/publish: Windows requires Authenticode `Valid`, silent MSI install to a disposable root, isolated hydrated readiness, uninstall, and an unchanged Documents snapshot; macOS requires preserved app copy, strict codesign, Gatekeeper, app/DMG staple validation, and isolated hydrated readiness. Local default scripts do not install or launch.
+- Signed release legs now execute platform acceptance before artifact upload/publish: Windows requires Authenticode `Valid`, silent MSI install, real Credential Manager/default app data, stable main-window startup, uninstall, exact app-data cleanup, and an unchanged Documents snapshot; macOS requires preserved app copy, strict codesign, Gatekeeper, app/DMG staple validation, real Keychain/default app data, and stable startup. Actual mode requires both GitHub Actions markers; local default scripts do not install or launch.
 - macOS app directories are preserved with `ditto` and updater tar/signature plus DMG are uploaded. Production npm/Cargo SBOM components include license expressions; actual discovered license/notice texts and an inventory are bundled, and unreviewed missing metadata/text fails release.
 - The user-directed speed ruling overrides the plan's request for new negative/E2E tests. None were added or run; that reduced proof depth is explicitly retained as a verification gap.
 
@@ -69,3 +69,27 @@ Initial Tasks 5–7 milestone: `113aad9 feat: add consent-based signed release p
 - Per the latest user ruling, no new negative updater/recovery tests, new E2E tests, failure injection, Playwright, or full regression suite was added or run. Existing tests remain intact; missing new plan tests remain a ledger verification gap.
 
 Fix-round commit: the commit containing this report (`fix: harden release publication gates`).
+
+## Publication fix round 2
+
+- Windows update metadata now selects only Tauri v2 signed updater archives with adjacent signatures: `.nsis.zip` is preferred and `.msi.zip` is the documented fallback. Raw `.exe`/`.msi` feed entries are forbidden. This follows the [official Tauri v2 updater artifact documentation](https://v2.tauri.app/plugin/updater/).
+- Removed every production acceptance switch, fixed encryption key, app-data override, and ready-marker path. The signed binary always opens the operating system credential store and default per-user app-data directory. Actual acceptance is allowed only when both `CI=true` and `GITHUB_ACTIONS=true`; local mode only extracts/copies. The disposable GitHub runner exercises real Credential Manager/Keychain failure-closed startup, then removes only the exact SmartCAT app-data directory.
+- Replaced the single animation-frame LKG signal with successful lifecycle, account, settings, privacy, history and recovery loads followed by a 1.5-second stability interval. Transient frontend/backend failures retry and leave pending state untouched. Backend `healthy_marked` is set only on successful command paths after LKG write and pending/rollback clear succeed.
+- Normalized the five legacy slash expressions to `MIT OR Apache-2.0`. Every dependency/asset expression is parsed by maintained `spdx-expression-parse`; generated npm/Cargo BOM JSON is validated against CycloneDX 1.6 through the official OWASP CycloneDX JavaScript library before it is written.
+- `latest.json` is created inside `release-assets` before the SHA-256 inventory. The inventory includes the manifest and intentionally excludes only itself, feeds build provenance attestation, and the same files are uploaded. Workflow policy parses both YAML files and directly validates these script semantics/order while rejecting a raw Windows executable feed or production acceptance backdoor.
+
+### Round-2 verification evidence
+
+- Rust formatting: PASS. Warm shared-cache `cargo check --locked --manifest-path src-tauri/Cargo.toml --lib`: PASS in 30.56 seconds, within the 120-second ceiling, with zero diagnostics.
+- `pnpm build`: PASS, 64 modules, 1.19 seconds.
+- `pnpm release:workflow:check`: PASS. Both workflow YAML documents parsed; direct semantic checks confirmed signed updater ZIP patterns/adjacent signatures and NSIS preference, rejected raw Windows feed patterns, enforced manifest/checksum/attestation/upload order and non-self checksum, required GitHub Actions acceptance guards, rejected production acceptance bypasses, and required the six LKG probes/stability plus SPDX/CycloneDX validators.
+- SPDX/license evidence: PASS — Windows 435 components, macOS Intel 434, macOS ARM 434. Legacy slash-list metadata is normalized to `OR` only when every token has SPDX-ID syntax, then every result is parsed; other invalid expressions fail. npm and all three target Cargo SBOMs passed official CycloneDX 1.6 structural validation.
+- Runtime/Codex/font checksum and PDFium non-bundling: PASS. PowerShell acceptance parse, Bash syntax, and release Node script syntax: PASS.
+- Records: PASS, 16/16; privacy: PASS, 5 files; records check: PASS; `git diff --check`: PASS. Static search found no production/test acceptance environment switch, fixed key, or ready-marker path.
+
+### Round-2 external blockers
+
+- No remote, release tag, protected updater/Windows/Apple secrets, or signed Tauri v2 updater archives exist locally. Actual updater ZIP selection/signature, real Credential Manager/Keychain acceptance, Windows install/uninstall, macOS notarization/stapling, manifest attestation, draft release, and publication remain unverified and fail-closed CI requirements.
+- No new failure, negative updater/LKG, E2E, Playwright, or full regression tests were added or run per the latest user instruction. Existing tests remain unchanged; the missing new tests remain a ledger verification gap.
+
+Round-2 commit: the commit containing this report (`fix: close updater and acceptance publication gaps`).

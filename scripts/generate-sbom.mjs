@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
+import { validateCycloneDx16, validateSpdxExpression } from './license-policy.mjs';
 
 const ecosystem = arg('--ecosystem');
 const output = resolve(arg('--output'));
@@ -16,12 +17,13 @@ if (ecosystem === 'npm') {
 components = [...new Map(components.map((value) => [`${value.name}@${value.version}`, value])).values()].sort((a,b) => `${a.name}@${a.version}`.localeCompare(`${b.name}@${b.version}`));
 if (components.length < 2) throw new Error('sbom_components_insufficient');
 await mkdir(dirname(output), { recursive: true });
-await writeFile(output, `${JSON.stringify({ bomFormat:'CycloneDX', specVersion:'1.6', version:1, metadata:{component:{type:'application',name:'SmartCAT Translate'}}, components }, null, 2)}\n`);
+const jsonText = `${JSON.stringify({ $schema:'http://cyclonedx.org/schema/bom-1.6.schema.json', bomFormat:'CycloneDX', specVersion:'1.6', version:1, metadata:{component:{type:'application',name:'SmartCAT Translate'}}, components }, null, 2)}\n`;
+await validateCycloneDx16(jsonText);
+await writeFile(output, jsonText);
 
 function component(kind, name, version, expression) {
   const exception = exceptions[`${kind}:${name}@${version}`];
-  const license = expression?.trim() || exception?.license?.trim();
-  if (!license) throw new Error(`sbom_license_missing:${kind}:${name}@${version}`);
+  const license = validateSpdxExpression(exception?.license || expression, `${kind}:${name}@${version}`);
   return { type:'library', name, version, purl:`pkg:${kind}/${encodeURIComponent(name)}@${encodeURIComponent(version)}`, licenses:[{ expression:license }] };
 }
 function rustTarget() { return process.env.RELEASE_TARGET || (process.platform === 'win32' ? 'x86_64-pc-windows-msvc' : process.arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin'); }

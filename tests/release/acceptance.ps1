@@ -3,7 +3,7 @@ $ErrorActionPreference = 'Stop'
 if (-not $IsWindows) { throw 'Windows acceptance must run on Windows.' }
 $msi = (Resolve-Path -LiteralPath $MsiPath).Path
 if ([IO.Path]::GetExtension($msi) -ne '.msi') { throw 'Acceptance requires an MSI artifact.' }
-if ($CiEphemeral -and $env:CI -ne 'true') { throw '-CiEphemeral is allowed only when CI=true.' }
+if ($CiEphemeral -and ($env:CI -ne 'true' -or $env:GITHUB_ACTIONS -ne 'true')) { throw '-CiEphemeral is allowed only on a GitHub Actions ephemeral runner.' }
 $root = Join-Path ([IO.Path]::GetTempPath()) ('smartcat-release-acceptance-' + [guid]::NewGuid())
 $install = Join-Path $root 'app'; $data = Join-Path $root 'test-data'
 New-Item -ItemType Directory -Path $install,$data -Force | Out-Null
@@ -17,7 +17,6 @@ function Assert-Signed([string]$Path) {
   if ($signature.Status -ne 'Valid') { throw "Authenticode validation failed for ${Path}: $($signature.Status)" }
 }
 $before = Get-DocumentsSnapshot
-Assert-Signed $msi
 $installed = $false; $app = $null
 try {
   if (-not $CiEphemeral) {
@@ -25,28 +24,39 @@ try {
     if ($process.ExitCode -ne 0) { throw "MSI administrative extraction failed: $($process.ExitCode)" }
     $exe = Get-ChildItem -LiteralPath $install -Recurse -File -Filter '*.exe' | Where-Object Name -NotMatch 'uninstall|setup' | Select-Object -First 1
     if (-not $exe) { throw 'Extracted application executable was not found.' }
-    Assert-Signed $exe.FullName
-    Write-Output "Dry acceptance passed. Administrative extraction retained at $root; no app was installed or launched."
+    $msiStatus = (Get-AuthenticodeSignature -LiteralPath $msi).Status
+    $exeStatus = (Get-AuthenticodeSignature -LiteralPath $exe.FullName).Status
+    Write-Output "Dry acceptance passed. Administrative extraction retained at $root; no app was installed or launched. Signature status: MSI=$msiStatus app=$exeStatus."
   } else {
+    Assert-Signed $msi
+    $appData = Join-Path $env:LOCALAPPDATA 'com.smartcat.translate'
+    if (Test-Path -LiteralPath $appData) { throw 'GitHub runner app-data path was not clean before acceptance.' }
     $process = Start-Process msiexec.exe -ArgumentList @('/i', $msi, '/qn', "INSTALLDIR=$install", '/norestart', '/l*v', (Join-Path $root 'install.log')) -Wait -PassThru -WindowStyle Hidden
     if ($process.ExitCode -ne 0) { throw "MSI installation failed: $($process.ExitCode)" }
     $installed = $true
     $exe = Get-ChildItem -LiteralPath $install -Recurse -File -Filter '*.exe' | Where-Object Name -NotMatch 'uninstall|setup' | Select-Object -First 1
     if (-not $exe) { throw 'Installed application executable was not found in the disposable root.' }
     Assert-Signed $exe.FullName
-    $env:SMARTCAT_ACCEPTANCE_MODE = '1'; $env:SMARTCAT_ACCEPTANCE_ROOT = $data
     $app = Start-Process -FilePath $exe.FullName -PassThru -WindowStyle Hidden
-    $ready = Join-Path $data 'app-ready.json'; $deadline = [DateTime]::UtcNow.AddSeconds(25)
-    while (-not (Test-Path -LiteralPath $ready) -and [DateTime]::UtcNow -lt $deadline -and -not $app.HasExited) { Start-Sleep -Milliseconds 250 }
-    if (-not (Test-Path -LiteralPath $ready)) { throw 'App did not reach hydrated main-window readiness in time.' }
+    $deadline = [DateTime]::UtcNow.AddSeconds(30)
+    do { Start-Sleep -Milliseconds 250; $app.Refresh() } while (-not $app.HasExited -and $app.MainWindowHandle -eq 0 -and [DateTime]::UtcNow -lt $deadline)
+    if ($app.HasExited -or $app.MainWindowHandle -eq 0) { throw 'App failed to open its main window through the real Credential Manager/default app-data path.' }
+    $stableUntil = [DateTime]::UtcNow.AddSeconds(10)
+    while ([DateTime]::UtcNow -lt $stableUntil) { Start-Sleep -Milliseconds 250; $app.Refresh(); if ($app.HasExited) { throw 'App exited during the secure-store readiness interval.' } }
     if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force }
-    Write-Output 'CI ephemeral install, launch-ready, and signature assertions passed; cleanup will uninstall and verify Documents.'
+    Write-Output 'CI ephemeral install, main-window stability, real Credential Manager, default app-data, and signature assertions passed.'
   }
 } finally {
   if ($app -and -not $app.HasExited) { Stop-Process -Id $app.Id -Force }
   if ($installed) {
     $uninstall = Start-Process msiexec.exe -ArgumentList @('/x', $msi, '/qn', '/norestart', '/l*v', (Join-Path $root 'uninstall.log')) -Wait -PassThru -WindowStyle Hidden
     if ($uninstall.ExitCode -ne 0) { throw "MSI uninstall failed: $($uninstall.ExitCode)" }
+  }
+  if ($CiEphemeral -and $appData -and (Test-Path -LiteralPath $appData)) {
+    $expected = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'com.smartcat.translate'))
+    $resolvedData = [IO.Path]::GetFullPath($appData)
+    if ($resolvedData -ne $expected) { throw 'Refusing cleanup outside exact SmartCAT app-data path.' }
+    Remove-Item -LiteralPath $resolvedData -Recurse -Force
   }
   if (Compare-Object $before (Get-DocumentsSnapshot)) { throw 'User Documents changed during acceptance.' }
   if ($CiEphemeral -and (Test-Path -LiteralPath $root)) {

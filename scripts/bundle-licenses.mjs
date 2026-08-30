@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { cp, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
+import { validateSpdxExpression } from './license-policy.mjs';
 
 const output = resolve(process.argv.slice(2).find((value) => value !== '--') ?? 'artifacts/licenses');
 const exceptions = JSON.parse(await readFile('scripts/release-license-exceptions.json', 'utf8'));
@@ -24,8 +25,8 @@ for (const pkg of cargo.packages.filter((value) => !cargo.workspace_members.incl
 await cp('tests/fixtures/fonts/LICENSE.txt', join(output, 'NotoSans-LICENSE.txt'));
 const runtime = JSON.parse(await readFile('src-tauri/resources/codex-runtime.json', 'utf8'));
 for (const name of ['LICENSE', 'NOTICE']) await cp(join('src-tauri/resources', name), join(output, `CODEX-RUNTIME-${name}.txt`));
-inventory.push({ ecosystem: 'asset', name: 'Noto Sans', version: 'pinned-checksum', license: 'OFL-1.1', files: ['NotoSans-LICENSE.txt'] });
-inventory.push({ ecosystem: 'asset', name: 'Codex runtime', version: runtime.version, license: runtime.license, files: ['CODEX-RUNTIME-LICENSE.txt', 'CODEX-RUNTIME-NOTICE.txt'] });
+inventory.push({ ecosystem: 'asset', name: 'Noto Sans', version: 'pinned-checksum', license: validateSpdxExpression('OFL-1.1', 'asset:Noto Sans'), files: ['NotoSans-LICENSE.txt'] });
+inventory.push({ ecosystem: 'asset', name: 'Codex runtime', version: runtime.version, license: validateSpdxExpression(runtime.license?.spdx, 'asset:Codex runtime'), files: ['CODEX-RUNTIME-LICENSE.txt', 'CODEX-RUNTIME-NOTICE.txt'] });
 if (missing.length) throw new Error(`license_evidence_missing:\n${missing.join('\n')}`);
 inventory.sort((a, b) => `${a.ecosystem}:${a.name}@${a.version}`.localeCompare(`${b.ecosystem}:${b.name}@${b.version}`));
 await writeFile(join(output, 'license-inventory.json'), `${JSON.stringify(inventory, null, 2)}\n`);
@@ -36,6 +37,7 @@ async function collect(ecosystem, name, version, expression, packageRoot, explic
   const key = `${ecosystem}:${name}@${version}`;
   const exception = exceptions[key];
   if ((!expression || !String(expression).trim()) && !validException(exception)) { missing.push(`metadata:${key}`); return; }
+  const license = validateSpdxExpression(exception?.license || expression, key);
   const candidates = [];
   if (explicitFile) candidates.push(resolve(packageRoot, explicitFile));
   for (const entry of await readdir(packageRoot, { withFileTypes: true })) {
@@ -50,7 +52,7 @@ async function collect(ecosystem, name, version, expression, packageRoot, explic
     const target = join(directory, safe(basename(source)));
     await cp(source, target); files.push(target.slice(output.length + 1).replaceAll('\\', '/'));
   }
-  inventory.push({ ecosystem, name, version, license: expression || exception.license, files, exception: exception ?? undefined });
+  inventory.push({ ecosystem, name, version, license, files, exception: exception ?? undefined });
 }
 function validException(value) { return Boolean(value && typeof value.reason === 'string' && value.reason.trim() && typeof value.license === 'string' && value.license.trim()); }
 function safe(value) { return value.replace(/[^A-Za-z0-9._@-]+/g, '_'); }

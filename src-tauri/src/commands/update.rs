@@ -319,7 +319,7 @@ pub fn get_update_recovery_instructions(
         .map_err(|_| "rollback_record_invalid".to_owned())?;
     let current = app.package_info().version.clone();
     if target <= from || (current != from && current != target) {
-        clear_pending_records(&root);
+        clear_pending_records(&root)?;
         return Ok(None);
     }
     if current == target {
@@ -351,22 +351,25 @@ pub fn open_previous_installer(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 pub fn mark_app_healthy(app: AppHandle, state: State<'_, UpdateState>) -> Result<bool, String> {
-    if state.healthy_marked.swap(true, Ordering::AcqRel) {
+    if state.healthy_marked.load(Ordering::Acquire) {
         return Ok(false);
     }
-    write_acceptance_ready_marker(&app)?;
     let root = update_state_dir(&app)?;
     let pending_path = root.join("pending-update.json");
     let pending: PendingUpdate = match std::fs::read(&pending_path) {
         Ok(bytes) => {
             serde_json::from_slice(&bytes).map_err(|_| "rollback_record_invalid".to_owned())?
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            state.healthy_marked.store(true, Ordering::Release);
+            return Ok(false);
+        }
         Err(_) => return Err("rollback_record_unavailable".to_owned()),
     };
     let target = semver::Version::parse(&pending.target_version)
         .map_err(|_| "rollback_record_invalid".to_owned())?;
     if app.package_info().version != target {
+        state.healthy_marked.store(true, Ordering::Release);
         return Ok(false);
     }
     std::fs::create_dir_all(&root).map_err(|_| "update_state_unavailable".to_owned())?;
@@ -375,7 +378,8 @@ pub fn mark_app_healthy(app: AppHandle, state: State<'_, UpdateState>) -> Result
         reached_main_window_at: chrono::Utc::now().to_rfc3339(),
     };
     write_private_json(root.join("last-known-good.json"), &record)?;
-    clear_pending_records(&root);
+    clear_pending_records(&root)?;
+    state.healthy_marked.store(true, Ordering::Release);
     Ok(true)
 }
 
@@ -400,34 +404,16 @@ fn write_pending_update(app: &AppHandle, target_version: &str) -> Result<(), Str
     write_private_json(root.join("rollback.json"), &record)
 }
 
-fn clear_pending_records(root: &std::path::Path) {
-    for name in ["pending-update.json", "rollback.json"] {
+fn clear_pending_records(root: &std::path::Path) -> Result<(), String> {
+    // Pending is the recovery authority and is removed last so a partial cleanup remains retryable.
+    for name in ["rollback.json", "pending-update.json"] {
         match std::fs::remove_file(root.join(name)) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => {}
+            Err(_) => return Err("update_state_unavailable".to_owned()),
         }
     }
-}
-
-fn write_acceptance_ready_marker(app: &AppHandle) -> Result<(), String> {
-    if std::env::var("CI").as_deref() != Ok("true")
-        || std::env::var("SMARTCAT_ACCEPTANCE_MODE").as_deref() != Ok("1")
-    {
-        return Ok(());
-    }
-    let root = std::env::var_os("SMARTCAT_ACCEPTANCE_ROOT")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .ok_or_else(|| "acceptance_root_invalid".to_owned())?;
-    std::fs::create_dir_all(&root).map_err(|_| "acceptance_root_invalid".to_owned())?;
-    write_private_json(
-        root.join("app-ready.json"),
-        &serde_json::json!({
-            "version": app.package_info().version.to_string(),
-            "readyAt": chrono::Utc::now().to_rfc3339(),
-        }),
-    )
+    Ok(())
 }
 
 fn update_state_dir(app: &AppHandle) -> Result<PathBuf, String> {

@@ -199,7 +199,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path artifacts/bundles -Force | Out-Null
-          Get-ChildItem "src-tauri/target/${{ matrix.target }}/release/bundle" -Recurse -File | Where-Object Extension -In '.msi','.exe','.sig' | Copy-Item -Destination artifacts/bundles
+          Get-ChildItem "src-tauri/target/${{ matrix.target }}/release/bundle" -Recurse -File | Where-Object Extension -In '.msi','.exe','.zip','.sig' | Copy-Item -Destination artifacts/bundles
       - name: Preserve macOS app directory and updater artifacts
         if: runner.os == 'macOS'
         shell: bash
@@ -233,12 +233,13 @@ jobs:
         with: { path: release-assets }
       - run: node scripts/generate-updater-manifest.mjs release-assets
         env: { RELEASE_TAG: "${{ needs.gates.outputs.release_tag }}" }
-      - run: find release-assets -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+      - name: Hash release assets after updater manifest without self-reference
+        run: find release-assets -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > release-assets/SHA256SUMS
       - uses: actions/attest-build-provenance@v3
-        with: { subject-checksums: SHA256SUMS }
+        with: { subject-checksums: release-assets/SHA256SUMS }
       - name: Create draft release only after every platform succeeds
         env: { GH_TOKEN: "${{ github.token }}", RELEASE_TAG: "${{ needs.gates.outputs.release_tag }}" }
         run: |
           gh release create "$RELEASE_TAG" --draft --title "SmartCAT Translate $RELEASE_TAG" --notes-file CHANGELOG.md
           find release-assets -type f -print0 | xargs -0 gh release upload "$RELEASE_TAG" --clobber
-          gh release upload "$RELEASE_TAG" latest.json SHA256SUMS CHANGELOG.md --clobber
+          gh release upload "$RELEASE_TAG" CHANGELOG.md --clobber

@@ -6,8 +6,13 @@ const release = await readFile('.github/workflows/release.yml', 'utf8');
 const config = JSON.parse(await readFile('src-tauri/tauri.conf.json', 'utf8'));
 const updaterConfigurator = await readFile('scripts/configure-updater.mjs', 'utf8');
 const releaseRefVerifier = await readFile('scripts/verify-release-ref.mjs', 'utf8');
+const updaterManifest = await readFile('scripts/generate-updater-manifest.mjs', 'utf8');
+const licensePolicy = await readFile('scripts/license-policy.mjs', 'utf8');
+const sbomGenerator = await readFile('scripts/generate-sbom.mjs', 'utf8');
 const windowsAcceptance = await readFile('tests/release/acceptance.ps1', 'utf8');
 const macAcceptance = await readFile('tests/release/acceptance.sh', 'utf8');
+const appSource = await readFile('src/app/App.tsx', 'utf8');
+const rustRuntime = `${await readFile('src-tauri/src/lib.rs', 'utf8')}\n${await readFile('src-tauri/src/commands/update.rs', 'utf8')}`;
 for (const [name, source] of [['ci', ci], ['release', release]]) {
   const document = parseDocument(source, { prettyErrors: true });
   if (document.errors.length) fail(`${name}_yaml_invalid:${document.errors[0].message}`);
@@ -33,6 +38,7 @@ for (const policy of [
   'tests/release/acceptance.ps1 -MsiPath $msi.FullName -CiEphemeral',
   'tests/release/acceptance.sh "$dmg" --ci-ephemeral',
   'Assert Authenticode Valid on every Windows installer',
+  "Extension -In '.msi','.exe','.zip','.sig'",
   'ditto -c -k --sequesterRsrc --keepParent',
   'pnpm release:sbom',
   'pnpm release:licenses',
@@ -51,6 +57,21 @@ const draftIndex = release.indexOf('\n  draft_release:');
 for (const gate of ['Get-AuthenticodeSignature', "Status -ne 'Valid'", 'User Documents changed']) requireText(windowsAcceptance, gate, `windows_acceptance_assertion_missing:${gate}`);
 for (const gate of ['codesign --verify --deep --strict', 'spctl --assess', 'xcrun stapler validate "$copied"', 'xcrun stapler validate "$dmg"']) requireText(macAcceptance, gate, `mac_acceptance_assertion_missing:${gate}`);
 if (draftIndex < release.lastIndexOf('acceptance.sh')) fail('draft_release_must_follow_acceptance');
+const manifestIndex = release.indexOf('node scripts/generate-updater-manifest.mjs release-assets');
+const checksumIndex = release.indexOf('> release-assets/SHA256SUMS');
+const attestationIndex = release.indexOf('subject-checksums: release-assets/SHA256SUMS');
+const uploadIndex = release.indexOf('find release-assets -type f -print0');
+if (!(manifestIndex >= 0 && manifestIndex < checksumIndex && checksumIndex < attestationIndex && attestationIndex < uploadIndex)) fail('manifest_checksum_attestation_upload_order_invalid');
+requireText(release, 'find release-assets -type f ! -name SHA256SUMS', 'checksum_self_reference_exclusion_missing');
+for (const value of ["/\\.nsis\\.zip$/", "/\\.msi\\.zip$/", "files.includes(`${file}.sig`)", "join(root,'latest.json')"]) requireText(updaterManifest, value, `updater_manifest_policy_missing:${value}`);
+if (updaterManifest.includes('.exe') || updaterManifest.includes('/\\.msi$/')) fail('raw_windows_installer_updater_feed_forbidden');
+if (updaterManifest.indexOf('/\\.nsis\\.zip$/') > updaterManifest.indexOf('/\\.msi\\.zip$/')) fail('nsis_updater_zip_must_be_preferred');
+for (const value of ["$env:CI -ne 'true'", "$env:GITHUB_ACTIONS -ne 'true'"]) requireText(windowsAcceptance, value, `windows_ephemeral_guard_missing:${value}`);
+for (const value of ['"${CI:-}" != true', '"${GITHUB_ACTIONS:-}" != true']) requireText(macAcceptance, value, `mac_ephemeral_guard_missing:${value}`);
+if (/SMARTCAT_ACCEPTANCE|\[0xA5; 32\]/.test(`${rustRuntime}\n${windowsAcceptance}\n${macAcceptance}`)) fail('production_acceptance_backdoor_forbidden');
+for (const command of ['get_lifecycle_status', 'get_account', 'get_settings', 'get_privacy_status', 'list_history', 'list_recoverable_jobs', 'await delay(1_500)', 'mark_app_healthy']) requireText(appSource, command, `healthy_gate_missing:${command}`);
+for (const value of ['spdx-expression-parse', 'JsonValidator', 'Version.v1dot6']) requireText(licensePolicy, value, `license_validator_missing:${value}`);
+requireText(sbomGenerator, 'validateCycloneDx16(jsonText)', 'cyclonedx_structural_validation_missing');
 if (config.plugins?.updater || config.bundle?.createUpdaterArtifacts) fail('local_updater_must_remain_disabled');
 requireText(updaterConfigurator, 'https://github.com/${repository}/releases/latest/download/latest.json', 'github_updater_endpoint_missing');
 requireText(updaterConfigurator, 'TAURI_UPDATER_PUBLIC_KEY', 'updater_public_key_environment_missing');

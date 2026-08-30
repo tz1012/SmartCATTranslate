@@ -5,9 +5,9 @@ $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 if (-not $OutputRoot) { $OutputRoot = Join-Path ([IO.Path]::GetTempPath()) ('smartcat-unsigned-package-' + [guid]::NewGuid()) }
 $output = [IO.Path]::GetFullPath($OutputRoot)
 New-Item -ItemType Directory -Path $output -Force | Out-Null
-$env:SMARTCAT_ACCEPTANCE_ROOT = Join-Path $output 'app-data'
-$env:LOCALAPPDATA = Join-Path $env:SMARTCAT_ACCEPTANCE_ROOT 'LocalAppData'
-$env:APPDATA = Join-Path $env:SMARTCAT_ACCEPTANCE_ROOT 'RoamingAppData'
+$disposableData = Join-Path $output 'build-data'
+$env:LOCALAPPDATA = Join-Path $disposableData 'LocalAppData'
+$env:APPDATA = Join-Path $disposableData 'RoamingAppData'
 New-Item -ItemType Directory -Path $env:LOCALAPPDATA,$env:APPDATA -Force | Out-Null
 Push-Location $repo
 try {

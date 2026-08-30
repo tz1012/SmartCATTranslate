@@ -340,7 +340,7 @@ XLSX 위치: workbook relationship으로 worksheet part와 실제 sheet name을 
 
 [D-058] 비밀 없는 다중 플랫폼 릴리스 관문
 상태: 확정
-결정: Windows x64 MSI/NSIS, macOS 13 Intel app/DMG, macOS 14 ARM app/DMG를 고정 pnpm/Rust로 각각 만들고 frontend/Rust/records/privacy/runtime asset 관문 뒤에만 tauri-action을 실행한다. Windows PFX와 Apple Developer ID/notarization 및 updater private key는 보호 Environment secret으로만 읽고 임시 cert/keychain을 제거한다. repository는 private key/certificate를 생성하거나 저장하지 않는다. 모든 leg 뒤 draft release에 checksums, npm/Cargo SBOM, bundled licenses, run/commit provenance, attestation과 updater manifest를 묶는다. PR artifact는 `UNSIGNED`로만 표시한다.
+결정: Windows x64 MSI/NSIS, macOS 15 Intel app/DMG, macOS 14 ARM app/DMG를 고정 pnpm/Rust로 각각 만들고 frontend/Rust/records/privacy/runtime asset 관문 뒤에만 tauri-action을 실행한다. Windows PFX와 Apple Developer ID/notarization 및 updater private key는 보호 Environment secret으로만 읽고 임시 cert/keychain을 제거한다. repository는 private key/certificate를 생성하거나 저장하지 않는다. 모든 leg 뒤 draft release에 checksums, npm/Cargo SBOM, bundled licenses, run/commit provenance, attestation과 updater manifest를 묶는다. PR artifact는 `UNSIGNED`로만 표시한다.
 
 [D-059] 비파괴 acceptance와 미검증 플랫폼 표기
 상태: 확정
@@ -349,3 +349,7 @@ XLSX 위치: workbook relationship으로 worksheet part와 실제 sheet name을 
 [D-060] publication fix round의 태그·LKG·플랫폼 신뢰 관문
 상태: 확정
 결정: protected environment보다 먼저 exact refs/tags app-vSEMVER와 package/Cargo/Tauri 버전을 일치시킨다. Intel runner는 macOS 15 Intel을 사용한다. pending update는 이전/대상 버전과 installer refs를 남기며 대상 버전 UI hydration/main-window ready 뒤에만 LKG로 승격한다. restart consent는 backend가 install token/version에 결합해 1회 소비한다. release package는 updater key-pair canary, Windows Authenticode Valid 또는 macOS codesign/spctl/stapler, CI-only disposable installed-app readiness, 실제 dependency license texts를 모두 통과한 뒤에만 draft publish 단계로 간다. 사용자 지시에 따라 새 negative/E2E test는 추가하지 않고 이 미작성 범위를 verification gap으로 남긴다.
+
+[D-061] updater v2 자산·실제 secure store acceptance·완전한 LKG 관문
+상태: 확정
+결정: Windows update feed는 Tauri v2가 만든 adjacent signature의 `.nsis.zip`을 우선하고 없을 때 `.msi.zip`만 사용하며 raw exe/msi를 거부한다. signed binary에는 acceptance env, app-data override, 고정 key/ready marker를 넣지 않는다. 실제 launch acceptance는 CI=true와 GITHUB_ACTIONS=true인 일회용 runner에서만 OS Credential Manager/Keychain과 기본 app data를 사용하고 실패 폐쇄를 확인한다. LKG는 lifecycle/account/settings/privacy/history/recovery load와 stable timer가 성공한 뒤 backend state write/clear가 모두 성공한 경우에만 1회 확정한다. license expressions는 maintained SPDX parser, SBOM은 official CycloneDX 1.6 validator를 통과해야 하며 release-assets의 latest manifest가 checksum·attestation·upload보다 먼저 생성된다.

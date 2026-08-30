@@ -22,10 +22,30 @@ export function App({ locale }: { locale?: AppLocale }) {
   const [translationActive, setTranslationActive] = useState(false);
   const accountLocale = locale ?? savedLocale;
   useEffect(() => {
-    const frame = window.requestAnimationFrame(() => {
-      void invoke<boolean>('mark_app_healthy').catch(() => undefined);
-    });
-    return () => window.cancelAnimationFrame(frame);
+    let disposed = false;
+    let retry: number | undefined;
+    const delay = (milliseconds: number) => new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds));
+    const verifyInitialState = async () => {
+      try {
+        await Promise.all([
+          invoke('get_lifecycle_status'),
+          invoke('get_account'),
+          invoke('get_settings'),
+          invoke('get_privacy_status'),
+          invoke('list_history', { limit: 1, cursor: null }),
+          invoke('list_recoverable_jobs'),
+        ]);
+        await delay(1_500);
+        if (!disposed) await invoke<boolean>('mark_app_healthy');
+      } catch {
+        if (!disposed) retry = window.setTimeout(() => void verifyInitialState(), 2_000);
+      }
+    };
+    void verifyInitialState();
+    return () => {
+      disposed = true;
+      if (retry !== undefined) window.clearTimeout(retry);
+    };
   }, []);
   useEffect(() => {
     let disposed = false;

@@ -921,3 +921,14 @@ TDD 및 검증
 
 검증 범위
 - 사용자 속도 지시에 따라 새 negative/E2E/failure-injection/full regression은 작성·실행하지 않았다. 해당 미작성은 ledger의 verification gap이다. 실제 signing secret, public artifacts, macOS acceptance와 publish는 protected CI 전까지 검증 전이다.
+
+[2026-08-31] Tasks 5–7 publication fix round 2 — updater ZIP·실제 secure store·SPDX/manifest identity
+
+구현
+- Windows updater feed는 Tauri v2 `.nsis.zip`과 adjacent `.sig`를 우선하고 `.msi.zip`을 fallback으로 사용한다. raw exe/msi는 manifest generator와 workflow policy가 거부한다.
+- production Rust에서 acceptance env, 고정 encryption key, app-data override와 ready marker를 제거했다. CI actual acceptance는 CI/GITHUB_ACTIONS 둘 다 true인 disposable runner에서만 OS Credential Manager/Keychain과 default app data로 실행하며 로컬은 extract/copy 뒤 실행하지 않는다.
+- App은 lifecycle/account/settings/privacy/history/recovery 초기 load가 모두 성공하고 stable timer가 지난 뒤 LKG backend command를 호출한다. 오류는 pending을 남기고 retry하며 backend atomic state는 write/clear까지 성공한 경로 끝에서만 확정한다.
+- license inventory와 npm/Cargo SBOM의 모든 expression을 maintained SPDX parser로 확인하고 official CycloneDX library의 1.6 structural validator를 통과시킨다. release-assets 내부 latest manifest를 먼저 만들고 그 manifest가 포함된 non-self checksum을 attestation과 동일 upload에 사용한다.
+
+검증 범위
+- 사용자 지시에 따라 새 failure/E2E/full regression은 추가하거나 실행하지 않는다. 실제 signed archive/OS secure-store acceptance는 protected GitHub Actions 실행 전까지 publication blocker로 남긴다.
