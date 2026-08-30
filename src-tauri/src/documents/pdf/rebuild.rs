@@ -35,6 +35,7 @@ pub fn rebuild(
     options: &DocumentOptions,
     spool: Option<&PdfRasterSpool>,
     translated_result_refs: &[String],
+    completed_batch_cursor: usize,
     cancelled: &AtomicBool,
     checkpoint: &(dyn Fn(&DocumentCheckpoint) + Sync),
 ) -> Result<Vec<DocumentWarning>, DocumentError> {
@@ -67,6 +68,7 @@ pub fn rebuild(
             page_index,
             inspection.pages.len(),
             spool,
+            completed_batch_cursor,
             translated_result_refs,
         );
         let page_part = format!("page:{}", page.number);
@@ -101,7 +103,7 @@ pub fn rebuild(
             .get(&page.number)
             .ok_or(DocumentError::OcrUnavailable)?;
         let source_raster = super::load_spooled_page(spool, relative)?;
-        let background = estimate_page_background(&source_raster, &effective_blocks);
+        let background = estimate_page_background(&source_raster, &effective_blocks, page.rotation);
         let rasterize = page.has_large_image
             || background.complex
             || matches!(page.kind, super::PdfPageKind::Scanned);
@@ -275,6 +277,7 @@ pub fn rebuild(
         inspection.pages.len(),
         inspection.pages.len(),
         spool,
+        completed_batch_cursor,
         translated_result_refs,
     );
     for page in &inspection.pages {
@@ -314,6 +317,7 @@ pub fn rebuild(
         0,
         1,
         spool,
+        completed_batch_cursor,
         translated_result_refs,
     );
     let file = OpenOptions::new()
@@ -334,6 +338,7 @@ pub fn rebuild(
         1,
         1,
         spool,
+        completed_batch_cursor,
         translated_result_refs,
     );
     let reopened = inspect(output, false)?;
@@ -491,15 +496,15 @@ struct BackgroundEstimate {
 fn estimate_page_background(
     image: &DecodedImage,
     blocks: &[super::PdfBlock],
+    rotation: i32,
 ) -> BackgroundEstimate {
     let mut samples = Vec::new();
     for block in blocks.iter().take(512) {
-        let left = (block.bounds[0].clamp(0.0, 1.0) * image.width as f32) as u32;
-        let top = (block.bounds[1].clamp(0.0, 1.0) * image.height as f32) as u32;
-        let right =
-            ((block.bounds[0] + block.bounds[2]).clamp(0.0, 1.0) * image.width as f32) as u32;
-        let bottom =
-            ((block.bounds[1] + block.bounds[3]).clamp(0.0, 1.0) * image.height as f32) as u32;
+        let display = super::page_bounds_to_display(block.bounds, rotation);
+        let left = (display[0].clamp(0.0, 1.0) * image.width as f32) as u32;
+        let top = (display[1].clamp(0.0, 1.0) * image.height as f32) as u32;
+        let right = ((display[0] + display[2]).clamp(0.0, 1.0) * image.width as f32) as u32;
+        let bottom = ((display[1] + display[3]).clamp(0.0, 1.0) * image.height as f32) as u32;
         let step_x = ((right.saturating_sub(left)) / 12).max(1);
         let step_y = ((bottom.saturating_sub(top)) / 8).max(1);
         let mut y = top;

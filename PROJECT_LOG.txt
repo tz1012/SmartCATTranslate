@@ -721,6 +721,18 @@ TDD 및 검증
 - 프런트엔드 TypeScript/Vite 프로덕션 빌드가 통과했고, D 드라이브 공유 target의 Windows `cargo check --lib`가 통과했다.
 - 실제 8×8 Windows 캡처 smoke는 첫 example 링크가 2분을 넘어 속도 우선 지시에 따라 중단했다. 실행 통과를 주장하지 않으며 화면 내용이나 경로는 저장·출력하지 않았다.
 
+[2026-08-31] 문서 번역 Tasks 7–8 리뷰 수정 4 — 실제 결과 미리보기·재개·임시파일 보존 계약
+
+구현
+- PDF 복잡 배경 표본 좌표를 page 좌표에서 renderer display 좌표로 회전 변환하고, 회전된 복잡 text page도 144DPI 판정 뒤 300DPI로 다시 렌더한다.
+- 발행된 결과 파일을 다시 읽는 위치 미리보기 명령을 추가했다. PDF는 OS renderer PNG, PPTX는 slide XML의 번역문·도형 좌표, XLSX는 인접 cell grid/value, DOCX는 part 문맥을 반환하고 화면이 해당 실제 payload를 표시·focus한다.
+- optional resume 입력이 source fingerprint와 encrypted-result resolver를 검증한 뒤 완료 batch prefix와 cursor부터 번역을 재개한다. reflow/save/validate/completed checkpoint가 완료 batch cursor와 translated refs를 유지하고 plaintext raster ref는 재사용하지 않는다.
+- PDF spool은 Tauri 사용자 app_data 아래에만 owner-only best effort로 만들고 모든 종료 경로에서 즉시 root-confined 삭제한다. Retryable failure는 one-time nonce와 sanitized checkpoint를 요청 이벤트로 보내며 matching token/job 및 opaque persistence receipt ACK만 허용한다.
+- tagged document event에 sanitized inspect manifest variant를 유지했다.
+
+검증
+- rustfmt PASS, `pnpm build` PASS(59 modules, 899ms), 단일 D shared target `cargo check --lib` PASS(전체 교정 7.14s, 마지막 증분 0.62s). 새 실패 테스트·실패 주입·전체 회귀·장시간 smoke·실제 OS PDF smoke는 실행하지 않았다.
+
 [2026-08-30] 이미지·화면 번역 Tasks 4–7 — OCR, 구조화 번역, 원위치 렌더링과 결과 저장
 
 구현

@@ -5,11 +5,19 @@ export type ChosenDocument = { sourcePath: string; manifest: DocumentManifest };
 export type DocumentWarning = { code: string; location?: string; message: string };
 export type DocumentReport = { jobId: string; format: DocumentFormat; outputPath: string; outputName: string; translatedSegments: number; warnings: DocumentWarning[]; publishable: boolean; resumedFromStage?: string };
 export type DocumentProgress = { jobId: string; stage: 'inspect' | 'extract' | 'ocr' | 'translate' | 'reflow' | 'save' | 'validate' | 'completed'; unitId?: string; completed: number; total: number };
-export type DocumentCheckpoint = { sourceFingerprint: string; stage: DocumentProgress['stage']; stableUnitId: string; completed: number; total: number; rasterRefs: string[]; translatedResultRefs: string[] };
+export type DocumentCheckpoint = { sourceFingerprint: string; stage: DocumentProgress['stage']; stableUnitId: string; completed: number; total: number; completedBatchCursor: number; rasterRefs: string[]; translatedResultRefs: string[] };
+export type TranslatedSegment = { id: string; text: string };
+export type DocumentResumeInput = { checkpoint: DocumentCheckpoint; translatedResults: Record<string, TranslatedSegment> };
+export type DocumentResultPreview =
+  | { kind: 'pdfPage'; location: string; label: string; imageDataUrl: string; width: number; height: number }
+  | { kind: 'pptxSlide'; location: string; label: string; width: number; height: number; focusTextOrdinal?: number; shapes: Array<{ id: string; name: string; text: string; x: number; y: number; width: number; height: number; textStart: number; textEnd: number }> }
+  | { kind: 'xlsxCell'; location: string; label: string; focusCell: string; columns: string[]; rows: Array<Array<{ reference: string; value: string; focused: boolean }>> }
+  | { kind: 'docxContext'; location: string; label: string; lines: Array<{ ordinal: number; text: string; focused: boolean }> };
 export type DocumentJobEvent =
   | { type: 'progress'; jobId: string; checkpoint: DocumentCheckpoint }
   | { type: 'warning'; jobId: string; warning: DocumentWarning }
   | { type: 'completed'; jobId: string; report: DocumentReport }
   | { type: 'failed'; jobId: string; code: string; location?: string }
-  | { type: 'retentionRequested'; jobId: string };
+  | { type: 'inspect'; jobId: string; manifest: DocumentManifest }
+  | { type: 'retentionRequested'; jobId: string; retentionToken: string; checkpoint: DocumentCheckpoint };
 export type DocumentProfileOption = { id: string; name: string };

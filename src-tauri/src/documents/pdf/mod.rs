@@ -36,6 +36,7 @@ pub async fn append_native_ocr(
     let engine = NativeOcrEngine::default();
     let spool = plan.pdf_spool.as_mut().ok_or(DocumentError::Io)?;
     fs::create_dir_all(spool.root.join("pages")).map_err(|_| DocumentError::Io)?;
+    set_spool_private(&spool.root.join("pages"), true);
     let total = inspection.pages.len();
     for (page_index, page) in inspection.pages.iter().enumerate() {
         if cancelled.load(Ordering::Acquire) {
@@ -49,6 +50,7 @@ pub async fn append_native_ocr(
             page_index,
             total,
             spool,
+            0,
             &[],
         );
         let image = load_or_render_page(&plan.source, page, spool).await?;
@@ -107,6 +109,7 @@ pub async fn append_native_ocr(
         total,
         total,
         spool,
+        0,
         &[],
     );
     plan.manifest.segment_count = plan.segments.len();
@@ -125,7 +128,7 @@ async fn load_or_render_page(
     let mut image = render_page(source, page.number, initial_dpi).await?;
     if initial_dpi == 144
         && matches!(page.kind, PdfPageKind::Text)
-        && rendered_background_is_complex(&image, &page.blocks)
+        && rendered_background_is_complex(&image, &page.blocks, page.rotation)
     {
         image = render_page(source, page.number, 300).await?;
     }
@@ -193,6 +196,7 @@ fn write_spooled_page(
         .write(true)
         .open(&path)
         .map_err(|_| DocumentError::Io)?;
+    set_spool_private(&path, false);
     let mut writer = BufWriter::new(file);
     PngEncoder::new(&mut writer)
         .write_image(
@@ -232,16 +236,19 @@ fn spool_size(root: &Path) -> Result<u64, DocumentError> {
     Ok(total)
 }
 
-fn rendered_background_is_complex(image: &DecodedImage, blocks: &[PdfBlock]) -> bool {
+fn rendered_background_is_complex(
+    image: &DecodedImage,
+    blocks: &[PdfBlock],
+    rotation: i32,
+) -> bool {
     let mut sampled = 0usize;
     let mut changed = 0usize;
     for block in blocks.iter().take(512) {
-        let left = (block.bounds[0].clamp(0.0, 1.0) * image.width as f32) as u32;
-        let top = (block.bounds[1].clamp(0.0, 1.0) * image.height as f32) as u32;
-        let right =
-            ((block.bounds[0] + block.bounds[2]).clamp(0.0, 1.0) * image.width as f32) as u32;
-        let bottom =
-            ((block.bounds[1] + block.bounds[3]).clamp(0.0, 1.0) * image.height as f32) as u32;
+        let display = page_bounds_to_display(block.bounds, rotation);
+        let left = (display[0].clamp(0.0, 1.0) * image.width as f32) as u32;
+        let top = (display[1].clamp(0.0, 1.0) * image.height as f32) as u32;
+        let right = ((display[0] + display[2]).clamp(0.0, 1.0) * image.width as f32) as u32;
+        let bottom = ((display[1] + display[3]).clamp(0.0, 1.0) * image.height as f32) as u32;
         let mut baseline = None;
         let step_x = ((right.saturating_sub(left)) / 8).max(1);
         let step_y = ((bottom.saturating_sub(top)) / 6).max(1);
@@ -332,6 +339,7 @@ pub fn emit_checkpoint(
     completed: usize,
     total: usize,
     spool: &PdfRasterSpool,
+    completed_batch_cursor: usize,
     translated_result_refs: &[String],
 ) {
     let mut raster_refs = spool.refs.values().cloned().collect::<Vec<_>>();
@@ -342,6 +350,7 @@ pub fn emit_checkpoint(
         stable_unit_id,
         completed,
         total,
+        completed_batch_cursor,
         raster_refs,
         translated_result_refs: translated_result_refs.to_vec(),
     });
@@ -354,6 +363,8 @@ pub async fn validate_rendered_output(
     cancelled: &AtomicBool,
     checkpoint: &(dyn Fn(&DocumentCheckpoint) + Sync),
     source_fingerprint: &str,
+    completed_batch_cursor: usize,
+    translated_result_refs: &[String],
 ) -> Result<(), DocumentError> {
     let empty_spool = PdfRasterSpool {
         root: std::path::PathBuf::new(),
@@ -378,7 +389,8 @@ pub async fn validate_rendered_output(
             index + 1,
             inspection.pages.len(),
             &empty_spool,
-            &[],
+            completed_batch_cursor,
+            translated_result_refs,
         );
     }
     Ok(())
@@ -395,6 +407,68 @@ fn intersection_over_union(a: [f32; 4], b: [f32; 4]) -> f32 {
         0.
     } else {
         overlap / union
+    }
+}
+
+#[cfg(unix)]
+fn set_spool_private(path: &Path, directory: bool) {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = if directory { 0o700 } else { 0o600 };
+    let _ = fs::set_permissions(path, fs::Permissions::from_mode(mode));
+}
+
+#[cfg(windows)]
+fn set_spool_private(path: &Path, directory: bool) {
+    use std::{ffi::OsString, os::windows::ffi::OsStrExt};
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SetNamedSecurityInfoW,
+        SDDL_REVISION_1, SE_FILE_OBJECT,
+    };
+    use windows_sys::Win32::Security::{
+        GetSecurityDescriptorDacl, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+        PSECURITY_DESCRIPTOR,
+    };
+    let text = if directory {
+        "D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+    } else {
+        "D:P(A;;FA;;;OW)(A;;FA;;;SY)(A;;FA;;;BA)"
+    };
+    let text: Vec<u16> = OsString::from(text).encode_wide().chain(Some(0)).collect();
+    let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    if unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            text.as_ptr(),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            std::ptr::null_mut(),
+        )
+    } == 0
+    {
+        return;
+    }
+    let mut present = 0;
+    let mut defaulted = 0;
+    let mut dacl = std::ptr::null_mut();
+    if unsafe { GetSecurityDescriptorDacl(descriptor, &mut present, &mut dacl, &mut defaulted) }
+        != 0
+        && present != 0
+    {
+        let mut path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let _ = unsafe {
+            SetNamedSecurityInfoW(
+                path.as_mut_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                dacl,
+                std::ptr::null_mut(),
+            )
+        };
+    }
+    unsafe {
+        LocalFree(descriptor);
     }
 }
 

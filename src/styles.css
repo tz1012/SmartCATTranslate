@@ -339,5 +339,15 @@ main[data-theme="dark"] :is(.capture-progress, .capture-warnings, .capture-block
 .document-report { display: grid; gap: .55rem; padding: .8rem; border: 1px solid #9bc9ac; border-radius: .65rem; background: #eef8f2; }
 .document-report h3 { margin: 0; }
 .document-report ul { max-height: 12rem; overflow: auto; }
+.document-result-preview { display: grid; gap: .5rem; padding: .8rem; border: 1px solid #93c5fd; border-radius: .65rem; background: #eff6ff; }
+.document-result-preview figure { margin: 0; display: grid; gap: .35rem; justify-items: center; }
+.document-result-preview img { max-width: 100%; max-height: 70vh; object-fit: contain; border: 1px solid #cbd5e1; }
+.document-slide-preview { position: relative; width: 100%; overflow: hidden; border: 1px solid #94a3b8; background: white; }
+.document-slide-preview > div { position: absolute; overflow: hidden; padding: .15rem; border: 1px solid #cbd5e1; font-size: clamp(.55rem, 1.4vw, .9rem); white-space: pre-wrap; }
+.document-slide-preview > div.focused, .document-grid-preview .focused, .document-context-preview .focused { outline: 3px solid #2563eb; outline-offset: -2px; background: #dbeafe; }
+.document-grid-preview { width: 100%; table-layout: fixed; border-collapse: collapse; }
+.document-grid-preview :is(th,td) { padding: .35rem; border: 1px solid #cbd5e1; overflow-wrap: anywhere; }
+.document-context-preview { display: grid; gap: .3rem; margin: 0; padding-left: 2rem; }
+.document-context-preview li { padding: .4rem; white-space: pre-wrap; }
 main[data-theme="dark"] :is(.document-workspace, .document-report) { color: #e7edf5; background: #182233; border-color: #344258; }
 main[data-theme="dark"] .document-progress { color: #dce8f5; background: #223149; }

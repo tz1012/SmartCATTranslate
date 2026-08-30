@@ -111,6 +111,7 @@ pub fn run() {
             commands::documents::acknowledge_document_resume_retention,
             commands::documents::open_document_result,
             commands::documents::open_document_folder,
+            commands::documents::get_document_result_preview,
             commands::documents::choose_document_output_directory,
         ])
         .build(tauri::generate_context!())

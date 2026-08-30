@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{collections::HashMap, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -72,7 +72,8 @@ pub struct Segment {
     pub text: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TranslatedSegment {
     pub id: Uuid,
     pub text: String,
@@ -144,9 +145,19 @@ pub struct DocumentCheckpoint {
     pub completed: usize,
     pub total: usize,
     #[serde(default)]
+    pub completed_batch_cursor: usize,
+    #[serde(default)]
     pub raster_refs: Vec<String>,
     #[serde(default)]
     pub translated_result_refs: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentResumeInput {
+    pub checkpoint: DocumentCheckpoint,
+    #[serde(default)]
+    pub translated_results: HashMap<String, TranslatedSegment>,
 }
 
 #[derive(Clone, Debug)]

@@ -283,3 +283,10 @@ OCR: Windows는 Windows.Data.Pdf, macOS는 PDFKit/CoreGraphics Objective-C bridg
 검증 좌표: Windows.Data.Pdf와 PDFKit bridge가 반환하는 bitmap width/height가 권위 값이다. 결과 검증은 같은 renderer로 source/output page를 72DPI 순차 렌더해 직접 비교하며 rotation에 따른 swap을 다시 추측하지 않는다. PDF box/rotation metadata는 lopdf 구조 검증으로 별도 비교한다.
 재개 보존: batch 성공 뒤 checkpoint의 stable unit/cursor와 누적 translated-result refs를 갱신하고 reflow/save/completed까지 전달한다. 암호화 저장소는 ref-to-TranslatedSegment resolver로 rehydrate한다. retryable auth/network/quota 실패의 job root는 retention request에 명시적 ACK가 있을 때만 넘기며 ACK 부재·취소·성공·secret mode는 항상 정리한다.
 화면 위치: 보고 위치가 page/slide/cell로 정확히 parse되는 형식은 결과 위치 preview selection과 focus를 바꾼다. 정확한 target이 없으면 파일 위치 이동을 주장하지 않고 보고 항목 focus만 제공한다. 결과 파일 열기는 별도 action이다.
+
+[D-046] Output-derived preview·source-rerender resume·plaintext-free retention handoff
+상태: 확정
+결과 미리보기: 보고 위치 미리보기는 UI 문자열로 만들지 않는다. backend가 발행된 output을 다시 열어 PDF page OS-render PNG, PPTX slide text/shape geometry, XLSX adjacent cell grid/value 또는 DOCX part context를 bounded sanitized payload로 반환한다. 정확히 해석할 수 없는 위치는 보고 항목 focus만 제공한다.
+재개: encrypted JobStore가 제공한 checkpoint와 ref resolver만 입력으로 받는다. source fingerprint, completed batch prefix와 post-batch marker를 검증한 뒤 completed batch cursor부터 재개하며 reflow/save/validate/completed checkpoint도 cursor를 보존한다. PDF raster ref는 복원하지 않고 원본을 다시 렌더한다.
+spool: plaintext page PNG는 Tauri per-user app_data 아래 UUID root에만 두고 directory/file ACL 또는 0700/0600을 best effort로 적용한다. ACK·성공·secret·취소·모든 실패에 관계없이 canonical app-data root의 현재 UUID child만 즉시 삭제한다.
+retention: retryable failure는 one-time nonce와 content/path 없는 전체 checkpoint를 알린다. future history JobStore는 같은 job/token의 in-process translated-ref payload를 암호화 저장한 뒤 restricted opaque receipt로 ACK한다. unmatched/replayed ACK는 거부하고 begin은 stale request/receipt를 제거한다. Token, receipt, event와 log에는 문서 내용이나 경로를 넣지 않는다.

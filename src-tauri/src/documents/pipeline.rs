@@ -139,6 +139,7 @@ pub fn rebuild_document_checked(
                     .iter()
                     .map(|value| format!("segment:{}", value.id))
                     .collect::<Vec<_>>(),
+                crate::documents::translate::batches(&plan.segments).len(),
                 cancelled,
                 checkpoint,
             )?;
@@ -181,18 +182,59 @@ pub fn rebuild_document_checked(
         return result;
     }
     let mut package = OoxmlPackage::open(&source_bytes)?;
+    let completed_batch_cursor = crate::documents::translate::batches(&plan.segments).len();
+    let translated_result_refs = translated
+        .iter()
+        .map(|value| format!("segment:{}", value.id))
+        .collect::<Vec<_>>();
+    checkpoint(&stage_checkpoint(
+        plan,
+        DocumentStage::Reflow,
+        "reflow:ooxml",
+        0,
+        1,
+        completed_batch_cursor,
+        &translated_result_refs,
+    ));
     match plan.format {
         DocumentFormat::Docx => docx::rebuild(&mut package, &plan.segments, translated)?,
         DocumentFormat::Pptx => pptx::rebuild(&mut package, &plan.segments, translated)?,
         DocumentFormat::Xlsx => xlsx::rebuild(&mut package, &plan.segments, translated)?,
         DocumentFormat::Pdf => unreachable!(),
     };
+    checkpoint(&stage_checkpoint(
+        plan,
+        DocumentStage::Reflow,
+        "reflow:completed",
+        1,
+        1,
+        completed_batch_cursor,
+        &translated_result_refs,
+    ));
     let output_bytes = package.write()?;
+    checkpoint(&stage_checkpoint(
+        plan,
+        DocumentStage::Save,
+        "save:partial",
+        0,
+        1,
+        completed_batch_cursor,
+        &translated_result_refs,
+    ));
     let reopened = OoxmlPackage::open(&output_bytes)?;
     if reopened.entries.len() != plan.manifest.part_count {
         return Err(DocumentError::ValidationFailed);
     }
     publish_atomic(&output, &output_bytes)?;
+    checkpoint(&stage_checkpoint(
+        plan,
+        DocumentStage::Save,
+        "save:synced",
+        1,
+        1,
+        completed_batch_cursor,
+        &translated_result_refs,
+    ));
     if hash_bytes(&fs::read(&plan.source).map_err(|_| DocumentError::Io)?)
         != plan.manifest.source_hash
     {
@@ -231,12 +273,44 @@ pub fn rebuild_document_checked(
     })
 }
 
+fn stage_checkpoint(
+    plan: &DocumentPlan,
+    stage: DocumentStage,
+    stable_unit_id: &str,
+    completed: usize,
+    total: usize,
+    completed_batch_cursor: usize,
+    translated_result_refs: &[String],
+) -> DocumentCheckpoint {
+    let mut raster_refs = plan
+        .pdf_spool
+        .as_ref()
+        .map(|spool| spool.refs.values().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    raster_refs.sort();
+    DocumentCheckpoint {
+        source_fingerprint: plan.manifest.source_hash.clone(),
+        stage,
+        stable_unit_id: stable_unit_id.to_owned(),
+        completed,
+        total,
+        completed_batch_cursor,
+        raster_refs,
+        translated_result_refs: translated_result_refs.to_vec(),
+    }
+}
+
 pub fn set_resume_checkpoint(
     plan: &mut DocumentPlan,
     checkpoint: &DocumentCheckpoint,
     encrypted_results: &HashMap<String, TranslatedSegment>,
 ) -> Result<DocumentResumeState, DocumentError> {
+    let all_batches = crate::documents::translate::batches(&plan.segments);
     if checkpoint.source_fingerprint != plan.manifest.source_hash
+        || checkpoint.completed_batch_cursor > all_batches.len()
+        || (checkpoint.stage == DocumentStage::Translate
+            && checkpoint.completed_batch_cursor > 0
+            && !checkpoint.stable_unit_id.ends_with(":completed"))
         || checkpoint.raster_refs.iter().any(|value| {
             let path = Path::new(value);
             path.is_absolute()
@@ -253,17 +327,8 @@ pub fn set_resume_checkpoint(
         return Err(DocumentError::InvalidPackage);
     }
     plan.resumed_from_stage = Some(format!("{:?}", checkpoint.stage).to_ascii_lowercase());
-    if let Some(spool) = plan.pdf_spool.as_mut() {
-        spool.refs = checkpoint
-            .raster_refs
-            .iter()
-            .filter_map(|relative| {
-                let stem = Path::new(relative).file_stem()?.to_str()?;
-                let page = stem.strip_prefix("page-")?.parse().ok()?;
-                Some((page, relative.clone()))
-            })
-            .collect();
-    }
+    // Raster refs point to plaintext spool files and are never reused. A resumed PDF is
+    // rendered again from the fingerprint-verified source before translations are applied.
     let translated = checkpoint
         .translated_result_refs
         .iter()
@@ -274,15 +339,20 @@ pub fn set_resume_checkpoint(
                 .ok_or(DocumentError::InvalidPackage)
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let batch_cursor = if checkpoint.stage == DocumentStage::Translate {
-        checkpoint.completed
-    } else {
-        checkpoint
-            .stable_unit_id
-            .strip_prefix("batch:")
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(0)
-    };
+    let batch_cursor = checkpoint.completed_batch_cursor;
+    let expected_ids = all_batches
+        .iter()
+        .take(batch_cursor)
+        .flat_map(|batch| batch.iter().map(|segment| segment.id))
+        .collect::<Vec<_>>();
+    if translated.len() != expected_ids.len()
+        || translated
+            .iter()
+            .zip(expected_ids)
+            .any(|(translated, expected)| translated.id != expected)
+    {
+        return Err(DocumentError::InvalidPackage);
+    }
     Ok(DocumentResumeState {
         batch_cursor,
         translated,
