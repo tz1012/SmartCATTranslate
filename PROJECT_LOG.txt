@@ -648,3 +648,15 @@ TDD 및 검증
 - 원래 TDD RED 테스트 8개를 먼저 작성했으나 공유 target의 장시간 콜드 재빌드 도중 사용자가 실패 상황 검증을 중단하고 핵심 happy path를 우선하라고 지시했다. 실행 중 cargo/rustc의 정확한 PID를 종료하고 테스트 파일은 보존했으며 이번 단계에서는 실행·확장하지 않았다.
 - Rust 포맷, Windows `cargo check --lib`, 자동 기록 검사 16/16과 diff 검사가 통과했다. 전체 회귀, 실패 주입, Windows 실제 클립보드 smoke와 macOS 실기 통과를 주장하지 않는다.
 - 클립보드 포맷/내용, 선택 텍스트, 전체 경로, 창 제목, 키 입력과 인증 정보는 기록하지 않았다.
+
+[2026-08-30] 전역 단축키 Task 5 빠른 정적 검토 수정
+
+구현
+- generation 확인과 EmptyClipboard 사이 경쟁을 제거했다. Windows `conditional_restore`는 message-only owner window로 클립보드를 연 뒤 generation을 다시 확인하고 일치할 때만 원래 포맷을 복원한다. 사용자나 다른 앱이 바꾼 generation이면 비우기 전에 종료한다.
+- 합성 입력을 동기 트랜잭션으로 바꿔 SendInput 완료와 최초 generation 소유권 획득 사이 async 취소 지점을 제거했다. 이후 정상 오류는 조건부 복원을 완료하고, future 취소도 Drop에서 같은 원자 복원을 시도한다.
+- 기존 Ctrl/Shift/Alt/좌우 Win 상태를 보존한다. 이미 눌린 Ctrl을 중복 누르지 않고 간섭 수정 키를 임시 해제·복구하며, SendInput 일부 실패에도 key-up과 수정 키 복구를 별도로 시도한다.
+- 클립보드 바이트·선택 텍스트를 소유한 타입의 Debug를 데이터 비노출 구현으로 교체했다.
+
+검증
+- 사용자 속도 우선 지시에 따라 새 실패 테스트와 장시간 회귀는 추가·실행하지 않았다. Rust 포맷, Windows `cargo check --lib`, 자동 기록 검사 16/16과 diff 검사가 통과했다.
+- 클립보드 포맷/내용, 선택 텍스트, generation, 전체 경로, 창 제목, 키 입력과 인증 정보는 기록하지 않았다.

@@ -3,7 +3,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use async_trait::async_trait;
 use tokio::sync::Mutex;
 
 use super::{AppIdentity, Blocklist, ForegroundAppProvider, PlatformError};
@@ -21,7 +20,7 @@ pub enum ClipboardFormatId {
     Named(String),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ClipboardFormat {
     pub id: ClipboardFormatId,
     pub data: Vec<u8>,
@@ -40,10 +39,34 @@ impl ClipboardFormat {
     }
 }
 
-#[derive(Clone, Debug)]
+impl std::fmt::Debug for ClipboardFormat {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ClipboardFormat")
+            .field("id", &self.id)
+            .field("byte_len", &self.data.len())
+            .finish()
+    }
+}
+
+#[derive(Clone)]
 pub struct ClipboardSnapshot {
     generation: u64,
     items: Vec<ClipboardFormat>,
+}
+
+impl std::fmt::Debug for ClipboardSnapshot {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ClipboardSnapshot")
+            .field("generation", &"redacted")
+            .field("format_count", &self.items.len())
+            .field(
+                "byte_len",
+                &self.items.iter().map(|item| item.data.len()).sum::<usize>(),
+            )
+            .finish()
+    }
 }
 
 impl ClipboardSnapshot {
@@ -131,12 +154,19 @@ pub trait ClipboardPort: Send + Sync + 'static {
     fn snapshot(&self, limits: ClipboardLimits) -> Result<ClipboardSnapshot, CaptureError>;
     fn generation(&self) -> Result<u64, CaptureError>;
     fn read_plain_text(&self, max_bytes: usize) -> Result<Option<String>, CaptureError>;
-    fn restore(&self, snapshot: &ClipboardSnapshot) -> Result<(), CaptureError>;
+    /// Restores while holding the platform clipboard lock only if the current
+    /// generation is still the synthetic copy owned by this transaction.
+    fn conditional_restore(
+        &self,
+        expected_generation: u64,
+        snapshot: &ClipboardSnapshot,
+    ) -> Result<bool, CaptureError>;
 }
 
-#[async_trait]
 pub trait CopySynthesizer: Send + Sync + 'static {
-    async fn synthesize_copy(&self) -> Result<(), CaptureError>;
+    /// Performs the bounded native input transaction synchronously so task
+    /// cancellation cannot split input submission from generation ownership.
+    fn synthesize_copy(&self) -> Result<(), CaptureError>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -146,10 +176,20 @@ pub enum RestoreStatus {
     NotNeeded,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct CapturedSelection {
     pub text: String,
     pub restore_status: RestoreStatus,
+}
+
+impl std::fmt::Debug for CapturedSelection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CapturedSelection")
+            .field("text_byte_len", &self.text.len())
+            .field("restore_status", &self.restore_status)
+            .finish()
+    }
 }
 
 pub struct ClipboardGuard<C, S> {
@@ -185,25 +225,43 @@ where
 
         let snapshot = self.clipboard.snapshot(self.limits)?;
         let mut restoration = Restoration::new(Arc::clone(&self.clipboard), snapshot);
-        self.copier.synthesize_copy().await?;
+        let copy_result = self.copier.synthesize_copy();
+        let generation_after_input = self.clipboard.generation()?;
+        if generation_after_input != restoration.snapshot.generation() {
+            restoration.owned_generation = Some(generation_after_input);
+        }
+        if let Err(error) = copy_result {
+            return Err(restoration.finish_error(error));
+        }
         let timeout = timeout.min(MAX_CAPTURE_TIMEOUT);
         let deadline = Instant::now() + timeout;
         let captured_generation = loop {
-            let generation = self.clipboard.generation()?;
+            let generation = match self.clipboard.generation() {
+                Ok(generation) => generation,
+                Err(error) => return Err(restoration.finish_error(error)),
+            };
             if generation != restoration.snapshot.generation() {
                 break generation;
             }
             if Instant::now() >= deadline {
-                return Err(CaptureError::ClipboardUnchanged);
+                return Err(restoration.finish_error(CaptureError::ClipboardUnchanged));
             }
             tokio::time::sleep(POLL_INTERVAL.min(timeout)).await;
         };
         restoration.owned_generation = Some(captured_generation);
-        let text = self
+        let text = match self
             .clipboard
-            .read_plain_text(self.limits.max_selection_bytes)?
-            .filter(|value| !value.trim().is_empty())
-            .ok_or(CaptureError::NoSelection)?;
+            .read_plain_text(self.limits.max_selection_bytes)
+        {
+            Ok(text) => text,
+            Err(error) => return Err(restoration.finish_error(error)),
+        }
+        .filter(|value| !value.trim().is_empty())
+        .ok_or(CaptureError::NoSelection);
+        let text = match text {
+            Ok(text) => text,
+            Err(error) => return Err(restoration.finish_error(error)),
+        };
 
         let restore_status = restoration.finish()?;
         Ok(CapturedSelection {
@@ -248,14 +306,23 @@ impl<C: ClipboardPort> Restoration<C> {
         Ok(status)
     }
 
+    fn finish_error(&mut self, original: CaptureError) -> CaptureError {
+        match self.finish() {
+            Ok(_) => original,
+            Err(restore_error) => restore_error,
+        }
+    }
+
     fn restore_if_still_owned(&self) -> Result<RestoreStatus, CaptureError> {
         let Some(owned_generation) = self.owned_generation else {
             return Ok(RestoreStatus::NotNeeded);
         };
-        if self.clipboard.generation()? != owned_generation {
+        if !self
+            .clipboard
+            .conditional_restore(owned_generation, &self.snapshot)?
+        {
             return Ok(RestoreStatus::SkippedConcurrentChange);
         }
-        self.clipboard.restore(&self.snapshot)?;
         Ok(RestoreStatus::Restored)
     }
 }

@@ -6,7 +6,6 @@ use std::{
     time::Duration,
 };
 
-use async_trait::async_trait;
 use smartcat_translate::hotkeys::{
     AppIdentity, BlockedApp, Blocklist, CaptureError, ClipboardFormat, ClipboardFormatId,
     ClipboardGuard, ClipboardLimits, ClipboardPort, ClipboardSnapshot, CopySynthesizer,
@@ -103,15 +102,22 @@ impl ClipboardPort for FakeClipboard {
         Ok(text)
     }
 
-    fn restore(&self, snapshot: &ClipboardSnapshot) -> Result<(), CaptureError> {
+    fn conditional_restore(
+        &self,
+        expected_generation: u64,
+        snapshot: &ClipboardSnapshot,
+    ) -> Result<bool, CaptureError> {
         let mut state = self.state.lock().unwrap();
         state.accesses += 1;
+        if state.generation != expected_generation {
+            return Ok(false);
+        }
         if state.restore_error {
             return Err(CaptureError::RestoreFailed);
         }
         state.generation += 1;
         state.items = snapshot.items().to_vec();
-        Ok(())
+        Ok(true)
     }
 }
 
@@ -138,16 +144,15 @@ impl FakeCopier {
     }
 }
 
-#[async_trait]
 impl CopySynthesizer for FakeCopier {
-    async fn synthesize_copy(&self) -> Result<(), CaptureError> {
+    fn synthesize_copy(&self) -> Result<(), CaptureError> {
         if self.fail {
             return Err(CaptureError::CopyFailed);
         }
         let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
         self.max_active.fetch_max(active, Ordering::SeqCst);
         if !self.delay.is_zero() {
-            tokio::time::sleep(self.delay).await;
+            std::thread::sleep(self.delay);
         }
         if let Some(items) = &self.selected {
             self.clipboard.replace(items.clone());

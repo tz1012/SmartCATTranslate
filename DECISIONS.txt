@@ -204,3 +204,10 @@ macOS 경계: 접근성 권한이 이미 허용된 경우에만 `CGEventTapCreat
 Windows 경계: HGLOBAL로 안전하게 복제 가능한 모든 열거 포맷을 복사하고, bitmap/metafile/palette처럼 다른 소유 규칙을 가진 포맷이 있으면 복사를 시작하기 전에 실패 폐쇄한다. 복원용 메모리는 클립보드를 비우기 전에 전부 할당한다. Ctrl+C 입력은 SendInput으로 제한된 네 이벤트만 보낸다.
 macOS 경계: 속도 우선 중간 구현에서는 텍스트 전용 폴백으로 rich clipboard를 손상시키지 않도록 adapter를 명시적 BackendUnavailable로 실패 폐쇄한다. AppKit 다중 pasteboard item 복원은 후속 macOS 실기/CI 검증과 함께 완성해야 하며 지원 완료를 주장하지 않는다.
 검증 범위 변경: 원래 RED 테스트 8개를 작성했으나 사용자가 실패 상황 중심 장시간 TDD gate를 즉시 중단하고 happy-path 구현을 우선하도록 지시했다. 테스트 소스는 보존하되 이번 커밋에서는 실행 근거로 사용하지 않는다. Rust 포맷, Windows `cargo check --lib`, diff/기록 검사만 수행하며 전체 회귀와 macOS 실행 통과를 주장하지 않는다.
+
+[D-034] 선택 복사 트랜잭션 정적 검토 보강
+상태: 확정 — D-033의 Windows 복원과 입력 소유권 경계를 대체함
+원자 복원: `conditional_restore(expected_generation, snapshot)` 포트가 운영체제 클립보드를 연 상태에서 현재 generation을 다시 확인하고, 일치할 때만 비우기와 복원을 수행한다. Windows는 수명이 제한된 message-only owner HWND로 `OpenClipboard`/`EmptyClipboard`/`SetClipboardData` 계약을 충족하고 클립보드를 닫은 뒤 owner를 제거한다. 일치하지 않으면 어떠한 포맷도 변경하지 않는다.
+취소 경계: 합성 입력과 최초 generation 소유권 획득 사이에는 async 취소 지점을 두지 않는다. 그 뒤의 모든 정상 오류 경로는 조건부 복원을 동기 완료하고 복원 오류를 우선 반환하며, future 취소는 Drop에서 같은 원자 조건부 복원을 제한시간 안에 시도한다.
+입력 상태: Windows 합성 복사는 현재 Ctrl/Shift/Alt/좌우 Win 상태를 읽는다. 이미 눌린 Ctrl은 그대로 사용하고, 간섭 수정 키는 잠시 올렸다가 원래 상태로 복원한다. SendInput이 일부만 수락해도 C/Ctrl key-up과 원래 수정 키 복구 입력을 별도로 시도한다. 키 상태나 입력 내용은 기록하지 않는다.
+진단 경계: 클립보드 바이트나 선택 텍스트를 가진 구조체의 Debug는 데이터 대신 포맷 수와 바이트 길이만 표시하며 generation도 숨긴다.

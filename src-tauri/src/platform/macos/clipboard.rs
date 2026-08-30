@@ -1,5 +1,3 @@
-use async_trait::async_trait;
-
 use crate::hotkeys::{
     CaptureError, ClipboardLimits, ClipboardPort, ClipboardSnapshot, CopySynthesizer,
 };
@@ -26,14 +24,17 @@ impl ClipboardPort for MacClipboard {
         Err(CaptureError::BackendUnavailable)
     }
 
-    fn restore(&self, _snapshot: &ClipboardSnapshot) -> Result<(), CaptureError> {
+    fn conditional_restore(
+        &self,
+        _expected_generation: u64,
+        _snapshot: &ClipboardSnapshot,
+    ) -> Result<bool, CaptureError> {
         Err(CaptureError::RestoreFailed)
     }
 }
 
-#[async_trait]
 impl CopySynthesizer for MacCopySynthesizer {
-    async fn synthesize_copy(&self) -> Result<(), CaptureError> {
+    fn synthesize_copy(&self) -> Result<(), CaptureError> {
         Err(CaptureError::CopyFailed)
     }
 }
