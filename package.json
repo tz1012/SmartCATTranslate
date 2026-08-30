@@ -18,6 +18,15 @@
     "release:evidence": "node scripts/release-evidence.mjs create-artifacts",
     "release:sbom:cargo": "node scripts/release-evidence.mjs generate-cargo",
     "release:sbom:verify": "node scripts/release-evidence.mjs verify",
+    "release:configure-updater": "node scripts/configure-updater.mjs",
+    "release:assets:verify": "node scripts/verify-runtime-assets.mjs",
+    "release:sbom": "node scripts/generate-sbom.mjs",
+    "release:licenses": "node scripts/bundle-licenses.mjs",
+    "release:workflow:check": "node scripts/workflow-policy.mjs",
+    "release:package:windows": "pwsh -NoProfile -File tests/release/package-unsigned.ps1",
+    "release:accept:windows": "pwsh -NoProfile -File tests/release/acceptance.ps1",
+    "release:package:macos": "bash tests/release/package-unsigned.sh",
+    "release:accept:macos": "bash tests/release/acceptance.sh",
     "test": "vitest run",
     "test:e2e": "playwright test tests/e2e/text-translation.spec.ts",
     "test:watch": "vitest",
@@ -40,7 +49,8 @@
     "jsdom": "^26.0.0",
     "typescript": "^5.8.0",
     "vite": "^7.0.0",
-    "vitest": "^3.0.0"
+    "vitest": "^3.0.0",
+    "yaml": "2.8.1"
   },
   "packageManager": "pnpm@10.17.1"
 }

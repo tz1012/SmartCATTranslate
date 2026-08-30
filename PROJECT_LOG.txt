@@ -894,3 +894,19 @@ TDD 및 검증
 - optional D shared `cargo check --lib --offline`은 60초에 제품 `smartcat-translate` crate compile까지 도달했으나 완료·제품 진단 전 ceiling으로 중단했다. 출력 코드 오류는 0개이며 Rust 통과를 주장하지 않는다.
 - `pnpm privacy:check` PASS(5 files), `pnpm records:test` PASS(16/16), `pnpm records:check` PASS, `git diff --check` PASS.
 - 사용자 지시에 따라 새 실패 테스트, 전체 회귀와 장시간 smoke는 추가하거나 실행하지 않았다.
+
+[2026-08-31] Tasks 5–7 릴리스 구현 — 사용자 승인 업데이트·서명 파이프라인·비파괴 acceptance
+
+구현
+- 설정에서만 수동 update check를 시작하고 version/release notes/date/size를 먼저 표시한다. check token과 verified install token은 각각 exact version·15분·one-use이며 명시적 다운로드 승인 뒤 signature verification, 별도 restart confirmation 뒤 install/restart를 수행한다. network/signature/install 오류를 구분하고 Later는 아무것도 다운로드하지 않는다.
+- 이전 버전 GitHub Release installer 안내와 main-window 도달 뒤 last-known-good record를 private app data에 기록한다. 자동 rollback은 없으며 사용자가 이전 installer 안내를 직접 연다. committed local/dev config와 commands는 updater를 실패 폐쇄한다.
+- release-only configurator가 protected GitHub Environment의 실제 repository/public key 없이는 실패한다. fake endpoint/key와 private updater key, Windows/macOS signing certificate를 repository에 만들거나 저장하지 않는다.
+- CI는 frontend/Rust/records/privacy를 분리하고 PR Windows x64/macOS Intel/ARM unsigned packages를 `UNSIGNED`로 표시한다. release workflow는 같은 3개 target에서 보호 secret 기반 Windows Authenticode, macOS temporary keychain signing/notarization, updater signing을 수행한 뒤 모든 leg 성공 후 draft를 만든다.
+- Codex runtime/font literal checksum과 PDFium non-bundling, checksums, npm/Cargo CycloneDX SBOM, bundled licenses, commit/run provenance와 GitHub attestation을 릴리스 관문에 연결했다.
+- Windows/macOS local unsigned packaging과 acceptance는 disposable app/test-data root만 사용하며 Windows Documents hash 불변, macOS read-only DMG/copy/signature metadata를 확인한다. 긴 자동 smoke 대신 짧은 수동 checklist를 제공하며 실제 macOS 두 architecture 실행은 CI-required로 남겼다.
+
+검증 계획/제한
+- 사용자 속도 지시에 따라 새 실패 재현, 실패 주입, 전체 회귀, 장시간 Playwright와 실제 installer smoke는 추가하거나 실행하지 않는다. 기존 테스트는 삭제하거나 완화하지 않았다.
+- protected signing/updater secrets, GitHub remote, Windows/macOS 실제 public artifacts와 macOS installed-app smoke는 현재 checkout에서 사용할 수 없어 검증 전이며 공개를 차단하는 checklist 항목으로 남긴다.
+- `pnpm build` PASS(64 modules), Rust formatter PASS, workflow YAML parse/policy PASS, runtime/font checksum·PDFium non-bundle PASS, `pnpm records:test` PASS(16/16), `pnpm privacy:check` PASS(5 files), `pnpm records:check`와 `git diff --check` PASS.
+- 단 한 번의 D shared `cargo check --lib`은 180초 동안 updater lock/download 뒤 Tauri/Wry/rustls 의존성을 컴파일했으나 product crate 전에 ceiling으로 중단했다. product code diagnostic은 0개이며 Rust PASS를 주장하지 않는다.

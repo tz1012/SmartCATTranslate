@@ -7,6 +7,7 @@ import { onAccountStateChanged } from '../account/accountApi';
 import { GlossaryEditor } from './GlossaryEditor';
 import { languageLabel, SUPPORTED_LANGUAGES } from './languages';
 import { ModelSelector, modelChoiceValue } from './ModelSelector';
+import { UpdatePanel } from './UpdatePanel';
 import { createUuidV4 } from './uuid';
 import { HotkeySettings } from '../hotkeys/HotkeySettings';
 
@@ -294,6 +295,7 @@ export function SettingsView({
       <GlossaryEditor locale={locale} entries={settings.glossary} onChange={(glossary) => editSettings((current) => ({ ...current, glossary }))} />
       <HotkeySettings locale={locale} defaultProfileId={settings.defaultProfileId} />
       <ModelSelector locale={locale} choice={settings.selectedModel} models={models} catalogStatus={modelCatalogStatus} onChange={(selectedModel) => editSettings((current) => ({ ...current, selectedModel }))} />
+      <UpdatePanel locale={locale} />
       {modelCatalogStatus === 'unavailable' && <div><p role="status" aria-label={labels.modelListStatus}>{labels.modelListError}</p><button type="button" onClick={() => void refreshModels()}>{labels.retryModels}</button></div>}
       {modelCatalogStatus === 'signedOut' && <div><p role="status" aria-label={labels.modelListStatus}>{labels.signedOutModels}</p><button type="button" onClick={() => void refreshModels()}>{labels.retryModels}</button></div>}
 

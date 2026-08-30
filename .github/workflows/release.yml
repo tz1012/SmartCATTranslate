@@ -1,0 +1,171 @@
+name: Signed release
+on:
+  push:
+    tags: ['app-v*']
+  workflow_dispatch:
+    inputs:
+      release_tag: { description: 'Existing app-v* tag', required: true, type: string }
+permissions: { contents: write, id-token: write, attestations: write }
+env: { PNPM_VERSION: 10.17.1, NODE_VERSION: 24.8.0, RUST_VERSION: 1.95.0 }
+
+jobs:
+  gates:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: "${{ inputs.release_tag || github.ref }}", fetch-depth: 0 }
+      - uses: pnpm/action-setup@v4
+        with: { version: "10.17.1" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "24.8.0", cache: pnpm }
+      - uses: dtolnay/rust-toolchain@1.95.0
+        with: { components: rustfmt }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - run: pnpm build
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+      - run: cargo check --locked --manifest-path src-tauri/Cargo.toml --lib
+      - run: pnpm records:test
+      - run: pnpm records:check -- --base HEAD^ --head HEAD
+      - run: pnpm privacy:check
+      - run: pnpm release:assets:verify
+      - run: pnpm release:workflow:check
+
+  package:
+    needs: gates
+    environment: release-signing
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, bundles: "msi,nsis", sidecar: smartcat-codex-x86_64-pc-windows-msvc.exe }
+          - { os: macos-13, target: x86_64-apple-darwin, bundles: "app,dmg", sidecar: smartcat-codex-x86_64-apple-darwin }
+          - { os: macos-14, target: aarch64-apple-darwin, bundles: "app,dmg", sidecar: smartcat-codex-aarch64-apple-darwin }
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: "${{ inputs.release_tag || github.ref }}", fetch-depth: 0 }
+      - uses: pnpm/action-setup@v4
+        with: { version: "10.17.1" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "24.8.0", cache: pnpm }
+      - uses: dtolnay/rust-toolchain@1.95.0
+        with: { targets: "${{ matrix.target }}", components: rustfmt }
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: "./src-tauri -> target" }
+      - run: pnpm install --frozen-lockfile
+      - name: Verify protected release secrets exist
+        env:
+          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          WINDOWS_CERTIFICATE_THUMBPRINT: ${{ secrets.WINDOWS_CERTIFICATE_THUMBPRINT }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: node scripts/verify-release-secrets.mjs
+      - name: Configure release-only updater and Windows signer
+        env:
+          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+          WINDOWS_CERTIFICATE_THUMBPRINT: ${{ secrets.WINDOWS_CERTIFICATE_THUMBPRINT }}
+        run: node scripts/configure-updater.mjs
+      - name: Import Windows code-signing certificate
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $bytes = [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE)
+          $path = Join-Path $env:RUNNER_TEMP 'smartcat-release.pfx'
+          [IO.File]::WriteAllBytes($path, $bytes)
+          $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+          Import-PfxCertificate -FilePath $path -CertStoreLocation Cert:\CurrentUser\My -Password $password | Out-Null
+          Remove-Item -LiteralPath $path
+      - name: Import macOS certificate into temporary keychain
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          cert="$RUNNER_TEMP/smartcat-release.p12"
+          keychain="$RUNNER_TEMP/smartcat-release.keychain-db"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$cert"
+          security create-keychain -p "$RUNNER_TEMP" "$keychain"
+          security unlock-keychain -p "$RUNNER_TEMP" "$keychain"
+          security import "$cert" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$RUNNER_TEMP" "$keychain"
+          security list-keychains -d user -s "$keychain" login.keychain-db
+          rm -f "$cert"
+          echo "SMARTCAT_KEYCHAIN_PATH=$keychain" >> "$GITHUB_ENV"
+      - run: pnpm runtime:build -- --target ${{ matrix.target }}
+      - run: pnpm release:assets:verify
+        env: { REQUIRE_BUILT_RUNTIME: "1" }
+      - run: pnpm test
+      - run: pnpm build
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+      - run: cargo check --locked --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }}
+      - run: pnpm records:test
+      - run: pnpm privacy:check
+      - run: pnpm release:sbom -- --ecosystem npm --output artifacts/npm-${{ matrix.target }}.cdx.json
+      - run: pnpm release:sbom -- --ecosystem cargo --output artifacts/cargo-${{ matrix.target }}.cdx.json
+      - run: pnpm release:licenses -- artifacts/licenses
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          SMARTCAT_UPDATER_CONFIGURED: "1"
+          SMARTCAT_RELEASE_REPOSITORY: ${{ github.repository }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          args: --config src-tauri/tauri.runtime.conf.json --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+      - name: Collect bundles, checksums, records and provenance
+        shell: bash
+        run: |
+          mkdir -p artifacts/bundles
+          find "src-tauri/target/${{ matrix.target }}/release/bundle" -type f -exec cp {} artifacts/bundles/ \;
+          cp "src-tauri/binaries/${{ matrix.sidecar }}" artifacts/
+          cp CHANGELOG.md PROJECT_LOG.txt DECISIONS.txt artifacts/
+          find artifacts -type f -print0 | sort -z | xargs -0 sha256sum > "artifacts/SHA256SUMS-${{ matrix.target }}"
+          printf '{"commit":"%s","runId":"%s","target":"%s","gates":"frontend,rust,records,privacy"}\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" "${{ matrix.target }}" > "artifacts/provenance-${{ matrix.target }}.json"
+      - name: Remove temporary macOS keychain
+        if: always() && runner.os == 'macOS'
+        shell: bash
+        run: if [ -n "${SMARTCAT_KEYCHAIN_PATH:-}" ]; then security delete-keychain "$SMARTCAT_KEYCHAIN_PATH" || true; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signed-smartcat-${{ matrix.target }}
+          if-no-files-found: error
+          path: artifacts/**
+
+  draft_release:
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: "${{ inputs.release_tag || github.ref }}" }
+      - uses: actions/download-artifact@v4
+        with: { path: release-assets }
+      - run: node scripts/generate-updater-manifest.mjs release-assets
+        env: { RELEASE_TAG: "${{ inputs.release_tag || github.ref_name }}" }
+      - run: find release-assets -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+      - uses: actions/attest-build-provenance@v3
+        with: { subject-checksums: SHA256SUMS }
+      - name: Create draft release only after every platform succeeds
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" --draft --title "SmartCAT Translate $RELEASE_TAG" --notes-file CHANGELOG.md
+          find release-assets -type f -print0 | xargs -0 gh release upload "$RELEASE_TAG" --clobber
+          gh release upload "$RELEASE_TAG" latest.json SHA256SUMS CHANGELOG.md --clobber

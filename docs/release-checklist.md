@@ -1,0 +1,43 @@
+# Release checklist
+
+## One-time GitHub setup
+
+- [ ] Create or select the GitHub repository and push the complete history; this checkout currently has no remote, so no repository name was invented.
+- [ ] Create a protected GitHub Environment named `release-signing`, restrict it to release tags/approved reviewers, and add the secrets below.
+- [ ] Add `TAURI_UPDATER_PUBLIC_KEY` (the real Minisign public key) and `TAURI_SIGNING_PRIVATE_KEY` plus `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (the corresponding private updater signing key/password).
+- [ ] Add `WINDOWS_CERTIFICATE` (base64 PFX), `WINDOWS_CERTIFICATE_PASSWORD`, and `WINDOWS_CERTIFICATE_THUMBPRINT` for Windows code signing.
+- [ ] Add `APPLE_CERTIFICATE` (base64 Developer ID Application PKCS#12), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD` (app-specific password), and `APPLE_TEAM_ID` for macOS signing/notarization.
+- [ ] Never commit or paste a private updater key, PFX/PKCS#12, password, Apple credential, or notarization key into source, logs, artifacts, or workflow text. This repository does not generate any signing identity.
+
+`scripts/configure-updater.mjs` runs only in the protected release job. It requires GitHub's `GITHUB_REPOSITORY` and the real public key, writes exactly `https://github.com/<owner>/<repository>/releases/latest/download/latest.json` into that ephemeral checkout, and fails when either value is absent or looks invalid. The committed local/development configuration intentionally has no updater endpoint, public key, or update artifacts and the Rust commands return `updater_not_configured`.
+
+## Before tagging
+
+- [ ] Versions match in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`; tag is `app-v<semver>`.
+- [ ] `CHANGELOG.md`, `PROJECT_LOG.txt`, `DECISIONS.txt`, the implementation report, and this checklist describe the exact release.
+- [ ] Frontend build, Rust format/check, records, privacy, runtime/font checksum, workflow policy, and diff gates pass.
+- [ ] Codex runtime archives remain pinned to HTTPS GitHub release URLs and literal SHA-256 values; the built sidecar checksum matches its manifest.
+- [ ] Noto Sans and its license checksum match. PDFium is not present in resources or bundle configuration.
+- [ ] No fake endpoint/key, private secret, auth token, translation content, full user path, or unsigned artifact is labeled as a public release.
+
+## CI and artifact review
+
+- [ ] PR package artifacts are named `UNSIGNED-*`; expected platform trust warnings are recorded and they are never promoted.
+- [ ] Release matrix succeeds on Windows x64 (`msi,nsis`), macOS 13 Intel (`app,dmg`), and macOS 14 Apple Silicon (`app,dmg`).
+- [ ] Windows Authenticode validation succeeds for executables/installers. macOS nested code signing, hardened runtime, notarization acceptance, and stapling succeed before upload.
+- [ ] Tauri updater archives and `.sig` files exist for every platform; `latest.json` contains the exact tag URLs, version, signature, date, notes and byte size.
+- [ ] SHA-256 inventories, npm/Cargo CycloneDX SBOMs, bundled license files, commit/run/target provenance records, records/privacy summaries, and GitHub artifact attestation are attached.
+- [ ] The draft GitHub Release appears only after all matrix legs succeed. Review it before publishing; never publish directly from an individual matrix leg.
+
+## Short installed-app acceptance
+
+- [ ] Run `tests/release/acceptance.ps1` against the Windows MSI with disposable app/test-data roots; verify Documents hashes are unchanged.
+- [ ] Run `tests/release/acceptance.sh` on both macOS 13 Intel and macOS 14 Apple Silicon against their DMGs. These actual macOS runs are CI-required and are not claimed by local Windows validation.
+- [ ] Complete every item in `docs/release-smoke-checklist.md`: login, text, hotkey, capture, document, history, recovery, and updater consent/restart behavior.
+- [ ] Verify previous-installer and last-known-good instructions. A rollback is always a user action; the app never silently downloads, installs, restarts, or rolls back.
+- [ ] Record artifact hashes, OS/architecture, expected unsigned warnings (if any), tester, time, result, and remaining signing/notarization requirements without user content or secrets.
+
+## Promotion
+
+- [ ] Resolve every failed or unverified item. Missing secrets, signatures, notarization, macOS smoke, or updater metadata block publication.
+- [ ] Publish the reviewed draft release, then manually check the installed stable build's update metadata without consenting to another download.

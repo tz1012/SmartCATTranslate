@@ -7,4 +7,5 @@ pub mod lifecycle;
 pub mod settings;
 pub mod translation;
 pub mod translation_save;
+pub mod update;
 pub mod windows;

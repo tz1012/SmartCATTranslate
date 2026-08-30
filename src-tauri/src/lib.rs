@@ -26,12 +26,14 @@ pub fn run() {
     let document_jobs_for_setup = document_jobs.clone();
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::Builder::new().build())
         .manage(app_state::AppState::default())
         .manage(capture::CaptureCoordinator::default())
         .manage(capture::CaptureJobStore::default())
         .manage(document_jobs)
+        .manage(commands::update::UpdateState::default())
         .setup(move |app| {
             lifecycle::setup(app)?;
             let app_data_root = app.path().app_local_data_dir()?;
@@ -74,6 +76,9 @@ pub fn run() {
             app.manage(history_store);
             app.manage(job_store);
             app.manage(cleanup.clone());
+            if option_env!("SMARTCAT_UPDATER_CONFIGURED") == Some("1") {
+                let _ = commands::update::mark_current_version_good(app.handle());
+            }
             let _ = cleanup.on_start();
             let resource_root = app.path().resource_dir()?;
             let executable_path = std::env::current_exe()?;
@@ -196,6 +201,12 @@ pub fn run() {
             commands::documents::open_document_folder,
             commands::documents::get_document_result_preview,
             commands::documents::choose_document_output_directory,
+            commands::update::check_for_update,
+            commands::update::prepare_update,
+            commands::update::install_update,
+            commands::update::restart_after_update,
+            commands::update::get_update_recovery_instructions,
+            commands::update::open_previous_installer,
         ])
         .build(tauri::generate_context!())
         .expect("failed to run SmartCAT Translate");

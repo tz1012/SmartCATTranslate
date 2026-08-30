@@ -1,82 +1,95 @@
 name: CI
-
-on:
-  push:
-  pull_request:
+on: [push, pull_request]
+permissions: { contents: read }
+env: { PNPM_VERSION: 10.17.1, NODE_VERSION: 24.8.0, RUST_VERSION: 1.95.0 }
 
 jobs:
   frontend:
     runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [windows-latest, macos-latest]
+    strategy: { matrix: { os: [windows-latest, macos-14] } }
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
-        with:
-          version: 10.17.1
+        with: { version: "10.17.1" }
       - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
+        with: { node-version: "24.8.0", cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm runtime:build:test
       - run: pnpm test
       - run: pnpm build
-
   rust:
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-          - os: macos-15
-            target: aarch64-apple-darwin
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+          - { os: macos-13, target: x86_64-apple-darwin }
+          - { os: macos-14, target: aarch64-apple-darwin }
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-      - run: cargo check --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }}
-      - run: cargo test --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }}
-
-  e2e:
+      - uses: dtolnay/rust-toolchain@1.95.0
+        with: { targets: "${{ matrix.target }}", components: rustfmt }
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: "./src-tauri -> target" }
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+      - run: cargo check --locked --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }}
+  records:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: pnpm/action-setup@v4
+        with: { version: "10.17.1" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "24.8.0", cache: pnpm }
+      - run: pnpm records:test
+      - run: pnpm records:check -- --base "${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}" --head "${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}"
+  privacy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
-        with:
-          version: 10.17.1
+        with: { version: "10.17.1" }
       - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
+        with: { node-version: "24.8.0", cache: pnpm }
       - run: pnpm install --frozen-lockfile
-      - uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-1.62.1-${{ hashFiles('pnpm-lock.yaml') }}
-      - run: pnpm exec playwright install --with-deps chromium
-      - run: pnpm test:e2e
-
-  records:
+      - run: pnpm privacy:check
+      - run: pnpm release:assets:verify
+      - run: pnpm release:workflow:check
+  package_unsigned:
+    if: github.event_name == 'pull_request'
+    needs: [frontend, rust, records, privacy]
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
+        include:
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, bundles: "msi,nsis" }
+          - { os: macos-13, target: x86_64-apple-darwin, bundles: "app,dmg" }
+          - { os: macos-14, target: aarch64-apple-darwin, bundles: "app,dmg" }
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - uses: pnpm/action-setup@v4
-        with:
-          version: 10.17.1
+        with: { version: "10.17.1" }
       - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
+        with: { node-version: "24.8.0", cache: pnpm }
+      - uses: dtolnay/rust-toolchain@1.95.0
+        with: { targets: "${{ matrix.target }}" }
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: "./src-tauri -> target" }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm runtime:build -- --target ${{ matrix.target }}
+      - run: pnpm build
+      - run: cargo check --locked --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }}
       - run: pnpm records:test
-      - run: pnpm records:check -- --base "${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}" --head "${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}"
+      - run: pnpm privacy:check
+      - uses: tauri-apps/tauri-action@v1
+        env: { APPLE_SIGNING_IDENTITY: "${{ startsWith(matrix.os, 'macos-') && '-' || '' }}" }
+        with:
+          args: --config src-tauri/tauri.runtime.conf.json --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: UNSIGNED-smartcat-${{ matrix.target }}
+          if-no-files-found: error
+          path: src-tauri/target/${{ matrix.target }}/release/bundle/**

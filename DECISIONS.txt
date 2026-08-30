@@ -333,3 +333,15 @@ XLSX 위치: workbook relationship으로 worksheet part와 실제 sheet name을 
 [D-056] cleanup 상태의 process-wide 직렬화와 보수적 합집합
 상태: 확정
 결정: canonical private root별 CleanupService는 process-wide registry의 단일 Arc<Mutex<State>>를 공유하며 pending load/retry/mutate/persist 전체를 그 잠금 아래 수행한다. startup pending은 valid primary, valid temp, 실제 UUID direct-child의 합집합이고 temp 오류 흔적은 경고 상태로 유지한다. 어떤 valid UUID도 metadata 선택 과정에서 버리지 않는다.
+
+[D-057] 릴리스 전용 updater 구성과 사용자 2단계 승인
+상태: 확정
+결정: committed local/dev Tauri config에는 updater endpoint/public key/artifact 생성을 두지 않고 명령도 실패 폐쇄한다. 보호된 GitHub `release-signing` Environment에서만 실제 `GITHUB_REPOSITORY`와 Minisign 공개키를 ephemeral checkout에 넣는다. 확인 응답은 version/notes/date/size와 15분·버전 결합·1회 token을 만들고, 사용자의 다운로드 승인 뒤 Tauri가 전체 payload 서명을 확인한다. 별도 재시작 확인 뒤에만 설치하며 background check/download/install/restart와 silent rollback은 없다.
+
+[D-058] 비밀 없는 다중 플랫폼 릴리스 관문
+상태: 확정
+결정: Windows x64 MSI/NSIS, macOS 13 Intel app/DMG, macOS 14 ARM app/DMG를 고정 pnpm/Rust로 각각 만들고 frontend/Rust/records/privacy/runtime asset 관문 뒤에만 tauri-action을 실행한다. Windows PFX와 Apple Developer ID/notarization 및 updater private key는 보호 Environment secret으로만 읽고 임시 cert/keychain을 제거한다. repository는 private key/certificate를 생성하거나 저장하지 않는다. 모든 leg 뒤 draft release에 checksums, npm/Cargo SBOM, bundled licenses, run/commit provenance, attestation과 updater manifest를 묶는다. PR artifact는 `UNSIGNED`로만 표시한다.
+
+[D-059] 비파괴 acceptance와 미검증 플랫폼 표기
+상태: 확정
+결정: 로컬 prerelease 스크립트는 OS temp 아래 disposable app/test-data root와 MSI administrative image 또는 read-only DMG copy만 사용한다. 사용자 Documents는 삭제·이동하지 않고 Windows에서는 전후 hash가 같아야 한다. 실제 macOS Intel/ARM installed-app smoke, protected signing secret, 공증과 release publication은 CI/사용자 환경에서만 검증할 수 있으므로 실행 전에는 통과로 기록하지 않는다.
