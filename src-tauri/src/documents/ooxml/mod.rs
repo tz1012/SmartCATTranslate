@@ -1,3 +1,3 @@
 pub mod package;
 pub mod xml;
-pub use package::OoxmlPackage;
+pub use package::{OoxmlPackage, PreviewPackage};

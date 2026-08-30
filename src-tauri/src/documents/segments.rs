@@ -1,11 +1,22 @@
 use super::types::DocumentError;
 use regex::Regex;
 use uuid::Uuid;
+use zeroize::Zeroize;
 
 #[derive(Clone)]
 pub struct ProtectionMap {
     pub tokenized: String,
     entries: Vec<(String, String)>,
+}
+
+impl Drop for ProtectionMap {
+    fn drop(&mut self) {
+        self.tokenized.zeroize();
+        for (token, original) in &mut self.entries {
+            token.zeroize();
+            original.zeroize();
+        }
+    }
 }
 
 impl ProtectionMap {

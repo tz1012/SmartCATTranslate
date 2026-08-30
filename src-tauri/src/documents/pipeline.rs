@@ -57,9 +57,9 @@ pub fn inspect_document(
                 return Err(DocumentError::UnsafePackage);
             }
             let segments = match format {
-                DocumentFormat::Docx => docx::extract(&package, options)?,
-                DocumentFormat::Pptx => pptx::extract(&package, options)?,
-                DocumentFormat::Xlsx => xlsx::extract(&package, options)?,
+                DocumentFormat::Docx => docx::extract(&package, options, &source_hash)?,
+                DocumentFormat::Pptx => pptx::extract(&package, options, &source_hash)?,
+                DocumentFormat::Xlsx => xlsx::extract(&package, options, &source_hash)?,
                 DocumentFormat::Pdf => unreachable!(),
             };
             (

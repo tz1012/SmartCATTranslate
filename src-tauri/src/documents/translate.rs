@@ -4,6 +4,7 @@ use super::{
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use zeroize::{Zeroize, Zeroizing};
 
 #[derive(Serialize)]
 struct Input<'a> {
@@ -17,9 +18,21 @@ struct Output {
     text: String,
 }
 
+impl Zeroize for Output {
+    fn zeroize(&mut self) {
+        self.id.zeroize();
+        self.text.zeroize();
+    }
+}
+
 pub struct PreparedBatch {
     pub source: String,
     maps: Vec<(Uuid, ProtectionMap)>,
+}
+impl Drop for PreparedBatch {
+    fn drop(&mut self) {
+        self.source.zeroize();
+    }
 }
 pub fn prepare_batch(
     segments: &[Segment],
@@ -58,8 +71,9 @@ pub fn finish_batch(
     batch: &PreparedBatch,
     output: &str,
 ) -> Result<Vec<TranslatedSegment>, DocumentError> {
-    let values: Vec<Output> =
-        serde_json::from_str(output).map_err(|_| DocumentError::ValidationFailed)?;
+    let values = Zeroizing::new(
+        serde_json::from_str::<Vec<Output>>(output).map_err(|_| DocumentError::ValidationFailed)?,
+    );
     if values.len() != batch.maps.len() {
         return Err(DocumentError::ValidationFailed);
     }

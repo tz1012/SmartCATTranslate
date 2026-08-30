@@ -5,7 +5,7 @@ use quick_xml::{events::Event, Reader};
 use serde::Serialize;
 
 use super::{
-    ooxml::{xml::extract_text_nodes, OoxmlPackage},
+    ooxml::{xml::extract_text_nodes, PreviewPackage},
     DocumentError, DocumentFormat,
 };
 
@@ -128,12 +128,15 @@ fn preview_pptx(output: &Path, location: &str) -> Result<DocumentResultPreview, 
     let slide = number_after(location, "slide:")
         .or_else(|| number_after(location, "slides/slide"))
         .ok_or(DocumentError::Unsupported)?;
-    let bytes = std::fs::read(output).map_err(|_| DocumentError::Io)?;
-    let package = OoxmlPackage::open(&bytes)?;
+    let mut package = PreviewPackage::open(output)?;
     let part = format!("ppt/slides/slide{slide}.xml");
-    let xml = package.read(&part).ok_or(DocumentError::Unsupported)?;
-    let (width, height) = slide_size(&package).unwrap_or((12_192_000, 6_858_000));
-    let shapes = slide_shapes(xml)?;
+    let xml = package.read(&part)?;
+    let presentation = package.read_optional("ppt/presentation.xml")?;
+    let (width, height) = presentation
+        .as_deref()
+        .and_then(slide_size)
+        .unwrap_or((12_192_000, 6_858_000));
+    let shapes = slide_shapes(&xml)?;
     let focus_text_ordinal = number_after(location, "text:").map(|value| value.saturating_sub(1));
     Ok(DocumentResultPreview::PptxSlide {
         location: location.to_owned(),
@@ -145,8 +148,7 @@ fn preview_pptx(output: &Path, location: &str) -> Result<DocumentResultPreview, 
     })
 }
 
-fn slide_size(package: &OoxmlPackage) -> Option<(u64, u64)> {
-    let xml = package.read("ppt/presentation.xml")?;
+fn slide_size(xml: &[u8]) -> Option<(u64, u64)> {
     let mut reader = Reader::from_reader(xml);
     let mut buf = Vec::new();
     loop {
@@ -286,18 +288,19 @@ fn slide_shapes(xml: &[u8]) -> Result<Vec<PreviewShape>, DocumentError> {
 
 fn preview_xlsx(output: &Path, location: &str) -> Result<DocumentResultPreview, DocumentError> {
     let focus = cell_after(location).ok_or(DocumentError::Unsupported)?;
-    let bytes = std::fs::read(output).map_err(|_| DocumentError::Io)?;
-    let package = OoxmlPackage::open(&bytes)?;
-    let part = worksheet_part(&package, location).ok_or(DocumentError::Unsupported)?;
+    let mut package = PreviewPackage::open(output)?;
+    let workbook = package.read("xl/workbook.xml")?;
+    let relationships = package.read("xl/_rels/workbook.xml.rels")?;
+    let part =
+        worksheet_part(location, &workbook, &relationships).ok_or(DocumentError::Unsupported)?;
     let shared = package
-        .read("xl/sharedStrings.xml")
+        .read_optional("xl/sharedStrings.xml")?
+        .as_deref()
         .map(shared_strings)
         .transpose()?
         .unwrap_or_default();
-    let cells = worksheet_cells(
-        package.read(&part).ok_or(DocumentError::Unsupported)?,
-        &shared,
-    )?;
+    let worksheet = package.read(&part)?;
+    let cells = worksheet_cells(&worksheet, &shared)?;
     let (focus_col, focus_row) = parse_cell(&focus).ok_or(DocumentError::Unsupported)?;
     let start_col = focus_col.saturating_sub(2).max(1);
     let end_col = focus_col.saturating_add(2);
@@ -330,27 +333,23 @@ fn preview_xlsx(output: &Path, location: &str) -> Result<DocumentResultPreview, 
     })
 }
 
-fn worksheet_part(package: &OoxmlPackage, location: &str) -> Option<String> {
+fn worksheet_part(location: &str, workbook: &[u8], relationships: &[u8]) -> Option<String> {
     if let Some(start) = location.find("xl/worksheets/sheet") {
         let suffix = &location[start + "xl/worksheets/".len()..];
         let name = suffix.split('/').next()?;
-        let part = format!("xl/worksheets/{name}");
-        return package.read(&part).is_some().then_some(part);
+        return Some(format!("xl/worksheets/{name}"));
     }
-    let sheet = location.strip_prefix("sheet:")?.split("/cell:").next()?;
-    if let Some(index) = sheet
-        .strip_prefix("sheet")
-        .and_then(|value| value.parse::<usize>().ok())
-    {
-        let part = format!("xl/worksheets/sheet{index}.xml");
-        return package.read(&part).is_some().then_some(part);
-    }
-    workbook_sheet_part(package, sheet)
+    let sheet = location.strip_prefix("sheet:")?.rsplit_once("/cell:")?.0;
+    workbook_sheet_part(workbook, relationships, sheet).or_else(|| {
+        sheet
+            .strip_prefix("sheet")
+            .and_then(|value| value.parse::<usize>().ok())
+            .map(|index| format!("xl/worksheets/sheet{index}.xml"))
+    })
 }
 
-fn workbook_sheet_part(package: &OoxmlPackage, wanted: &str) -> Option<String> {
-    let xml = package.read("xl/workbook.xml")?;
-    let mut reader = Reader::from_reader(xml);
+fn workbook_sheet_part(workbook: &[u8], relationships: &[u8], wanted: &str) -> Option<String> {
+    let mut reader = Reader::from_reader(workbook);
     let mut buf = Vec::new();
     let relationship_id = loop {
         match reader.read_event_into(&mut buf).ok()? {
@@ -365,8 +364,7 @@ fn workbook_sheet_part(package: &OoxmlPackage, wanted: &str) -> Option<String> {
         }
         buf.clear();
     };
-    let xml = package.read("xl/_rels/workbook.xml.rels")?;
-    let mut reader = Reader::from_reader(xml);
+    let mut reader = Reader::from_reader(relationships);
     let mut buf = Vec::new();
     loop {
         match reader.read_event_into(&mut buf).ok()? {
@@ -375,13 +373,7 @@ fn workbook_sheet_part(package: &OoxmlPackage, wanted: &str) -> Option<String> {
                     && attr_string(&event, b"Id").as_deref() == Some(&relationship_id) =>
             {
                 let target = attr_string(&event, b"Target")?;
-                let target = target.trim_start_matches('/');
-                let part = if target.starts_with("xl/") {
-                    target.to_owned()
-                } else {
-                    format!("xl/{target}")
-                };
-                return package.read(&part).is_some().then_some(part);
+                return safe_workbook_target(&target);
             }
             Event::DocType(_) | Event::Eof => return None,
             _ => {}
@@ -505,9 +497,9 @@ fn preview_docx(output: &Path, location: &str) -> Result<DocumentResultPreview, 
         .ok()
         .filter(|value| *value > 0)
         .ok_or(DocumentError::Unsupported)?;
-    let bytes = std::fs::read(output).map_err(|_| DocumentError::Io)?;
-    let package = OoxmlPackage::open(&bytes)?;
-    let values = extract_text_nodes(package.read(part).ok_or(DocumentError::Unsupported)?, b"t")?;
+    let mut package = PreviewPackage::open(output)?;
+    let xml = package.read(part)?;
+    let values = extract_text_nodes(&xml, b"t")?;
     let focus = ordinal - 1;
     if focus >= values.len() {
         return Err(DocumentError::Unsupported);
@@ -597,4 +589,21 @@ fn sanitize(value: &str, max: usize) -> String {
         .filter(|character| !character.is_control() || matches!(character, '\n' | '\t'))
         .take(max)
         .collect()
+}
+
+fn safe_workbook_target(target: &str) -> Option<String> {
+    let target = target.replace('\\', "/");
+    let target = target.trim_start_matches('/');
+    if target.is_empty()
+        || target.split('/').any(|component| {
+            component.is_empty() || matches!(component, "." | "..") || component.contains(':')
+        })
+    {
+        return None;
+    }
+    Some(if target.starts_with("xl/") {
+        target.to_owned()
+    } else {
+        format!("xl/{target}")
+    })
 }

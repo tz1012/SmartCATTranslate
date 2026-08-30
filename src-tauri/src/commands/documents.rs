@@ -16,9 +16,11 @@ use crate::{
         self,
         translate::{batches, finish_batch, prepare_batch},
         DocumentCheckpoint, DocumentJobStore, DocumentManifest, DocumentOptions, DocumentReport,
-        DocumentResumeInput, DocumentStage, PdfRasterSpool, TranslatedSegment,
+        DocumentResumeRequest, DocumentRetentionPayload, DocumentStage, PdfRasterSpool,
+        TranslatedSegment,
     },
 };
+use zeroize::Zeroizing;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -49,11 +51,6 @@ enum DocumentJobEvent {
         job_id: Uuid,
         code: String,
         location: Option<String>,
-    },
-    RetentionRequested {
-        job_id: Uuid,
-        retention_token: String,
-        checkpoint: DocumentCheckpoint,
     },
 }
 
@@ -104,15 +101,24 @@ pub async fn translate_document(
     job_id: Uuid,
     source_path: String,
     options: DocumentOptions,
-    resume: Option<DocumentResumeInput>,
+    resume: Option<DocumentResumeRequest>,
 ) -> Result<DocumentReport, String> {
     let secret = options.secret;
-    let cancelled = jobs.begin(job_id);
+    let resume = resume
+        .map(|request| {
+            jobs.resolve_resume_record(&request.record_id)
+                .ok_or_else(|| "document_resume_record_unavailable".to_owned())
+        })
+        .transpose()?;
     let jobs_root = document_jobs_root(&app)?;
     let job_root = jobs_root.join(job_id.simple().to_string());
-    std::fs::create_dir_all(&job_root).map_err(|_| "document_io_failed".to_owned())?;
+    if std::fs::create_dir_all(&job_root).is_err() {
+        cleanup_job_root(&jobs_root, &job_root);
+        return Err("document_io_failed".to_owned());
+    }
     set_private_permissions(&jobs_root, true);
     set_private_permissions(&job_root, true);
+    let cancelled = jobs.begin(job_id);
     let latest_checkpoint = Arc::new(Mutex::new(None));
     let translated_results = Arc::new(Mutex::new(std::collections::HashMap::new()));
     let outcome = translate_document_inner(
@@ -171,25 +177,18 @@ pub async fn translate_document(
         {
             checkpoint.raster_refs.clear();
             let token = Uuid::new_v4().simple().to_string();
-            jobs.request_retention(
-                job_id,
-                token.clone(),
-                checkpoint.clone(),
-                translated_results
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .clone(),
-            );
-            let _ = app.emit(
-                "document-job",
-                DocumentJobEvent::RetentionRequested {
-                    job_id,
-                    retention_token: token,
-                    checkpoint,
-                },
-            );
+            let retained_copy = translated_results
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone();
+            jobs.request_retention(job_id, token, checkpoint, retained_copy);
         }
     }
+    documents::wipe_translated_results(
+        &mut translated_results
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    );
     cleanup_job_root(&jobs_root, &job_root);
     outcome
 }
@@ -201,7 +200,7 @@ async fn translate_document_inner(
     job_id: Uuid,
     source_path: String,
     options: DocumentOptions,
-    resume: Option<DocumentResumeInput>,
+    resume: Option<DocumentRetentionPayload>,
     job_root: &std::path::Path,
     latest_checkpoint: &Arc<Mutex<Option<DocumentCheckpoint>>>,
     retained_results: &Arc<Mutex<std::collections::HashMap<String, TranslatedSegment>>>,
@@ -275,7 +274,6 @@ async fn translate_document_inner(
             &mut plan,
             &hints,
             options.pdf_force_ocr,
-            job_id,
             cancelled,
             &|value| emit(app, job_id, value.clone(), latest_checkpoint),
         )
@@ -322,9 +320,11 @@ async fn translate_document_inner(
     if start_cursor > total {
         return Err("document_invalid_package".into());
     }
-    let mut translated = resume_state
-        .map(|value| value.translated)
-        .unwrap_or_else(|| Vec::with_capacity(plan.segments.len()));
+    let mut translated = Zeroizing::new(
+        resume_state
+            .map(|value| value.translated)
+            .unwrap_or_else(|| Vec::with_capacity(plan.segments.len())),
+    );
     remember_translated(retained_results, &translated);
     if start_cursor > 0 {
         let refs = translated_refs(&translated);
@@ -408,7 +408,7 @@ async fn translate_document_inner(
             .map_err(|_| "document_translation_failed".to_owned())?;
         let mut receiver = receiver;
         let started = tokio::time::Instant::now();
-        let output = loop {
+        let output = Zeroizing::new(loop {
             if cancelled.load(Ordering::Acquire) {
                 let _ = manager.cancel(&owner, translation_id).await;
                 return Err("document_cancelled".into());
@@ -421,7 +421,7 @@ async fn translate_document_inner(
                 result = &mut receiver => break result.map_err(|_| "document_translation_failed".to_owned())??,
                 _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
             }
-        };
+        });
         translated.extend(finish_batch(&prepared_batch, &output).map_err(error_code)?);
         remember_translated(retained_results, &translated);
         let translated_refs = translated
@@ -513,15 +513,6 @@ pub fn cancel_document_translation(jobs: tauri::State<'_, DocumentJobStore>, job
 }
 
 #[tauri::command]
-pub fn acknowledge_document_resume_retention(
-    jobs: tauri::State<'_, DocumentJobStore>,
-    job_id: Uuid,
-    retention_token: String,
-    persistence_receipt: String,
-) -> bool {
-    jobs.acknowledge_retention(job_id, &retention_token, &persistence_receipt)
-}
-#[tauri::command]
 pub fn open_document_result(app: tauri::AppHandle, path: String) -> Result<(), String> {
     let candidate = std::path::Path::new(&path);
     let name = candidate
@@ -573,6 +564,9 @@ pub async fn get_document_result_preview(
         .map_err(|error| match error {
             documents::types::DocumentError::Unsupported => {
                 "document_preview_location_unsupported".to_owned()
+            }
+            documents::types::DocumentError::PreviewLimitExceeded => {
+                "document_preview_limits_exceeded".to_owned()
             }
             _ => "document_preview_failed".to_owned(),
         })
@@ -765,6 +759,7 @@ fn error_code(error: documents::types::DocumentError) -> String {
         documents::types::DocumentError::PasswordRequired => "document_password_required",
         documents::types::DocumentError::LimitExceeded => "document_limits_exceeded",
         documents::types::DocumentError::OcrUnavailable => "document_ocr_unavailable",
+        documents::types::DocumentError::PreviewLimitExceeded => "document_preview_limits_exceeded",
     }
     .into()
 }

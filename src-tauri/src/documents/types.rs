@@ -1,7 +1,8 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use zeroize::Zeroize;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -22,6 +23,33 @@ impl DocumentFormat {
             _ => None,
         }
     }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Docx => "docx",
+            Self::Pptx => "pptx",
+            Self::Xlsx => "xlsx",
+            Self::Pdf => "pdf",
+        }
+    }
+}
+
+pub fn stable_segment_id(
+    source_fingerprint: &str,
+    format: DocumentFormat,
+    part: &str,
+    stable_location: &str,
+    ordinal: usize,
+) -> Uuid {
+    let key = format!(
+        "smartcat-document-segment-v1\0{}\0{}\0{}\0{}\0{}",
+        source_fingerprint,
+        format.as_str(),
+        part,
+        stable_location,
+        ordinal
+    );
+    Uuid::new_v5(&Uuid::NAMESPACE_OID, key.as_bytes())
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -72,11 +100,27 @@ pub struct Segment {
     pub text: String,
 }
 
+impl Drop for Segment {
+    fn drop(&mut self) {
+        self.id = Uuid::nil();
+        self.part.zeroize();
+        self.location.zeroize();
+        self.text.zeroize();
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TranslatedSegment {
     pub id: Uuid,
     pub text: String,
+}
+
+impl Zeroize for TranslatedSegment {
+    fn zeroize(&mut self) {
+        self.id = Uuid::nil();
+        self.text.zeroize();
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -154,10 +198,8 @@ pub struct DocumentCheckpoint {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DocumentResumeInput {
-    pub checkpoint: DocumentCheckpoint,
-    #[serde(default)]
-    pub translated_results: HashMap<String, TranslatedSegment>,
+pub struct DocumentResumeRequest {
+    pub record_id: String,
 }
 
 #[derive(Clone, Debug)]
@@ -196,6 +238,8 @@ pub enum DocumentError {
     LimitExceeded,
     #[error("PDF OCR is unavailable")]
     OcrUnavailable,
+    #[error("document preview limits exceeded")]
+    PreviewLimitExceeded,
 }
 
 pub struct DocumentPlan {

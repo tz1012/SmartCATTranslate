@@ -13,19 +13,18 @@ pub use render::render_page;
 use crate::{
     capture::{image_input::SourceFingerprint, DecodedImage, NativeOcrEngine, OcrEngine},
     documents::{
-        DocumentCheckpoint, DocumentError, DocumentPlan, DocumentStage, PdfRasterSpool, Segment,
+        stable_segment_id, DocumentCheckpoint, DocumentError, DocumentFormat, DocumentPlan,
+        DocumentStage, PdfRasterSpool, Segment,
     },
 };
 use image::{codecs::png::PngEncoder, ColorType, ImageEncoder};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{fs, fs::OpenOptions, io::BufWriter, path::Path};
-use uuid::Uuid;
 
 pub async fn append_native_ocr(
     plan: &mut DocumentPlan,
     language_hints: &[String],
     force_ocr: bool,
-    job_id: Uuid,
     cancelled: &AtomicBool,
     checkpoint: &(dyn Fn(&DocumentCheckpoint) + Sync),
 ) -> Result<(), DocumentError> {
@@ -90,7 +89,13 @@ pub async fn append_native_ocr(
             let ordinal = base + index;
             let key = format!("page:{}/ocr:{}", page.number, index + 1);
             plan.segments.push(Segment {
-                id: Uuid::new_v5(&job_id, key.as_bytes()),
+                id: stable_segment_id(
+                    &plan.manifest.source_hash,
+                    DocumentFormat::Pdf,
+                    &format!("page:{}", page.number),
+                    &key,
+                    ordinal,
+                ),
                 part: format!("page:{}", page.number),
                 ordinal,
                 location: format!(

@@ -807,3 +807,16 @@ TDD 및 검증
 
 검증
 - rustfmt 통과, 최종 `pnpm build` 통과(59 modules, 759ms), D 공유 target `cargo check --lib` 통과(7.67s), records/diff 검사를 사용했다. 첫 Rust 검사에서 spool writer PathBuf borrow 한 건을 고친 뒤 최종 검사가 통과했다. 새 실패·장기·전체 회귀·실제 PDF smoke는 실행하지 않았다.
+
+[2026-08-31] 문서 번역 Tasks 7–8 최종 검토 보강 5 — actual XLSX location·stable resume ID·retention boundary·bounded Office preview
+
+구현
+- XLSX workbook/rels/worksheet를 함께 해석해 shared-string index의 모든 소비 cell과 inline-string 소유 cell을 찾는다. 보고 위치는 대표 실제 `sheet:<name>/cell:<A1>`과 shared 사용 수를 포함하고, 결과 미리보기는 그 출력 cell을 5×5 제한 grid에서 다시 읽는다.
+- DOCX/PPTX/XLSX/PDF native/OCR/render block ID를 source fingerprint, format, part/page와 안정 위치/index 기반 UUIDv5로 통일했다. 파일 경로·segment text·job UUID는 ID 입력에서 제외해 동일 source 재검사와 completed-prefix resume가 같은 ID를 사용한다.
+- 공개 TypeScript/Tauri 계약에서 plaintext translated results, retention event/token과 ACK command를 제거했다. 공개 resume는 opaque encrypted record ID와 기존 source 선택만 전달하고 backend resolver가 checkpoint/result를 제공한다. backend consumer가 없으면 retryable 결과를 즉시 zeroize/drop하며, consumer가 수락해도 one-shot handoff, 60초 TTL, begin/finish/cancel/global expiration purge를 적용한다.
+- Office 미리보기용 ZIP reader를 분리했다. 중앙 directory 안전성·중복·압축비를 확인하되 필요한 최소 XML entry만 스트리밍하고 entry 16MiB·aggregate 64MiB를 typed limit으로 강제해 1GiB 패키지 전체 allocation/decompression을 없앴다.
+- source/translated segment와 protection/output buffer는 수명 종료 때 가능한 범위에서 zeroize한다. PDF plaintext raster spool의 기존 app-data/root-confined 즉시 삭제 계약은 유지한다.
+
+검증
+- 변경 Rust 파일 rustfmt PASS, `pnpm build` PASS(59 modules, 769ms), 요청된 단 한 번의 D 공유 target `cargo check --lib` PASS(11.90s), `git diff --check` PASS를 확인했다.
+- 사용자 지시에 따라 새 실패 테스트, 실패 주입, 전체 회귀, Playwright, 실제 Office/PDF smoke와 장시간 검증은 추가하거나 실행하지 않았다.

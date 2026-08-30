@@ -1,7 +1,8 @@
 use crate::documents::types::DocumentError;
 use std::{
-    collections::BTreeMap,
-    io::{Cursor, Read, Write},
+    collections::{BTreeMap, HashSet},
+    fs::File,
+    io::{BufReader, Cursor, Read, Write},
     path::{Component, Path},
 };
 use zip::{read::ZipArchive, write::SimpleFileOptions, CompressionMethod, ZipWriter};
@@ -9,6 +10,9 @@ use zip::{read::ZipArchive, write::SimpleFileOptions, CompressionMethod, ZipWrit
 const MAX_ENTRIES: usize = 20_000;
 const MAX_ENTRY: u64 = 256 * 1024 * 1024;
 const MAX_TOTAL: u64 = 1024 * 1024 * 1024;
+const MAX_COMPRESSION_RATIO: u64 = 200;
+const PREVIEW_MAX_ENTRY: u64 = 16 * 1024 * 1024;
+const PREVIEW_MAX_TOTAL: u64 = 64 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct Entry {
@@ -34,7 +38,11 @@ impl OoxmlPackage {
                 .by_index(index)
                 .map_err(|_| DocumentError::InvalidPackage)?;
             let name = file.name().replace('\\', "/");
-            if file.encrypted() || !safe_name(&name) || file.size() > MAX_ENTRY {
+            if file.encrypted()
+                || !safe_name(&name)
+                || file.size() > MAX_ENTRY
+                || suspicious_compression(file.size(), file.compressed_size())
+            {
                 return Err(DocumentError::InvalidPackage);
             }
             total = total
@@ -100,6 +108,96 @@ impl OoxmlPackage {
             .map_err(|_| DocumentError::Io)
     }
 }
+
+pub struct PreviewPackage {
+    archive: ZipArchive<BufReader<File>>,
+    read_total: u64,
+}
+
+impl PreviewPackage {
+    pub fn open(path: &Path) -> Result<Self, DocumentError> {
+        let file = File::open(path).map_err(|_| DocumentError::Io)?;
+        let mut archive =
+            ZipArchive::new(BufReader::new(file)).map_err(|_| DocumentError::InvalidPackage)?;
+        if archive.len() > MAX_ENTRIES {
+            return Err(DocumentError::InvalidPackage);
+        }
+        let mut names = HashSet::with_capacity(archive.len());
+        let mut declared_total = 0u64;
+        for index in 0..archive.len() {
+            let file = archive
+                .by_index(index)
+                .map_err(|_| DocumentError::InvalidPackage)?;
+            let name = file.name().replace('\\', "/");
+            if file.encrypted()
+                || !safe_name(&name)
+                || file.size() > MAX_ENTRY
+                || suspicious_compression(file.size(), file.compressed_size())
+                || !names.insert(name)
+            {
+                return Err(DocumentError::InvalidPackage);
+            }
+            declared_total = declared_total
+                .checked_add(file.size())
+                .ok_or(DocumentError::InvalidPackage)?;
+            if declared_total > MAX_TOTAL {
+                return Err(DocumentError::InvalidPackage);
+            }
+        }
+        if !names.contains("[Content_Types].xml") {
+            return Err(DocumentError::InvalidPackage);
+        }
+        Ok(Self {
+            archive,
+            read_total: 0,
+        })
+    }
+
+    pub fn read(&mut self, name: &str) -> Result<Vec<u8>, DocumentError> {
+        if !safe_name(name) {
+            return Err(DocumentError::InvalidPackage);
+        }
+        let mut file = self
+            .archive
+            .by_name(name)
+            .map_err(|_| DocumentError::Unsupported)?;
+        if file.encrypted()
+            || file.size() > PREVIEW_MAX_ENTRY
+            || suspicious_compression(file.size(), file.compressed_size())
+            || self.read_total.saturating_add(file.size()) > PREVIEW_MAX_TOTAL
+        {
+            return Err(DocumentError::PreviewLimitExceeded);
+        }
+        let expected = file.size();
+        let mut bytes = Vec::with_capacity(expected.min(PREVIEW_MAX_ENTRY) as usize);
+        (&mut file)
+            .take(PREVIEW_MAX_ENTRY + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| DocumentError::InvalidPackage)?;
+        if bytes.len() as u64 != expected || bytes.len() as u64 > PREVIEW_MAX_ENTRY {
+            return Err(DocumentError::PreviewLimitExceeded);
+        }
+        self.read_total = self
+            .read_total
+            .checked_add(bytes.len() as u64)
+            .ok_or(DocumentError::PreviewLimitExceeded)?;
+        Ok(bytes)
+    }
+
+    pub fn read_optional(&mut self, name: &str) -> Result<Option<Vec<u8>>, DocumentError> {
+        match self.read(name) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(DocumentError::Unsupported) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+fn suspicious_compression(size: u64, compressed_size: u64) -> bool {
+    size > 1024 * 1024
+        && (compressed_size == 0 || size / compressed_size.max(1) > MAX_COMPRESSION_RATIO)
+}
+
 fn safe_name(name: &str) -> bool {
     !name.is_empty()
         && !name.starts_with('/')

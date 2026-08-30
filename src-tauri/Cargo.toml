@@ -51,6 +51,7 @@ toml = "0.9"
 url = "2"
 uuid = { version = "1", features = ["serde", "v4", "v5"] }
 zip = { version = "4", default-features = false, features = ["deflate"] }
+zeroize = "1"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = ["Data_Pdf", "Foundation", "Globalization", "Graphics_Imaging", "Media_Ocr", "Storage", "Storage_Streams", "Win32_System_WinRT"] }

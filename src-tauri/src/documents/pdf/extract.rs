@@ -1,10 +1,8 @@
 use std::{collections::BTreeMap, fs, path::Path};
 
+use crate::documents::{stable_segment_id, DocumentError, DocumentFormat, Segment};
 use lopdf::{content::Content, Dictionary, Document, Object, ObjectId};
 use sha2::{Digest, Sha256};
-use uuid::Uuid;
-
-use crate::documents::{DocumentError, Segment};
 
 use super::{
     classify_page, PdfPageKind, MAX_PAGE_CONTENT_BYTES, MAX_PDF_BYTES, MAX_PDF_OBJECTS,
@@ -112,7 +110,6 @@ pub fn inspect(path: &Path, force_ocr: bool) -> Result<PdfInspection, DocumentEr
     let bytes = fs::read(path).map_err(|_| DocumentError::Io)?;
     let digest = Sha256::digest(&bytes);
     let source_hash = format!("{digest:x}");
-    let namespace = Uuid::new_v5(&Uuid::NAMESPACE_OID, &digest);
     let doc = Document::load_mem(&bytes).map_err(|_| DocumentError::InvalidPackage)?;
     if doc.is_encrypted() || doc.trailer.has(b"Encrypt") {
         return Err(DocumentError::PasswordRequired);
@@ -186,7 +183,13 @@ pub fn inspect(path: &Path, force_ocr: bool) -> Result<PdfInspection, DocumentEr
         for block in &extracted.blocks {
             let key = format!("page:{number}/block:{}", block.ordinal + 1);
             segments.push(Segment {
-                id: Uuid::new_v5(&namespace, key.as_bytes()),
+                id: stable_segment_id(
+                    &source_hash,
+                    DocumentFormat::Pdf,
+                    &format!("page:{number}"),
+                    &key,
+                    block.ordinal,
+                ),
                 part: format!("page:{number}"),
                 ordinal: block.ordinal,
                 location: format!(

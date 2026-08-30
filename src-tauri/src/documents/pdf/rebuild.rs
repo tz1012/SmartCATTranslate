@@ -16,8 +16,8 @@ use lopdf::{
 use crate::{
     capture::{render::RenderEngine, DecodedImage, TranslatedBlock},
     documents::{
-        DocumentCheckpoint, DocumentError, DocumentOptions, DocumentStage, DocumentWarning,
-        PdfRasterSpool, Segment, TranslatedSegment,
+        stable_segment_id, DocumentCheckpoint, DocumentError, DocumentFormat, DocumentOptions,
+        DocumentStage, DocumentWarning, PdfRasterSpool, Segment, TranslatedSegment,
     },
 };
 
@@ -113,10 +113,15 @@ pub fn rebuild(
                 .filter_map(|block| {
                     let text = by_location.get(&(&*page_part, block.ordinal)).copied()?;
                     let display = super::page_bounds_to_display(block.bounds, page.rotation);
+                    let stable_location =
+                        format!("page:{}/block:{}", page.number, block.ordinal + 1);
                     Some(TranslatedBlock {
-                        id: uuid::Uuid::new_v5(
-                            &uuid::Uuid::NAMESPACE_OID,
-                            format!("{}:{}", page.number, block.ordinal).as_bytes(),
+                        id: stable_segment_id(
+                            &inspection.source_hash,
+                            DocumentFormat::Pdf,
+                            &page_part,
+                            &stable_location,
+                            block.ordinal,
                         ),
                         source_ids: Vec::new(),
                         source_text: String::new(),

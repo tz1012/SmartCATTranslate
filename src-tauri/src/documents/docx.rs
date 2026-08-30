@@ -1,8 +1,10 @@
 use super::{
     ooxml::{xml::extract_text_nodes, OoxmlPackage},
-    types::{DocumentError, DocumentOptions, Segment, TranslatedSegment},
+    types::{
+        stable_segment_id, DocumentError, DocumentFormat, DocumentOptions, Segment,
+        TranslatedSegment,
+    },
 };
-use uuid::Uuid;
 
 pub fn parts(package: &OoxmlPackage, options: &DocumentOptions) -> Vec<String> {
     package
@@ -24,6 +26,7 @@ pub fn parts(package: &OoxmlPackage, options: &DocumentOptions) -> Vec<String> {
 pub fn extract(
     package: &OoxmlPackage,
     options: &DocumentOptions,
+    source_fingerprint: &str,
 ) -> Result<Vec<Segment>, DocumentError> {
     let mut segments = Vec::new();
     for part in parts(package, options) {
@@ -35,11 +38,18 @@ pub fn extract(
         .enumerate()
         {
             if !text.trim().is_empty() {
+                let location = format!("{part}/text:{}", ordinal + 1);
                 segments.push(Segment {
-                    id: Uuid::new_v4(),
+                    id: stable_segment_id(
+                        source_fingerprint,
+                        DocumentFormat::Docx,
+                        &part,
+                        &location,
+                        ordinal,
+                    ),
                     part: part.clone(),
                     ordinal,
-                    location: format!("{part}/text:{}", ordinal + 1),
+                    location,
                     text,
                 });
             }
