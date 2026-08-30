@@ -720,3 +720,16 @@ TDD 및 검증
 - 사용자의 최신 지시에 따라 새 실패 테스트, 실패 주입, 전체 회귀를 추가·실행하지 않았다.
 - 프런트엔드 TypeScript/Vite 프로덕션 빌드가 통과했고, D 드라이브 공유 target의 Windows `cargo check --lib`가 통과했다.
 - 실제 8×8 Windows 캡처 smoke는 첫 example 링크가 2분을 넘어 속도 우선 지시에 따라 중단했다. 실행 통과를 주장하지 않으며 화면 내용이나 경로는 저장·출력하지 않았다.
+
+[2026-08-30] 이미지·화면 번역 Tasks 4–7 — OCR, 구조화 번역, 원위치 렌더링과 결과 저장
+
+구현
+- Windows.Media.Ocr와 macOS Vision `VNRecognizeTextRequest`의 로컬 네이티브 OCR 어댑터를 추가했다. RGBA/BGRA와 Vision bottom-left 좌표를 공통 top-left 정규화 좌표, polygon, 신뢰도, 각도, 언어와 결정적 읽기 순서로 변환하고 NFC로 정규화한다. 언어 팩, OS 버전과 네이티브 실패를 내용 없는 typed code로 구분한다.
+- OCR 선을 column 우선으로 나눈 뒤 각도 3도, 세로 간격 0.8 line-height, 가로 겹침 25% 경계로 문단을 묶는다. 안정된 UUID와 원본 선 ID를 가진 JSON 블록을 기존 도구 0개·지시 탐색 차단 Codex 번역 경계의 비신뢰 source로 전달하고 반환 ID를 검증한다. URL을 보호 용어에 합치며 형식 차이가 있으면 제한된 순서 fallback을 사용한다.
+- 텍스트 mask를 2px만 확장하고 외곽 3px ring의 중앙색/분산으로 단순 배경 또는 edge interpolation을 선택한다. Noto Sans OFL 폰트와 system fallback을 cosmic-text에 제공하고 8px까지 binary fitting, 고급 shaping과 clipping으로 원래 위치에 렌더링한다. 복잡한 배경과 overflow는 block ID 경고로 남긴다.
+- source/result를 job UUID 메모리 저장소에서 관리한다. OCR·번역·렌더 단계 progress와 취소, 원본/번역/나란히 미리보기, 낮은 신뢰도, 블록별 수정·표시/숨김·재시도, 원문/번역문 복사를 한국어·영어 반응형 화면에 연결했다.
+- 저장은 native save dialog에서만 경로를 받고 PNG/JPEG/WebP를 sibling 임시 파일에 제한 인코딩·flush·sync·재디코드 검증한 뒤 이름 변경한다. 기본값은 기존 파일을 덮지 않고 `_2`, `_3` 이름을 고르며 원본 source는 쓰지 않는다. 미리보기만 최대 1600×1200으로 축소하고 export는 원래 해상도를 유지한다.
+
+속도 우선 검증과 개인정보
+- 사용자의 최신 지시에 따라 새 실패 테스트, 실패 주입, 전체 회귀와 장시간 E2E를 추가·실행하지 않았다. D 드라이브 공유 target의 Windows `cargo check --lib`와 프런트엔드 `pnpm build`가 통과했다. macOS Objective-C/Vision 브리지는 Windows에서 조건부 소스와 build 경계를 확인했으며 실제 macOS 실행 통과는 후속 CI/실기 전까지 주장하지 않는다.
+- Noto Sans variable font는 Google Fonts 공식 저장소의 파일과 SIL Open Font License를 함께 보존했다. 이미지 픽셀, OCR 원문, 번역문, source/export 전체 경로, 계정·인증 정보는 기록·오류·Debug에 넣지 않는다.

@@ -132,6 +132,17 @@ pub struct OcrLine {
     pub confidence: f32,
     pub angle_degrees: f32,
     pub direction: TextDirection,
+    #[serde(default)]
+    pub polygon: Vec<NormalizedPoint>,
+    #[serde(default)]
+    pub language: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NormalizedPoint {
+    pub x: f32,
+    pub y: f32,
 }
 
 impl OcrLine {
@@ -143,7 +154,21 @@ impl OcrLine {
         {
             return Err(ContractError::InvalidOcrData);
         }
-        self.bounds.validate()
+        self.bounds.validate().and_then(|_| {
+            if self.polygon.len() > 16
+                || self.polygon.iter().any(|point| {
+                    !point.x.is_finite()
+                        || !point.y.is_finite()
+                        || !(0.0..=1.0).contains(&point.x)
+                        || !(0.0..=1.0).contains(&point.y)
+                })
+                || self.language.as_ref().is_some_and(|value| value.len() > 64)
+            {
+                Err(ContractError::InvalidOcrData)
+            } else {
+                Ok(())
+            }
+        })
     }
 }
 
@@ -168,11 +193,20 @@ impl OcrDocument {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct TranslatedBlock {
+    pub id: Uuid,
     pub source_ids: Vec<Uuid>,
     pub source_text: String,
     pub translated_text: String,
     pub bounds: NormalizedRect,
     pub confidence: f32,
+    #[serde(default)]
+    pub direction: Option<TextDirection>,
+    #[serde(default = "default_visible")]
+    pub visible: bool,
+}
+
+fn default_visible() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -185,6 +219,10 @@ pub struct CaptureJobResult {
     pub ocr: Option<OcrDocument>,
     pub translated_blocks: Vec<TranslatedBlock>,
     pub warnings: Vec<String>,
+    #[serde(default)]
+    pub source_preview: Option<String>,
+    #[serde(default)]
+    pub translated_preview: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]

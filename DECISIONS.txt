@@ -241,3 +241,11 @@ macOS 경계: 속도 우선 중간 구현에서는 텍스트 전용 폴백으로
 캡처 수명주기: overlay를 띄우기 전에 모니터 frame을 고정하고 세션 하나만 허용한다. 모니터별 투명 전체 화면 overlay는 같은 전역 물리 선택을 공유하며 완료·취소·창 생성 실패 시 전체 집합을 닫는다. 캡처 결과는 앱 전용 immutable PNG와 내용 없는 job metadata로 다음 OCR 단계에 전달한다.
 권한·개인정보: 포그라운드 앱이 사용자 차단 목록에 있으면 화면 접근 전에 거부한다. macOS 화면 기록 권한이 없으면 overlay 전에 typed permission error와 System Settings 위치를 제공한다. 화면/이미지 픽셀, OCR 전 원문, 전체 source/copy 경로와 모니터 외 사용자 식별 데이터는 로그·오류·Debug 출력에 포함하지 않는다.
 검증 범위: 사용자의 속도 우선 지시에 따라 frontend production build와 Windows library check만 관문으로 사용했다. Windows 실제 캡처와 macOS 실기는 완료를 주장하지 않고 후속 짧은 실행/CI 검증 대상으로 남긴다.
+
+[D-040] 로컬 OCR·구조화 이미지 번역과 보존적 렌더/내보내기 경계
+상태: 확정
+OCR 경계: 사용자 이미지 픽셀은 Windows.Media.Ocr 또는 macOS Vision에만 전달하고 네트워크 OCR fallback을 두지 않는다. 공통 결과는 top-left 0..=1 bounds/polygon, NFC text, 0..=1 confidence, angle, direction과 제한된 language tag로 검증한다. Windows 설치 언어 엔진과 macOS accurate recognition/language correction을 사용하며 typed 언어 팩·OS 버전·native 오류 외에 이미지 내용과 경로를 오류에 넣지 않는다.
+번역 경계: column/paragraph grouping은 입력 순서와 무관하게 결정적이어야 하고 각 source line ID를 한 번만 소유한다. 블록 `{id,text}` 배열 전체를 기존 제한 Codex 번역 요청의 단일 비신뢰 source 값으로 전달한다. 응답의 누락·중복·unknown ID는 권위 있는 구조화 결과로 사용하지 않으며 URL과 사용자 보호 용어를 원문 그대로 유지한다. 이미지 안의 악성 지시는 번역 데이터일 뿐 명령, 도구, 파일 접근이나 동작으로 해석하지 않는다.
+렌더 경계: 원본은 수정하지 않고 expanded text mask 밖 pixel은 건드리지 않는다. 단순 배경만 median fill하고 복잡한 배경은 제한된 interpolation과 경고를 사용한다. OFL Noto Sans와 OS fallback을 cosmic-text shaping에 사용하고 8px 미만으로 줄이지 않으며 영역 밖은 clip하고 overflow를 표시한다.
+저장·UI 경계: 결과는 job ID로만 접근하고 WebView가 임의 image bytes나 source path를 저장 명령에 전달하지 않는다. native dialog가 고른 sibling temporary에 encode·sync·decode 검증 뒤 rename하며 기본적으로 기존 파일을 덮지 않는다. UI는 progress/cancel과 원본/번역/나란히 보기, block 수정·가시성·재시도, 경고 포커스를 한국어·영어로 제공한다. 미리보기는 bounded thumbnail이고 export는 원래 해상도를 유지한다.
+검증 범위: 사용자 속도 우선 지시에 따라 frontend production build와 Windows library check를 최소 관문으로 사용한다. macOS Vision 실기와 시각적 perceptual acceptance는 후속 CI/실기 단계 전까지 통과를 주장하지 않는다.

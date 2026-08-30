@@ -11,6 +11,8 @@ export type OcrLine = {
   confidence: number;
   angleDegrees: number;
   direction: TextDirection;
+  polygon: Array<{ x: number; y: number }>;
+  language?: string;
 };
 
 export type OcrDocument = {
@@ -21,11 +23,14 @@ export type OcrDocument = {
 };
 
 export type TranslatedBlock = {
+  id: string;
   sourceIds: string[];
   sourceText: string;
   translatedText: string;
   bounds: NormalizedRect;
   confidence: number;
+  direction?: TextDirection;
+  visible: boolean;
 };
 
 export type CaptureJobResult = {
@@ -36,7 +41,11 @@ export type CaptureJobResult = {
   ocr?: OcrDocument;
   translatedBlocks: TranslatedBlock[];
   warnings: string[];
+  sourcePreview?: string;
+  translatedPreview?: string;
 };
+
+export type CaptureProgress = { jobId: string; stage: 'ocr' | 'translate' | 'render' | 'complete'; percent: number };
 
 export type MonitorInfo = {
   id: string;

@@ -24,6 +24,7 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::Builder::new().build())
         .manage(app_state::AppState::default())
         .manage(capture::CaptureCoordinator::default())
+        .manage(capture::CaptureJobStore::default())
         .setup(|app| {
             lifecycle::setup(app)?;
             let app_data_root = app.path().app_local_data_dir()?;
@@ -97,6 +98,10 @@ pub fn run() {
             commands::capture::complete_screen_capture,
             commands::capture::cancel_screen_capture,
             commands::capture::choose_image,
+            commands::capture::translate_image,
+            commands::capture::cancel_image_translation,
+            commands::capture::update_capture_block,
+            commands::capture::export_translated_image,
         ])
         .build(tauri::generate_context!())
         .expect("failed to run SmartCAT Translate");

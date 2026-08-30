@@ -43,6 +43,7 @@ pub struct SourceFingerprint {
     pub format: String,
 }
 
+#[derive(Clone)]
 pub struct DecodedImage {
     pub width: u32,
     pub height: u32,
