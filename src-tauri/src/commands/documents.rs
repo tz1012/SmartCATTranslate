@@ -42,7 +42,7 @@ pub async fn choose_document(
     let Some(file) = app
         .dialog()
         .file()
-        .add_filter("Office documents", &["docx", "pptx", "xlsx"])
+        .add_filter("Documents", &["docx", "pptx", "xlsx", "pdf"])
         .blocking_pick_file()
     else {
         return Ok(None);
@@ -82,7 +82,7 @@ async fn translate_document_inner(
     options: DocumentOptions,
 ) -> Result<DocumentReport, String> {
     emit(app, job_id, "inspect", 0, 1);
-    let plan = documents::inspect_document(std::path::Path::new(&source_path), &options)
+    let mut plan = documents::inspect_document(std::path::Path::new(&source_path), &options)
         .map_err(error_code)?;
     if cancelled.load(Ordering::Acquire) {
         return Err("document_cancelled".into());
@@ -91,10 +91,23 @@ async fn translate_document_inner(
         .load()
         .await
         .map_err(|e| e.code().to_owned())?;
-    let saved = settings
-        .default_profile()
+    let saved = options
+        .profile_id
+        .as_ref()
+        .and_then(|id| settings.profile(*id))
+        .or_else(|| settings.default_profile())
         .cloned()
         .ok_or_else(|| "invalid_default_profile".to_owned())?;
+    if plan.format == crate::documents::DocumentFormat::Pdf {
+        let hints = options
+            .source_language
+            .clone()
+            .into_iter()
+            .collect::<Vec<_>>();
+        crate::documents::pdf::append_native_ocr(&mut plan, &hints, options.pdf_force_ocr)
+            .await
+            .map_err(error_code)?;
+    }
     let glossary = settings
         .glossary
         .iter()
@@ -140,7 +153,18 @@ async fn translate_document_inner(
             glossary: glossary.clone(),
             mode: TranslationMode::Translate,
             secret: false,
-            model: TranslationModel::Automatic,
+            model: options
+                .model
+                .as_ref()
+                .filter(|value| {
+                    !value.is_empty()
+                        && value.len() <= 128
+                        && value
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+                })
+                .map(|value| TranslationModel::Specific(value.clone()))
+                .unwrap_or(TranslationModel::Automatic),
         };
         let (sender, receiver) = tokio::sync::oneshot::channel();
         let sink = Arc::new(DocumentSink(Mutex::new(Some(sender))));
@@ -208,6 +232,27 @@ pub fn open_document_result(app: tauri::AppHandle, path: String) -> Result<(), S
         .open_path(path, None::<&str>)
         .map_err(|_| "document_open_failed".to_owned())
 }
+#[tauri::command]
+pub fn open_document_folder(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let candidate = std::path::Path::new(&path);
+    if !candidate.is_file() || crate::documents::DocumentFormat::from_path(candidate).is_none() {
+        return Err("document_open_refused".to_owned());
+    }
+    let parent = candidate
+        .parent()
+        .ok_or_else(|| "document_open_refused".to_owned())?;
+    app.opener()
+        .open_path(parent.to_string_lossy().into_owned(), None::<&str>)
+        .map_err(|_| "document_open_failed".to_owned())
+}
+#[tauri::command]
+pub fn choose_document_output_directory(app: tauri::AppHandle) -> Option<String> {
+    app.dialog()
+        .file()
+        .blocking_pick_folder()
+        .and_then(|folder| folder.into_path().ok())
+        .map(|path| path.to_string_lossy().into_owned())
+}
 fn emit(app: &tauri::AppHandle, job_id: Uuid, stage: &'static str, completed: usize, total: usize) {
     let _ = app.emit(
         "document-progress",
@@ -229,6 +274,9 @@ fn error_code(error: documents::types::DocumentError) -> String {
         documents::types::DocumentError::ValidationFailed => "document_validation_failed",
         documents::types::DocumentError::Cancelled => "document_cancelled",
         documents::types::DocumentError::Io => "document_io_failed",
+        documents::types::DocumentError::PasswordRequired => "document_password_required",
+        documents::types::DocumentError::LimitExceeded => "document_limits_exceeded",
+        documents::types::DocumentError::OcrUnavailable => "document_ocr_unavailable",
     }
     .into()
 }

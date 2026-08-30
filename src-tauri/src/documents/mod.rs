@@ -2,6 +2,7 @@ pub mod docx;
 pub mod ooxml;
 pub mod output;
 pub mod pipeline;
+pub mod pdf;
 pub mod pptx;
 pub mod segments;
 pub mod translate;

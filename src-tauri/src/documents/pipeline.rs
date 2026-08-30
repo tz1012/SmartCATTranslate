@@ -4,8 +4,8 @@ use super::{
         xml::{extract_text_nodes, replace_text_nodes},
         OoxmlPackage,
     },
-    output::{next_output_path, publish_atomic},
-    pptx,
+    output::{next_output_path_in, publish_atomic},
+    pdf, pptx,
     types::*,
     xlsx,
 };
@@ -31,25 +31,58 @@ pub fn inspect_document(
     }
     let bytes = fs::read(source).map_err(|_| DocumentError::Io)?;
     let source_hash = hash_bytes(&bytes);
-    let package = OoxmlPackage::open(&bytes)?;
-    if package
-        .entries
-        .keys()
-        .any(|n| n.ends_with("vbaProject.bin") || n.contains("encryptedPackage"))
-    {
-        return Err(DocumentError::UnsafePackage);
-    }
-    let segments = match format {
-        DocumentFormat::Docx => docx::extract(&package, options)?,
-        DocumentFormat::Pptx => pptx::extract(&package, options)?,
-        DocumentFormat::Xlsx => xlsx::extract(&package, options)?,
-    };
+    let (segments, part_count, page_count, page_kinds, has_signatures, has_forms, has_annotations) =
+        if format == DocumentFormat::Pdf {
+            let inspection = pdf::inspect(source, options.pdf_force_ocr)?;
+            (
+                inspection.segments,
+                inspection.pages.len(),
+                inspection.pages.len(),
+                inspection
+                    .pages
+                    .iter()
+                    .map(|p| p.kind.as_str().to_owned())
+                    .collect(),
+                inspection.has_signatures,
+                inspection.has_forms,
+                inspection.has_annotations,
+            )
+        } else {
+            let package = OoxmlPackage::open(&bytes)?;
+            if package
+                .entries
+                .keys()
+                .any(|n| n.ends_with("vbaProject.bin") || n.contains("encryptedPackage"))
+            {
+                return Err(DocumentError::UnsafePackage);
+            }
+            let segments = match format {
+                DocumentFormat::Docx => docx::extract(&package, options)?,
+                DocumentFormat::Pptx => pptx::extract(&package, options)?,
+                DocumentFormat::Xlsx => xlsx::extract(&package, options)?,
+                DocumentFormat::Pdf => unreachable!(),
+            };
+            (
+                segments,
+                package.entries.len(),
+                0,
+                Vec::new(),
+                false,
+                false,
+                false,
+            )
+        };
     let manifest = DocumentManifest {
         format,
         file_name,
         segment_count: segments.len(),
-        part_count: package.entries.len(),
+        part_count,
         source_hash,
+        page_count,
+        page_kinds,
+        has_signatures,
+        has_forms,
+        has_annotations,
     };
     Ok(DocumentPlan {
         source: source.to_owned(),
@@ -69,18 +102,61 @@ pub fn rebuild_document(
     if hash_bytes(&source_bytes) != plan.manifest.source_hash {
         return Err(DocumentError::SourceChanged);
     }
+    let output_directory = options.output_directory.as_deref().map(Path::new);
+    let output = next_output_path_in(&plan.source, &options.target_language, output_directory)?;
+    if plan.format == DocumentFormat::Pdf {
+        let inspection = pdf::inspect(&plan.source, options.pdf_force_ocr)?;
+        let parent = output.parent().ok_or(DocumentError::Io)?;
+        let partial = parent.join(format!(".smartcat-partial-{}.pdf", uuid::Uuid::new_v4()));
+        let result = (|| {
+            let warnings = pdf::rebuild(
+                &plan.source,
+                &inspection,
+                &plan.segments,
+                translated,
+                &partial,
+            )?;
+            if hash_bytes(&fs::read(&plan.source).map_err(|_| DocumentError::Io)?)
+                != plan.manifest.source_hash
+            {
+                return Err(DocumentError::SourceChanged);
+            }
+            fs::rename(&partial, &output).map_err(|_| DocumentError::Io)?;
+            let output_bytes = fs::read(&output).map_err(|_| DocumentError::Io)?;
+            Ok(DocumentReport {
+                job_id,
+                format: plan.format,
+                output_path: output.to_string_lossy().into_owned(),
+                output_name: output
+                    .file_name()
+                    .and_then(|v| v.to_str())
+                    .unwrap_or("translated.pdf")
+                    .to_owned(),
+                translated_segments: translated.len(),
+                warnings,
+                publishable: true,
+                source_hash: plan.manifest.source_hash.clone(),
+                output_hash: hash_bytes(&output_bytes),
+                resumed_from_stage: None,
+            })
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&partial);
+        }
+        return result;
+    }
     let mut package = OoxmlPackage::open(&source_bytes)?;
     match plan.format {
         DocumentFormat::Docx => docx::rebuild(&mut package, &plan.segments, translated)?,
         DocumentFormat::Pptx => pptx::rebuild(&mut package, &plan.segments, translated)?,
         DocumentFormat::Xlsx => xlsx::rebuild(&mut package, &plan.segments, translated)?,
+        DocumentFormat::Pdf => unreachable!(),
     };
     let output_bytes = package.write()?;
     let reopened = OoxmlPackage::open(&output_bytes)?;
     if reopened.entries.len() != plan.manifest.part_count {
         return Err(DocumentError::ValidationFailed);
     }
-    let output = next_output_path(&plan.source, &options.target_language)?;
     publish_atomic(&output, &output_bytes)?;
     if hash_bytes(&fs::read(&plan.source).map_err(|_| DocumentError::Io)?)
         != plan.manifest.source_hash
@@ -116,6 +192,7 @@ pub fn rebuild_document(
         publishable: true,
         source_hash: plan.manifest.source_hash.clone(),
         output_hash: hash_bytes(&output_bytes),
+        resumed_from_stage: None,
     })
 }
 

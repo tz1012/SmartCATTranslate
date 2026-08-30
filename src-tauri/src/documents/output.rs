@@ -7,7 +7,12 @@ use std::{
 use uuid::Uuid;
 
 pub fn next_output_path(source: &Path, target_language: &str) -> Result<PathBuf, DocumentError> {
-    let parent = source.parent().ok_or(DocumentError::Io)?;
+    next_output_path_in(source, target_language, None)
+}
+
+pub fn next_output_path_in(source: &Path, target_language: &str, directory: Option<&Path>) -> Result<PathBuf, DocumentError> {
+    let parent = directory.or_else(|| source.parent()).ok_or(DocumentError::Io)?;
+    if !parent.is_dir() { return Err(DocumentError::Io); }
     let stem = source
         .file_stem()
         .and_then(|v| v.to_str())

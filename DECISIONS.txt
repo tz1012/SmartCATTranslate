@@ -256,3 +256,10 @@ OCR 경계: 사용자 이미지 픽셀은 Windows.Media.Ocr 또는 macOS Vision�
 패키지 경계: OOXML ZIP은 traversal, absolute path, encryption, duplicate entry와 제한을 넘는 expansion을 거부한다. quick-xml 0.41(MIT) event copy로 namespace, 속성, run properties와 unknown XML을 유지하고 승인된 local text node만 escape하여 바꾼다. 관계, media, formula, number와 field instruction은 수정하지 않는다.
 번역 경계: 문서 segment JSON은 기존 보안 Codex 번역의 단일 비신뢰 source 값이다. 문서 안 문장은 명령으로 해석하지 않고 도구·파일 접근을 허용하지 않는다. 안정 ID와 job-scoped 보호 token을 모두 검증한 batch만 재조립하며 문서 내용, 전체 경로와 번역문은 progress/log/error에 기록하지 않는다.
 범위: 이번 milestone은 DOCX/PPTX/XLSX의 사용 가능한 happy path와 reopen validation을 제공한다. PDF는 별도 Task 7, hidden slide/sheet 정밀 scope, Excel style clone/wrap과 실제 Office/macOS visual acceptance는 후속 단계에서 보강하며 현재 통과를 주장하지 않는다.
+
+[D-042] PDF 페이지 분류·로컬 OCR·비파괴 오버레이와 런타임 경계
+상태: 확정
+파서와 제한: lopdf 0.38.0(MIT)을 사용하고 입력 200MiB, 2,000페이지, 200,000객체, page content 32MiB, 총 텍스트 4M자를 넘으면 발행 전에 거부한다. 암호화/암호 PDF는 `PasswordRequired`로 실패하고 경로·내용을 오류나 로그에 넣지 않는다. 페이지는 20개 비공백 문자와 0.5% text bounds를 기준으로 text/scanned/mixed를 결정하며 사용자 force OCR을 허용한다.
+OCR: Windows는 Windows.Data.Pdf, macOS는 PDFKit/CoreGraphics Objective-C bridge로 각 scanned/mixed page를 144DPI(72–300 clamp), 최대 8192px/80MP RGBA로 렌더한 뒤 기존 로컬 Windows.Media.Ocr 또는 Vision 어댑터에 전달한다. 운영체제 렌더러·언어 팩·OCR을 사용할 수 없으면 정상 번역 사본으로 가장하지 않고 typed `OcrUnavailable`로 실패한다.
+재조립: 원본 content/resources를 제거하지 않고 translated text를 cosmic-text와 OFL Noto/system fallback으로 raster shape한 XObject overlay로 추가한다. page size·rotation·annotations·attachments·forms를 최대한 보존하고 결과를 재열어 page/box/rotation을 확인한다. 복잡한 배경은 `backgroundApproximation`, 전자서명은 `signatureInvalidated`, 양식은 `interactiveFormPreserved`로 위치와 조치가 명확한 보고를 만든다.
+라이선스: PDFium은 다운로드·포함하지 않는다. Windows.Data.Pdf와 PDFKit/CoreGraphics는 각 OS 구성요소이고 lopdf 0.38.0은 Cargo.lock에 고정한다. Noto Sans variable font와 SIL Open Font License 1.1은 설치 번들 resource에 함께 포함한다.

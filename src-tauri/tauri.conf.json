@@ -39,6 +39,10 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "resources": [
+      "../tests/fixtures/fonts/NotoSans-Variable.ttf",
+      "../tests/fixtures/fonts/LICENSE.txt"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

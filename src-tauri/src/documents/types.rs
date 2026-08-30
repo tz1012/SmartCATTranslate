@@ -9,6 +9,7 @@ pub enum DocumentFormat {
     Docx,
     Pptx,
     Xlsx,
+    Pdf,
 }
 
 impl DocumentFormat {
@@ -17,6 +18,7 @@ impl DocumentFormat {
             "docx" => Some(Self::Docx),
             "pptx" => Some(Self::Pptx),
             "xlsx" => Some(Self::Xlsx),
+            "pdf" => Some(Self::Pdf),
             _ => None,
         }
     }
@@ -30,6 +32,13 @@ pub struct DocumentOptions {
     pub include_hidden: bool,
     pub wrap_text: bool,
     pub target_language: String,
+    pub source_language: Option<String>,
+    pub profile_id: Option<Uuid>,
+    pub model: Option<String>,
+    pub pdf_force_ocr: bool,
+    pub pdf_fit: bool,
+    pub preserve_annotations: bool,
+    pub output_directory: Option<String>,
 }
 impl Default for DocumentOptions {
     fn default() -> Self {
@@ -39,6 +48,13 @@ impl Default for DocumentOptions {
             include_hidden: false,
             wrap_text: true,
             target_language: "ko".into(),
+            source_language: None,
+            profile_id: None,
+            model: None,
+            pdf_force_ocr: false,
+            pdf_fit: true,
+            preserve_annotations: true,
+            output_directory: None,
         }
     }
 }
@@ -66,6 +82,16 @@ pub struct DocumentManifest {
     pub segment_count: usize,
     pub part_count: usize,
     pub source_hash: String,
+    #[serde(default)]
+    pub page_count: usize,
+    #[serde(default)]
+    pub page_kinds: Vec<String>,
+    #[serde(default)]
+    pub has_signatures: bool,
+    #[serde(default)]
+    pub has_forms: bool,
+    #[serde(default)]
+    pub has_annotations: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -88,6 +114,8 @@ pub struct DocumentReport {
     pub publishable: bool,
     pub source_hash: String,
     pub output_hash: String,
+    #[serde(default)]
+    pub resumed_from_stage: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -108,6 +136,12 @@ pub enum DocumentError {
     Cancelled,
     #[error("document I/O failed")]
     Io,
+    #[error("PDF password is required")]
+    PasswordRequired,
+    #[error("PDF limits exceeded")]
+    LimitExceeded,
+    #[error("PDF OCR is unavailable")]
+    OcrUnavailable,
 }
 
 pub struct DocumentPlan {

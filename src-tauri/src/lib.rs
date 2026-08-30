@@ -108,6 +108,8 @@ pub fn run() {
             commands::documents::translate_document,
             commands::documents::cancel_document_translation,
             commands::documents::open_document_result,
+            commands::documents::open_document_folder,
+            commands::documents::choose_document_output_directory,
         ])
         .build(tauri::generate_context!())
         .expect("failed to run SmartCAT Translate");

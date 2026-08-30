@@ -747,3 +747,16 @@ TDD 및 검증
 - 프런트엔드 `pnpm build`와 공유 target의 Windows `cargo check --lib`가 통과했다. 첫 Rust 실행은 rustc PATH 누락으로 실패했으나 환경을 교정한 단일 검사와 최종 8.19초 증분 검사가 경고 없이 통과했다.
 - positive OOXML smoke는 test profile 콜드 재컴파일이 30초를 넘어 사용자 지시에 따라 중단했고 기존/작성 테스트는 보존했다. 실제 Office 시각 렌더, macOS 실기, hidden slide/sheet와 Excel wrap style mutation은 후속 acceptance 단계 전까지 통과를 주장하지 않는다.
 - quick-xml 0.41은 MIT 라이선스이며 기존 transitive version을 직접 사용해 중복 의존성을 만들지 않는다.
+
+[2026-08-31] 문서 번역 Tasks 7–8 — PDF OCR·오버레이와 통합 문서 작업 화면
+
+구현
+- 200MiB/2,000페이지/200,000객체/페이지 content 32MiB/총 텍스트 4,000,000자 제한 안에서 PDF를 열고 암호화 문서는 내용이나 경로를 기록하지 않은 `PasswordRequired`로 거부한다. 페이지별 텍스트 글자 수·영역·이미지 자원을 이용해 text/scanned/mixed를 분류하고 CropBox·회전을 top-left 정규화 좌표로 변환한다.
+- Windows.Data.Pdf와 macOS PDFKit/CoreGraphics가 각 스캔·혼합 페이지를 144DPI bounded RGBA로 렌더하고 기존 Windows.Media.Ocr/macOS Vision 경로로 전달한다. OCR이 실제로 사용할 수 없으면 결과를 정상 완료하지 않고 페이지 작업을 typed `OcrUnavailable`로 중단한다.
+- 텍스트와 OCR block은 기존 구조화 Codex 번역 경계에서 안정 ID와 보호 token을 검증한다. 원본 페이지 content stream, 이미지·vector resource, CropBox/MediaBox, rotation, link·annotation·form을 제거하지 않고 각 번역 block을 OFL Noto/system fallback으로 shaping한 raster overlay로 추가한다. 원본 PDF는 read-only hash로 재확인하고 결과는 고유한 sibling partial을 재열기 검증한 뒤 새 경로로만 발행한다.
+- 전자서명은 번역 사본에서 유효하지 않음을, 양식은 보존하지만 필드 값은 번역하지 않음을 보고한다. 배경 근사, OCR, overflow, 서명·양식 위험을 page/block 위치로 표시하며 문서 내용과 전체 경로는 event/log/error에 넣지 않는다.
+- 한국어·영어 문서 화면을 DOCX/PPTX/XLSX/PDF 공통으로 확장했다. 원문/대상 언어, 계정 모델, 프로필·용어집, comments/notes/hidden/wrap, PDF fit/OCR/annotation, native 출력 폴더, format badge, 단계 진행·취소·재시도, 결과 파일·폴더 열기와 위치별 위험 보고를 제공한다. 전체 경로는 사용자가 별도 details를 펼친 경우에만 표시한다.
+
+속도 우선 검증과 라이선스
+- 사용자 지시에 따라 새 실패 테스트·실패 주입·전체 회귀·장시간 패키지 빌드는 수행하지 않았다. 프런트엔드 `pnpm build`가 통과했고 D 드라이브 공유 target의 Windows `cargo check --lib`가 통과했다.
+- PDF parser/writer는 lopdf 0.38.0(MIT), Windows renderer는 운영체제 Windows.Data.Pdf, macOS renderer는 운영체제 PDFKit/CoreGraphics를 사용한다. PDFium 바이너리는 포함하지 않는다. 래스터 글자 shaping에 포함하는 Noto Sans variable font와 SIL OFL 1.1 라이선스는 번들 resource로 함께 보존한다. Windows/macOS PDF 실제 시각 smoke와 서명·양식 상호작용 실기는 후속 acceptance 전까지 통과를 주장하지 않는다.

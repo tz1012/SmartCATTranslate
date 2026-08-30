@@ -322,6 +322,18 @@ main[data-theme="dark"] :is(.capture-progress, .capture-warnings, .capture-block
 .document-workspace fieldset label { display: flex; align-items: center; gap: .35rem; }
 .document-workspace fieldset input { width: auto; min-height: auto; }
 .document-workspace fieldset select { width: auto; }
+.document-option-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: .75rem; width: 100%; }
+.document-option-grid label { display: grid !important; gap: .35rem; }
+.document-destination { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; width: 100%; }
+.document-destination details { flex-basis: 100%; }
+.document-destination code { overflow-wrap: anywhere; }
+.format-badge { border: 1px solid #cbd5e1; border-radius: 999px; font-size: .75rem; font-weight: 700; padding: .15rem .45rem; margin-inline: .45rem; }
+.document-risk { color: #a84b00 !important; font-weight: 650; }
+.document-progress { display: grid; gap: .35rem; }
+.document-progress progress { width: 100%; }
+.document-report li { display: grid; gap: .15rem; margin-block: .45rem; }
+.document-report li span { color: #64748b; }
+.document-error { border-left: 3px solid #b42318; padding-inline: .8rem; }
 .document-progress { padding: .7rem; border-radius: .6rem; background: #eef5fc; }
 .document-progress progress { flex: 1; min-width: 8rem; }
 .document-report { display: grid; gap: .55rem; padding: .8rem; border: 1px solid #9bc9ac; border-radius: .65rem; background: #eef8f2; }
