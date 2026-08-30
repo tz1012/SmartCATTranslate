@@ -46,6 +46,9 @@ enum DocumentJobEvent {
         code: String,
         location: Option<String>,
     },
+    RetentionRequested {
+        job_id: Uuid,
+    },
 }
 
 #[tauri::command]
@@ -96,12 +99,9 @@ pub async fn translate_document(
     source_path: String,
     options: DocumentOptions,
 ) -> Result<DocumentReport, String> {
+    let secret = options.secret;
     let cancelled = jobs.begin(job_id);
-    let jobs_root = app
-        .path()
-        .app_data_dir()
-        .map_err(|_| "document_io_failed".to_owned())?
-        .join("document-jobs");
+    let jobs_root = document_jobs_root(&app)?;
     let job_root = jobs_root.join(job_id.simple().to_string());
     std::fs::create_dir_all(&job_root).map_err(|_| "document_io_failed".to_owned())?;
     let outcome = translate_document_inner(
@@ -145,7 +145,30 @@ pub async fn translate_document(
             );
         }
     }
-    cleanup_job_root(&jobs_root, &job_root);
+    let retryable = outcome
+        .as_ref()
+        .err()
+        .is_some_and(|code| retryable_document_error(code));
+    let retain = if !secret && retryable {
+        let _ = app.emit(
+            "document-job",
+            DocumentJobEvent::RetentionRequested { job_id },
+        );
+        let mut acknowledged = false;
+        for _ in 0..10 {
+            if jobs.take_retention_ack(job_id) {
+                acknowledged = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        acknowledged
+    } else {
+        false
+    };
+    if !retain {
+        cleanup_job_root(&jobs_root, &job_root);
+    }
     outcome
 }
 
@@ -161,6 +184,8 @@ async fn translate_document_inner(
     let mut plan = documents::inspect_document(std::path::Path::new(&source_path), &options)
         .map_err(error_code)?;
     if plan.format == crate::documents::DocumentFormat::Pdf {
+        crate::documents::pdf::preflight_spool(job_root, plan.manifest.page_count)
+            .map_err(error_code)?;
         plan.pdf_spool = Some(PdfRasterSpool {
             root: job_root.to_owned(),
             refs: Default::default(),
@@ -169,6 +194,18 @@ async fn translate_document_inner(
     if cancelled.load(Ordering::Acquire) {
         return Err("document_cancelled".into());
     }
+    emit(
+        app,
+        job_id,
+        checkpoint(
+            &plan,
+            DocumentStage::Inspect,
+            "inspect:completed",
+            1,
+            1,
+            &[],
+        ),
+    );
     emit(
         app,
         job_id,
@@ -310,6 +347,22 @@ async fn translate_document_inner(
             }
         };
         translated.extend(finish_batch(&prepared_batch, &output).map_err(error_code)?);
+        let translated_refs = translated
+            .iter()
+            .map(|value| format!("segment:{}", value.id))
+            .collect::<Vec<_>>();
+        emit(
+            app,
+            job_id,
+            checkpoint(
+                &plan,
+                DocumentStage::Translate,
+                &format!("batch:{index}:completed"),
+                index + 1,
+                total,
+                &translated_refs,
+            ),
+        );
     }
     let report = documents::pipeline::rebuild_document_checked(
         &plan,
@@ -324,6 +377,7 @@ async fn translate_document_inner(
         let inspection = crate::documents::pdf::inspect(&plan.source, options.pdf_force_ocr)
             .map_err(error_code)?;
         if let Err(error) = crate::documents::pdf::validate_rendered_output(
+            &plan.source,
             std::path::Path::new(&report.output_path),
             &inspection,
             cancelled,
@@ -339,7 +393,17 @@ async fn translate_document_inner(
     emit(
         app,
         job_id,
-        checkpoint(&plan, DocumentStage::Completed, "completed", 1, 1, &[]),
+        checkpoint(
+            &plan,
+            DocumentStage::Completed,
+            "completed",
+            1,
+            1,
+            &translated
+                .iter()
+                .map(|value| format!("segment:{}", value.id))
+                .collect::<Vec<_>>(),
+        ),
     );
     Ok(report)
 }
@@ -363,6 +427,14 @@ impl TranslationEventSink for DocumentSink {
 #[tauri::command]
 pub fn cancel_document_translation(jobs: tauri::State<'_, DocumentJobStore>, job_id: Uuid) -> bool {
     jobs.cancel(job_id)
+}
+
+#[tauri::command]
+pub fn acknowledge_document_resume_retention(
+    jobs: tauri::State<'_, DocumentJobStore>,
+    job_id: Uuid,
+) {
+    jobs.acknowledge_retention(job_id);
 }
 #[tauri::command]
 pub fn open_document_result(app: tauri::AppHandle, path: String) -> Result<(), String> {
@@ -443,6 +515,33 @@ fn cleanup_job_root(root: &std::path::Path, job_root: &std::path::Path) {
     {
         let _ = std::fs::remove_dir_all(job_root);
     }
+}
+
+fn document_jobs_root(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    #[cfg(windows)]
+    {
+        let preferred = std::path::PathBuf::from(r"D:\SmartCATTranslateData\document-jobs");
+        if preferred.parent().is_some_and(std::path::Path::exists)
+            && std::fs::create_dir_all(&preferred).is_ok()
+        {
+            return Ok(preferred);
+        }
+    }
+    app.path()
+        .app_data_dir()
+        .map(|path| path.join("document-jobs"))
+        .map_err(|_| "document_io_failed".to_owned())
+}
+
+fn retryable_document_error(code: &str) -> bool {
+    matches!(
+        code,
+        "document_translation_failed"
+            | "document_translation_timed_out"
+            | "translation_auth_required"
+            | "translation_quota_exceeded"
+            | "translation_network_failed"
+    )
 }
 fn error_code(error: documents::types::DocumentError) -> String {
     match error {

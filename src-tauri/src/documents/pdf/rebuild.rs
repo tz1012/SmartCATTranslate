@@ -34,6 +34,7 @@ pub fn rebuild(
     output: &Path,
     options: &DocumentOptions,
     spool: Option<&PdfRasterSpool>,
+    translated_result_refs: &[String],
     cancelled: &AtomicBool,
     checkpoint: &(dyn Fn(&DocumentCheckpoint) + Sync),
 ) -> Result<Vec<DocumentWarning>, DocumentError> {
@@ -66,7 +67,7 @@ pub fn rebuild(
             page_index,
             inspection.pages.len(),
             spool,
-            &[],
+            translated_result_refs,
         );
         let page_part = format!("page:{}", page.number);
         let mut effective_blocks = page.blocks.clone();
@@ -274,7 +275,7 @@ pub fn rebuild(
         inspection.pages.len(),
         inspection.pages.len(),
         spool,
-        &[],
+        translated_result_refs,
     );
     for page in &inspection.pages {
         if let Some(reason) = &page.fallback_reason {
@@ -313,7 +314,7 @@ pub fn rebuild(
         0,
         1,
         spool,
-        &[],
+        translated_result_refs,
     );
     let file = OpenOptions::new()
         .create_new(true)
@@ -333,7 +334,7 @@ pub fn rebuild(
         1,
         1,
         spool,
-        &[],
+        translated_result_refs,
     );
     let reopened = inspect(output, false)?;
     if reopened.pages.len() != inspection.pages.len() {

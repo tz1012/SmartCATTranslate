@@ -276,3 +276,10 @@ OCR: Windows는 Windows.Data.Pdf, macOS는 PDFKit/CoreGraphics Objective-C bridg
 메모리 경계: PDF 페이지 bitmap은 `DocumentPlan`에 RGBA로 누적하지 않는다. app data 아래 UUID job root의 `pages/page-NNNNN.png` 상대 ref만 checkpoint에 보유하고, OCR·배경 판정·재조립은 한 페이지씩 decode 후 해제한다. job cleanup은 예상 root의 32자리 UUID 자식인지 확인한 뒤 현재 job 폴더만 제거한다.
 시각 경계: 일반 text page도 OS renderer 결과에서 block 영역을 제한 sampling해 중앙 배경색과 색 변화 비율을 구한다. 균일 영역은 추정색 text overlay, 복잡 영역·큰 이미지·스캔 page는 최대 300DPI page raster fallback을 사용한다. 발행 결과는 모든 페이지를 72DPI로 순차 렌더해 CropBox/rotation 기준 크기를 확인하고, EmbeddedFiles는 name tree leaf 항목 수로 검증한다.
 이벤트·재개: `document-job` 하나가 progress checkpoint, warning, completed report와 sanitized failed code/location을 tagged event로 전달한다. checkpoint는 source fingerprint, stable page/batch unit ID, 상대 raster refs와 content-free translated result refs를 포함해 암호화 JobStore가 그대로 저장·rehydrate할 수 있다. 실제 영구 저장은 후속 history/recovery milestone 전까지 주장하지 않는다.
+
+[D-045] PDF adaptive raster·spool quota·retention ACK와 결과 위치 계약
+상태: 확정
+래스터 품질: 일반 text page를 144DPI로 제한 sampling한 결과가 복잡하면 그 페이지만 300DPI hard cap으로 재렌더한다. spool에는 최종 page PNG만 남기고 loader/writer 모두 페이지 64MiB, job 8GiB와 2,000페이지 계약을 사용한다. OS free-space가 예상량과 256MiB 안전 여유보다 작으면 rendering 전에 `LimitExceeded`로 중단한다.
+검증 좌표: Windows.Data.Pdf와 PDFKit bridge가 반환하는 bitmap width/height가 권위 값이다. 결과 검증은 같은 renderer로 source/output page를 72DPI 순차 렌더해 직접 비교하며 rotation에 따른 swap을 다시 추측하지 않는다. PDF box/rotation metadata는 lopdf 구조 검증으로 별도 비교한다.
+재개 보존: batch 성공 뒤 checkpoint의 stable unit/cursor와 누적 translated-result refs를 갱신하고 reflow/save/completed까지 전달한다. 암호화 저장소는 ref-to-TranslatedSegment resolver로 rehydrate한다. retryable auth/network/quota 실패의 job root는 retention request에 명시적 ACK가 있을 때만 넘기며 ACK 부재·취소·성공·secret mode는 항상 정리한다.
+화면 위치: 보고 위치가 page/slide/cell로 정확히 parse되는 형식은 결과 위치 preview selection과 focus를 바꾼다. 정확한 target이 없으면 파일 위치 이동을 주장하지 않고 보고 항목 focus만 제공한다. 결과 파일 열기는 별도 action이다.

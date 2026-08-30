@@ -1,20 +1,23 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { cancelDocumentTranslation, chooseDocument, inspectDocumentPath, translateDocument } from './documentApi';
 import { DocumentOptions } from './DocumentOptions';
 import { DocumentReport } from './DocumentReport';
+import type { DocumentPreviewTarget } from './DocumentReport';
 import type { ChosenDocument, DocumentJobEvent, DocumentOptions as Options, DocumentProgress, DocumentReport as Report } from './types';
 import type { AppSettings } from '../settings/SettingsView';
 
-const defaults: Options = { includeComments: true, includeNotes: true, includeHidden: false, wrapText: true, targetLanguage: 'ko', sourceLanguage: null, profileId: null, model: null, quality: null, pdfForceOcr: false, pdfFit: true, preserveAnnotations: true, outputDirectory: null };
+const defaults: Options = { includeComments: true, includeNotes: true, includeHidden: false, wrapText: true, targetLanguage: 'ko', sourceLanguage: null, profileId: null, model: null, quality: null, pdfForceOcr: false, pdfFit: true, preserveAnnotations: true, secret: false, outputDirectory: null };
 const stages: Record<string, { ko: string; en: string }> = { inspect: { ko: '문서 검사', en: 'Inspecting' }, extract: { ko: '텍스트 추출', en: 'Extracting' }, ocr: { ko: '로컬 OCR', en: 'Local OCR' }, translate: { ko: '안전하게 번역', en: 'Translating safely' }, reflow: { ko: '서식 재배치', en: 'Reflowing' }, save: { ko: '새 파일 저장', en: 'Saving copy' }, validate: { ko: '결과 다시 열어 검증', en: 'Validating output' }, completed: { ko: '완료', en: 'Completed' } };
 
 export function DocumentWorkspace({ locale }: { locale: 'ko' | 'en' }) {
   const ko = locale === 'ko'; const [options, setOptions] = useState(defaults); const [chosen, setChosen] = useState<ChosenDocument>();
   const [busy, setBusy] = useState(false); const [jobId, setJobId] = useState<string>(); const [progress, setProgress] = useState<DocumentProgress>(); const [report, setReport] = useState<Report>(); const [error, setError] = useState<string>();
   const [settings, setSettings] = useState<AppSettings>();
+  const [previewTarget,setPreviewTarget]=useState<DocumentPreviewTarget>();const previewRef=useRef<HTMLElement>(null);
+  useEffect(()=>{if(previewTarget){previewRef.current?.scrollIntoView({behavior:'smooth',block:'center'});previewRef.current?.focus();}},[previewTarget]);
   useEffect(() => { void invoke<AppSettings>('get_settings').then(setSettings).catch(() => undefined); }, []);
   useEffect(() => { let disposed=false; let stop: undefined|(()=>void); void getCurrentWebview().onDragDropEvent((event) => { if (!disposed && event.payload.type === 'drop') { const path=event.payload.paths.find((value) => /\.(docx|pptx|xlsx|pdf)$/i.test(value)); if (path) void inspectDocumentPath(path,options).then((value)=>{setChosen(value);setReport(undefined);setError(undefined);}).catch((reason)=>setError(String(reason))); } }).then((unlisten)=>{if(disposed)unlisten();else stop=unlisten;});return()=>{disposed=true;stop?.();};},[options]);
   useEffect(() => { let disposed = false; let stop: undefined | (() => void); void listen<DocumentJobEvent>('document-job', (event) => { const payload=event.payload;if(jobId&&payload.jobId!==jobId)return;if(payload.type==='progress'){setProgress({jobId:payload.jobId,stage:payload.checkpoint.stage,unitId:payload.checkpoint.stableUnitId,completed:payload.checkpoint.completed,total:payload.checkpoint.total});}else if(payload.type==='completed'){setReport(payload.report);}else if(payload.type==='failed'){setError(payload.code);} }).then((unlisten) => { if (disposed) unlisten(); else stop = unlisten; }); return () => { disposed = true; stop?.(); }; }, [jobId]);
@@ -31,5 +34,6 @@ export function DocumentWorkspace({ locale }: { locale: 'ko' | 'en' }) {
     <div className="document-actions"><button type="button" className="primary-action" disabled={!chosen || busy} onClick={() => void start()}>{ko ? '새 번역 파일 만들기' : 'Create translated copy'}</button>{busy && <button type="button" onClick={() => void cancel()}>{ko ? '취소' : 'Cancel'}</button>}</div>
     {busy && <div className="document-progress" role="status" aria-live="polite"><progress max="100" value={percent}/><span>{stages[progress?.stage ?? 'inspect']?.[ko ? 'ko' : 'en']} · {percent}%</span><small>{ko ? '문서 내용과 전체 경로는 진행 기록에 포함되지 않습니다.' : 'Document content and full paths are excluded from progress records.'}</small></div>}
     {error && <div role="alert" className="document-error"><p>{ko ? `문서 번역 실패: ${error}` : `Document translation failed: ${error}`}</p><button type="button" onClick={() => void start()} disabled={!chosen || busy}>{ko ? '다시 시도' : 'Retry'}</button></div>}
-    {report && <DocumentReport locale={locale} report={report} onRetry={() => void start()}/>}</section>;
+    {report&&previewTarget&&<section ref={previewRef} tabIndex={-1} className="document-result-preview" aria-label={ko?'결과 문서 위치 미리보기':'Result document location preview'}><h3>{ko?'결과 위치 미리보기':'Result location preview'}</h3><strong>{previewTarget.label}</strong><p>{previewTarget.kind==='page'?(ko?'번역 PDF의 선택한 페이지입니다.':'Selected page in the translated PDF.') : previewTarget.kind==='slide'?(ko?'번역 프레젠테이션의 선택한 슬라이드입니다.':'Selected slide in the translated presentation.'):(ko?'번역 통합 문서의 선택한 셀입니다.':'Selected cell in the translated workbook.')}</p><code>{previewTarget.location}</code></section>}
+    {report && <DocumentReport locale={locale} report={report} onRetry={() => void start()} onNavigateLocation={setPreviewTarget}/>}</section>;
 }

@@ -4050,6 +4050,7 @@ dependencies = [
  "flate2",
  "image",
  "jsonschema",
+ "libc",
  "lopdf",
  "quick-xml",
  "regex",

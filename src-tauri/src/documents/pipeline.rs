@@ -135,6 +135,10 @@ pub fn rebuild_document_checked(
                 &partial,
                 options,
                 plan.pdf_spool.as_ref(),
+                &translated
+                    .iter()
+                    .map(|value| format!("segment:{}", value.id))
+                    .collect::<Vec<_>>(),
                 cancelled,
                 checkpoint,
             )?;
@@ -230,7 +234,8 @@ pub fn rebuild_document_checked(
 pub fn set_resume_checkpoint(
     plan: &mut DocumentPlan,
     checkpoint: &DocumentCheckpoint,
-) -> Result<(), DocumentError> {
+    encrypted_results: &HashMap<String, TranslatedSegment>,
+) -> Result<DocumentResumeState, DocumentError> {
     if checkpoint.source_fingerprint != plan.manifest.source_hash
         || checkpoint.raster_refs.iter().any(|value| {
             let path = Path::new(value);
@@ -259,7 +264,29 @@ pub fn set_resume_checkpoint(
             })
             .collect();
     }
-    Ok(())
+    let translated = checkpoint
+        .translated_result_refs
+        .iter()
+        .map(|reference| {
+            encrypted_results
+                .get(reference)
+                .cloned()
+                .ok_or(DocumentError::InvalidPackage)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let batch_cursor = if checkpoint.stage == DocumentStage::Translate {
+        checkpoint.completed
+    } else {
+        checkpoint
+            .stable_unit_id
+            .strip_prefix("batch:")
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0)
+    };
+    Ok(DocumentResumeState {
+        batch_cursor,
+        translated,
+    })
 }
 
 pub(crate) fn replace_selected_nodes(

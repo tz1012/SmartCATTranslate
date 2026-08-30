@@ -108,6 +108,7 @@ pub fn run() {
             commands::documents::inspect_document_path,
             commands::documents::translate_document,
             commands::documents::cancel_document_translation,
+            commands::documents::acknowledge_document_resume_retention,
             commands::documents::open_document_result,
             commands::documents::open_document_folder,
             commands::documents::choose_document_output_directory,

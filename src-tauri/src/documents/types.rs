@@ -39,6 +39,7 @@ pub struct DocumentOptions {
     pub pdf_force_ocr: bool,
     pub pdf_fit: bool,
     pub preserve_annotations: bool,
+    pub secret: bool,
     pub output_directory: Option<String>,
 }
 impl Default for DocumentOptions {
@@ -56,6 +57,7 @@ impl Default for DocumentOptions {
             pdf_force_ocr: false,
             pdf_fit: true,
             preserve_annotations: true,
+            secret: false,
             output_directory: None,
         }
     }
@@ -151,6 +153,12 @@ pub struct DocumentCheckpoint {
 pub struct PdfRasterSpool {
     pub root: PathBuf,
     pub refs: std::collections::HashMap<u32, String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct DocumentResumeState {
+    pub batch_cursor: usize,
+    pub translated: Vec<TranslatedSegment>,
 }
 
 #[derive(Debug, thiserror::Error)]

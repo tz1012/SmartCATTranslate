@@ -121,12 +121,14 @@ async fn load_or_render_page(
     if let Some(relative) = spool.refs.get(&page.number) {
         return load_spooled_page(spool, relative);
     }
-    let image = render_page(
-        source,
-        page.number,
-        if page.has_large_image { 300 } else { 144 },
-    )
-    .await?;
+    let initial_dpi = if page.has_large_image { 300 } else { 144 };
+    let mut image = render_page(source, page.number, initial_dpi).await?;
+    if initial_dpi == 144
+        && matches!(page.kind, PdfPageKind::Text)
+        && rendered_background_is_complex(&image, &page.blocks)
+    {
+        image = render_page(source, page.number, 300).await?;
+    }
     let relative = format!("pages/page-{:05}.png", page.number);
     write_spooled_page(spool, &relative, &image)?;
     spool.refs.insert(page.number, relative);
@@ -189,7 +191,7 @@ fn write_spooled_page(
     let file = OpenOptions::new()
         .create_new(true)
         .write(true)
-        .open(path)
+        .open(&path)
         .map_err(|_| DocumentError::Io)?;
     let mut writer = BufWriter::new(file);
     PngEncoder::new(&mut writer)
@@ -202,7 +204,124 @@ fn write_spooled_page(
         .map_err(|_| DocumentError::Io)?;
     use std::io::Write;
     writer.flush().map_err(|_| DocumentError::Io)?;
-    writer.get_ref().sync_all().map_err(|_| DocumentError::Io)
+    writer.get_ref().sync_all().map_err(|_| DocumentError::Io)?;
+    drop(writer);
+    let page_bytes = fs::metadata(&path).map_err(|_| DocumentError::Io)?.len();
+    if page_bytes > MAX_SPOOL_PAGE_BYTES || spool_size(&spool.root)? > MAX_SPOOL_TOTAL_BYTES {
+        let _ = fs::remove_file(&path);
+        return Err(DocumentError::LimitExceeded);
+    }
+    Ok(())
+}
+
+fn spool_size(root: &Path) -> Result<u64, DocumentError> {
+    let pages = root.join("pages");
+    if !pages.exists() {
+        return Ok(0);
+    }
+    let mut total = 0u64;
+    for entry in fs::read_dir(pages).map_err(|_| DocumentError::Io)? {
+        let entry = entry.map_err(|_| DocumentError::Io)?;
+        if entry.file_type().map_err(|_| DocumentError::Io)?.is_file() {
+            total = total.saturating_add(entry.metadata().map_err(|_| DocumentError::Io)?.len());
+            if total > MAX_SPOOL_TOTAL_BYTES {
+                return Ok(total);
+            }
+        }
+    }
+    Ok(total)
+}
+
+fn rendered_background_is_complex(image: &DecodedImage, blocks: &[PdfBlock]) -> bool {
+    let mut sampled = 0usize;
+    let mut changed = 0usize;
+    for block in blocks.iter().take(512) {
+        let left = (block.bounds[0].clamp(0.0, 1.0) * image.width as f32) as u32;
+        let top = (block.bounds[1].clamp(0.0, 1.0) * image.height as f32) as u32;
+        let right =
+            ((block.bounds[0] + block.bounds[2]).clamp(0.0, 1.0) * image.width as f32) as u32;
+        let bottom =
+            ((block.bounds[1] + block.bounds[3]).clamp(0.0, 1.0) * image.height as f32) as u32;
+        let mut baseline = None;
+        let step_x = ((right.saturating_sub(left)) / 8).max(1);
+        let step_y = ((bottom.saturating_sub(top)) / 6).max(1);
+        let mut y = top;
+        while y < bottom.min(image.height) {
+            let mut x = left;
+            while x < right.min(image.width) {
+                let offset = ((u64::from(y) * u64::from(image.width) + u64::from(x)) * 4) as usize;
+                if offset + 2 < image.rgba.len() {
+                    let pixel = [
+                        image.rgba[offset],
+                        image.rgba[offset + 1],
+                        image.rgba[offset + 2],
+                    ];
+                    if let Some(base) = baseline {
+                        if pixel.iter().zip(base).any(|(a, b)| a.abs_diff(b) > 32) {
+                            changed += 1;
+                        }
+                    } else {
+                        baseline = Some(pixel);
+                    }
+                    sampled += 1;
+                }
+                x = x.saturating_add(step_x);
+            }
+            y = y.saturating_add(step_y);
+        }
+    }
+    sampled == 0 || changed * 5 > sampled
+}
+
+pub fn preflight_spool(root: &Path, page_count: usize) -> Result<(), DocumentError> {
+    if page_count == 0 || page_count > MAX_PDF_PAGES {
+        return Err(DocumentError::LimitExceeded);
+    }
+    fs::create_dir_all(root).map_err(|_| DocumentError::Io)?;
+    let estimated = (page_count as u64)
+        .saturating_mul(4 * 1024 * 1024)
+        .min(MAX_SPOOL_TOTAL_BYTES);
+    if estimated > MAX_SPOOL_TOTAL_BYTES
+        || available_space(root).is_some_and(|free| free < estimated + 256 * 1024 * 1024)
+    {
+        return Err(DocumentError::LimitExceeded);
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn available_space(path: &Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+    let mut wide = path.as_os_str().encode_wide().collect::<Vec<_>>();
+    wide.push(0);
+    let mut available = 0u64;
+    let ok = unsafe {
+        GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &mut available,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    (ok != 0).then_some(available)
+}
+
+#[cfg(target_os = "macos")]
+fn available_space(path: &Path) -> Option<u64> {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt};
+    let path = CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut value = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    if unsafe { libc::statvfs(path.as_ptr(), value.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    let value = unsafe { value.assume_init() };
+    Some((value.f_bavail as u64).saturating_mul(value.f_frsize as u64))
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn available_space(_: &Path) -> Option<u64> {
+    None
 }
 
 pub fn emit_checkpoint(
@@ -229,6 +348,7 @@ pub fn emit_checkpoint(
 }
 
 pub async fn validate_rendered_output(
+    source: &Path,
     path: &Path,
     inspection: &PdfInspection,
     cancelled: &AtomicBool,
@@ -243,15 +363,11 @@ pub async fn validate_rendered_output(
         if cancelled.load(Ordering::Acquire) {
             return Err(DocumentError::Cancelled);
         }
+        let source_image = render_page(source, expected.number, 72).await?;
         let image = render_page(path, expected.number, 72).await?;
-        let expected_width = expected.width.round().max(1.0) as u32;
-        let expected_height = expected.height.round().max(1.0) as u32;
-        let (expected_width, expected_height) = if expected.rotation.rem_euclid(180) == 90 {
-            (expected_height, expected_width)
-        } else {
-            (expected_width, expected_height)
-        };
-        if image.width.abs_diff(expected_width) > 2 || image.height.abs_diff(expected_height) > 2 {
+        if image.width.abs_diff(source_image.width) > 2
+            || image.height.abs_diff(source_image.height) > 2
+        {
             return Err(DocumentError::ValidationFailed);
         }
         emit_checkpoint(
@@ -287,3 +403,5 @@ pub const MAX_PDF_PAGES: usize = 2_000;
 pub const MAX_PDF_OBJECTS: usize = 200_000;
 pub const MAX_PAGE_CONTENT_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_PDF_TEXT_CHARS: usize = 4_000_000;
+pub const MAX_SPOOL_PAGE_BYTES: u64 = 64 * 1024 * 1024;
+pub const MAX_SPOOL_TOTAL_BYTES: u64 = 8 * 1024 * 1024 * 1024;
