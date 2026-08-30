@@ -35,6 +35,7 @@ pub struct PdfPageInfo {
 }
 #[derive(Clone, Debug)]
 pub struct PdfInspection {
+    pub source_hash: String,
     pub pages: Vec<PdfPageInfo>,
     pub segments: Vec<Segment>,
     pub has_signatures: bool,
@@ -109,7 +110,9 @@ pub fn inspect(path: &Path, force_ocr: bool) -> Result<PdfInspection, DocumentEr
         return Err(DocumentError::LimitExceeded);
     }
     let bytes = fs::read(path).map_err(|_| DocumentError::Io)?;
-    let namespace = Uuid::new_v5(&Uuid::NAMESPACE_OID, &Sha256::digest(&bytes));
+    let digest = Sha256::digest(&bytes);
+    let source_hash = format!("{digest:x}");
+    let namespace = Uuid::new_v5(&Uuid::NAMESPACE_OID, &digest);
     let doc = Document::load_mem(&bytes).map_err(|_| DocumentError::InvalidPackage)?;
     if doc.is_encrypted() || doc.trailer.has(b"Encrypt") {
         return Err(DocumentError::PasswordRequired);
@@ -126,7 +129,7 @@ pub fn inspect(path: &Path, force_ocr: bool) -> Result<PdfInspection, DocumentEr
         .and_then(|d| d.get(b"Names").ok())
         .and_then(|v| resolve_dict(&doc, v))
         .and_then(|d| d.get(b"EmbeddedFiles").ok())
-        .map(|_| 1)
+        .map(|value| name_tree_count(&doc, value, 0))
         .unwrap_or(0);
     let has_signatures = doc.objects.values().any(|o| {
         o.as_dict().is_ok_and(|d| {
@@ -208,6 +211,7 @@ pub fn inspect(path: &Path, force_ocr: bool) -> Result<PdfInspection, DocumentEr
         });
     }
     Ok(PdfInspection {
+        source_hash,
         pages,
         segments,
         has_signatures,
@@ -215,6 +219,32 @@ pub fn inspect(path: &Path, force_ocr: bool) -> Result<PdfInspection, DocumentEr
         has_annotations,
         attachment_count,
     })
+}
+
+fn name_tree_count(doc: &Document, value: &Object, depth: usize) -> usize {
+    if depth > 32 {
+        return 0;
+    }
+    let Some(dictionary) = resolve_dict(doc, value) else {
+        return 0;
+    };
+    let direct = dictionary
+        .get(b"Names")
+        .ok()
+        .and_then(|value| value.as_array().ok())
+        .map(|values| values.len() / 2)
+        .unwrap_or(0);
+    let nested = dictionary
+        .get(b"Kids")
+        .ok()
+        .and_then(|value| value.as_array().ok())
+        .map(|kids| {
+            kids.iter()
+                .map(|kid| name_tree_count(doc, kid, depth + 1))
+                .sum()
+        })
+        .unwrap_or(0);
+    direct.saturating_add(nested)
 }
 
 fn extract_blocks(

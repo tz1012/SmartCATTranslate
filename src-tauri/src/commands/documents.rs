@@ -1,6 +1,6 @@
 use serde::Serialize;
 use std::sync::{atomic::Ordering, Arc, Mutex};
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 use uuid::Uuid;
@@ -15,7 +15,8 @@ use crate::{
     documents::{
         self,
         translate::{batches, finish_batch, prepare_batch},
-        DocumentJobStore, DocumentManifest, DocumentOptions, DocumentReport, DocumentStage,
+        DocumentCheckpoint, DocumentJobStore, DocumentManifest, DocumentOptions, DocumentReport,
+        DocumentStage, PdfRasterSpool,
     },
 };
 
@@ -26,27 +27,24 @@ pub struct ChosenDocument {
     pub manifest: DocumentManifest,
 }
 #[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DocumentProgress {
-    job_id: Uuid,
-    stage: DocumentStage,
-    unit_id: String,
-    completed: usize,
-    total: usize,
-}
-#[derive(Clone, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 enum DocumentJobEvent {
+    Progress {
+        job_id: Uuid,
+        checkpoint: DocumentCheckpoint,
+    },
     Warning {
         job_id: Uuid,
         warning: crate::documents::DocumentWarning,
     },
     Completed {
         job_id: Uuid,
+        report: DocumentReport,
     },
     Failed {
         job_id: Uuid,
         code: String,
+        location: Option<String>,
     },
 }
 
@@ -99,8 +97,23 @@ pub async fn translate_document(
     options: DocumentOptions,
 ) -> Result<DocumentReport, String> {
     let cancelled = jobs.begin(job_id);
-    let outcome =
-        translate_document_inner(&app, &state, &cancelled, job_id, source_path, options).await;
+    let jobs_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "document_io_failed".to_owned())?
+        .join("document-jobs");
+    let job_root = jobs_root.join(job_id.simple().to_string());
+    std::fs::create_dir_all(&job_root).map_err(|_| "document_io_failed".to_owned())?;
+    let outcome = translate_document_inner(
+        &app,
+        &state,
+        &cancelled,
+        job_id,
+        source_path,
+        options,
+        &job_root,
+    )
+    .await;
     jobs.finish(job_id);
     match &outcome {
         Ok(report) => {
@@ -113,7 +126,13 @@ pub async fn translate_document(
                     },
                 );
             }
-            let _ = app.emit("document-job", DocumentJobEvent::Completed { job_id });
+            let _ = app.emit(
+                "document-job",
+                DocumentJobEvent::Completed {
+                    job_id,
+                    report: report.clone(),
+                },
+            );
         }
         Err(code) => {
             let _ = app.emit(
@@ -121,10 +140,12 @@ pub async fn translate_document(
                 DocumentJobEvent::Failed {
                     job_id,
                     code: code.clone(),
+                    location: None,
                 },
             );
         }
     }
+    cleanup_job_root(&jobs_root, &job_root);
     outcome
 }
 
@@ -135,14 +156,31 @@ async fn translate_document_inner(
     job_id: Uuid,
     source_path: String,
     options: DocumentOptions,
+    job_root: &std::path::Path,
 ) -> Result<DocumentReport, String> {
-    emit(app, job_id, DocumentStage::Inspect, 0, 1);
     let mut plan = documents::inspect_document(std::path::Path::new(&source_path), &options)
         .map_err(error_code)?;
+    if plan.format == crate::documents::DocumentFormat::Pdf {
+        plan.pdf_spool = Some(PdfRasterSpool {
+            root: job_root.to_owned(),
+            refs: Default::default(),
+        });
+    }
     if cancelled.load(Ordering::Acquire) {
         return Err("document_cancelled".into());
     }
-    emit(app, job_id, DocumentStage::Extract, 1, 1);
+    emit(
+        app,
+        job_id,
+        checkpoint(
+            &plan,
+            DocumentStage::Extract,
+            "extract:completed",
+            1,
+            1,
+            &[],
+        ),
+    );
     let settings = open_store(app)?
         .load()
         .await
@@ -166,7 +204,7 @@ async fn translate_document_inner(
             options.pdf_force_ocr,
             job_id,
             cancelled,
-            &|stage, completed, total| emit(app, job_id, stage, completed, total),
+            &|value| emit(app, job_id, value.clone()),
         )
         .await
         .map_err(error_code)?;
@@ -203,7 +241,22 @@ async fn translate_document_inner(
         if cancelled.load(Ordering::Acquire) {
             return Err("document_cancelled".into());
         }
-        emit(app, job_id, DocumentStage::Translate, index, total);
+        let translated_refs = translated
+            .iter()
+            .map(|value: &crate::documents::TranslatedSegment| format!("segment:{}", value.id))
+            .collect::<Vec<_>>();
+        emit(
+            app,
+            job_id,
+            checkpoint(
+                &plan,
+                DocumentStage::Translate,
+                &format!("batch:{index}"),
+                index,
+                total,
+                &translated_refs,
+            ),
+        );
         let prepared_batch =
             prepare_batch(segment_batch, &protected, job_id).map_err(error_code)?;
         let mut profile = saved.profile.clone();
@@ -258,24 +311,36 @@ async fn translate_document_inner(
         };
         translated.extend(finish_batch(&prepared_batch, &output).map_err(error_code)?);
     }
-    emit(
-        app,
-        job_id,
-        DocumentStage::Reflow,
-        0,
-        plan.manifest.part_count.max(1),
-    );
     let report = documents::pipeline::rebuild_document_checked(
         &plan,
         &translated,
         &options,
         job_id,
         cancelled,
-        &|stage, completed, total| emit(app, job_id, stage, completed, total),
+        &|value| emit(app, job_id, value.clone()),
     )
     .map_err(error_code)?;
-    emit(app, job_id, DocumentStage::Validate, 1, 1);
-    emit(app, job_id, DocumentStage::Completed, 1, 1);
+    if plan.format == crate::documents::DocumentFormat::Pdf {
+        let inspection = crate::documents::pdf::inspect(&plan.source, options.pdf_force_ocr)
+            .map_err(error_code)?;
+        if let Err(error) = crate::documents::pdf::validate_rendered_output(
+            std::path::Path::new(&report.output_path),
+            &inspection,
+            cancelled,
+            &|value| emit(app, job_id, value.clone()),
+            &plan.manifest.source_hash,
+        )
+        .await
+        {
+            let _ = std::fs::remove_file(&report.output_path);
+            return Err(error_code(error));
+        }
+    }
+    emit(
+        app,
+        job_id,
+        checkpoint(&plan, DocumentStage::Completed, "completed", 1, 1, &[]),
+    );
     Ok(report)
 }
 
@@ -337,36 +402,47 @@ pub fn choose_document_output_directory(app: tauri::AppHandle) -> Option<String>
         .and_then(|folder| folder.into_path().ok())
         .map(|path| path.to_string_lossy().into_owned())
 }
-fn emit(
-    app: &tauri::AppHandle,
-    job_id: Uuid,
+fn emit(app: &tauri::AppHandle, job_id: Uuid, checkpoint: DocumentCheckpoint) {
+    let _ = app.emit(
+        "document-job",
+        DocumentJobEvent::Progress { job_id, checkpoint },
+    );
+}
+
+fn checkpoint(
+    plan: &documents::DocumentPlan,
     stage: DocumentStage,
+    stable_unit_id: &str,
     completed: usize,
     total: usize,
-) {
-    let unit_id = format!(
-        "{}:{completed}",
-        match stage {
-            DocumentStage::Inspect => "inspect",
-            DocumentStage::Extract => "extract",
-            DocumentStage::Ocr => "ocr",
-            DocumentStage::Translate => "translate",
-            DocumentStage::Reflow => "reflow",
-            DocumentStage::Save => "save",
-            DocumentStage::Validate => "validate",
-            DocumentStage::Completed => "completed",
-        }
-    );
-    let _ = app.emit(
-        "document-progress",
-        DocumentProgress {
-            job_id,
-            stage,
-            unit_id,
-            completed,
-            total,
-        },
-    );
+    translated_result_refs: &[String],
+) -> DocumentCheckpoint {
+    let mut raster_refs = plan
+        .pdf_spool
+        .as_ref()
+        .map(|spool| spool.refs.values().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    raster_refs.sort();
+    DocumentCheckpoint {
+        source_fingerprint: plan.manifest.source_hash.clone(),
+        stage,
+        stable_unit_id: stable_unit_id.to_owned(),
+        completed,
+        total,
+        raster_refs,
+        translated_result_refs: translated_result_refs.to_vec(),
+    }
+}
+
+fn cleanup_job_root(root: &std::path::Path, job_root: &std::path::Path) {
+    if job_root.parent() == Some(root)
+        && job_root
+            .file_name()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.len() == 32 && value.chars().all(|c| c.is_ascii_hexdigit()))
+    {
+        let _ = std::fs::remove_dir_all(job_root);
+    }
 }
 fn error_code(error: documents::types::DocumentError) -> String {
     match error {

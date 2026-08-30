@@ -3,8 +3,6 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::capture::DecodedImage;
-
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum DocumentFormat {
@@ -135,6 +133,26 @@ pub enum DocumentStage {
     Completed,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentCheckpoint {
+    pub source_fingerprint: String,
+    pub stage: DocumentStage,
+    pub stable_unit_id: String,
+    pub completed: usize,
+    pub total: usize,
+    #[serde(default)]
+    pub raster_refs: Vec<String>,
+    #[serde(default)]
+    pub translated_result_refs: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PdfRasterSpool {
+    pub root: PathBuf,
+    pub refs: std::collections::HashMap<u32, String>,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum DocumentError {
     #[error("unsupported document format")]
@@ -166,6 +184,6 @@ pub struct DocumentPlan {
     pub format: DocumentFormat,
     pub manifest: DocumentManifest,
     pub segments: Vec<Segment>,
-    pub pdf_rasters: std::collections::HashMap<u32, DecodedImage>,
+    pub pdf_spool: Option<PdfRasterSpool>,
     pub resumed_from_stage: Option<String>,
 }

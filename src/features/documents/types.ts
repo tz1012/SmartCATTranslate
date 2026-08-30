@@ -5,4 +5,10 @@ export type ChosenDocument = { sourcePath: string; manifest: DocumentManifest };
 export type DocumentWarning = { code: string; location?: string; message: string };
 export type DocumentReport = { jobId: string; format: DocumentFormat; outputPath: string; outputName: string; translatedSegments: number; warnings: DocumentWarning[]; publishable: boolean; resumedFromStage?: string };
 export type DocumentProgress = { jobId: string; stage: 'inspect' | 'extract' | 'ocr' | 'translate' | 'reflow' | 'save' | 'validate' | 'completed'; unitId?: string; completed: number; total: number };
+export type DocumentCheckpoint = { sourceFingerprint: string; stage: DocumentProgress['stage']; stableUnitId: string; completed: number; total: number; rasterRefs: string[]; translatedResultRefs: string[] };
+export type DocumentJobEvent =
+  | { type: 'progress'; jobId: string; checkpoint: DocumentCheckpoint }
+  | { type: 'warning'; jobId: string; warning: DocumentWarning }
+  | { type: 'completed'; jobId: string; report: DocumentReport }
+  | { type: 'failed'; jobId: string; code: string; location?: string };
 export type DocumentProfileOption = { id: string; name: string };

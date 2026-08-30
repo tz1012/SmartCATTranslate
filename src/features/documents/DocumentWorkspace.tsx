@@ -5,7 +5,7 @@ import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { cancelDocumentTranslation, chooseDocument, inspectDocumentPath, translateDocument } from './documentApi';
 import { DocumentOptions } from './DocumentOptions';
 import { DocumentReport } from './DocumentReport';
-import type { ChosenDocument, DocumentOptions as Options, DocumentProgress, DocumentReport as Report } from './types';
+import type { ChosenDocument, DocumentJobEvent, DocumentOptions as Options, DocumentProgress, DocumentReport as Report } from './types';
 import type { AppSettings } from '../settings/SettingsView';
 
 const defaults: Options = { includeComments: true, includeNotes: true, includeHidden: false, wrapText: true, targetLanguage: 'ko', sourceLanguage: null, profileId: null, model: null, quality: null, pdfForceOcr: false, pdfFit: true, preserveAnnotations: true, outputDirectory: null };
@@ -17,7 +17,7 @@ export function DocumentWorkspace({ locale }: { locale: 'ko' | 'en' }) {
   const [settings, setSettings] = useState<AppSettings>();
   useEffect(() => { void invoke<AppSettings>('get_settings').then(setSettings).catch(() => undefined); }, []);
   useEffect(() => { let disposed=false; let stop: undefined|(()=>void); void getCurrentWebview().onDragDropEvent((event) => { if (!disposed && event.payload.type === 'drop') { const path=event.payload.paths.find((value) => /\.(docx|pptx|xlsx|pdf)$/i.test(value)); if (path) void inspectDocumentPath(path,options).then((value)=>{setChosen(value);setReport(undefined);setError(undefined);}).catch((reason)=>setError(String(reason))); } }).then((unlisten)=>{if(disposed)unlisten();else stop=unlisten;});return()=>{disposed=true;stop?.();};},[options]);
-  useEffect(() => { let disposed = false; let stop: undefined | (() => void); void listen<DocumentProgress>('document-progress', (event) => { if (!jobId || event.payload.jobId === jobId) setProgress(event.payload); }).then((unlisten) => { if (disposed) unlisten(); else stop = unlisten; }); return () => { disposed = true; stop?.(); }; }, [jobId]);
+  useEffect(() => { let disposed = false; let stop: undefined | (() => void); void listen<DocumentJobEvent>('document-job', (event) => { const payload=event.payload;if(jobId&&payload.jobId!==jobId)return;if(payload.type==='progress'){setProgress({jobId:payload.jobId,stage:payload.checkpoint.stage,unitId:payload.checkpoint.stableUnitId,completed:payload.checkpoint.completed,total:payload.checkpoint.total});}else if(payload.type==='completed'){setReport(payload.report);}else if(payload.type==='failed'){setError(payload.code);} }).then((unlisten) => { if (disposed) unlisten(); else stop = unlisten; }); return () => { disposed = true; stop?.(); }; }, [jobId]);
   const percent = useMemo(() => progress?.stage === 'inspect' ? 5 : progress?.stage === 'validate' ? 94 : progress ? 12 + Math.round(74 * progress.completed / Math.max(1, progress.total)) : 0, [progress]);
   const choose = async () => { setError(undefined); setReport(undefined); try { const value = await chooseDocument(options); if (value) setChosen(value); } catch (reason) { setError(String(reason)); } };
   const start = async () => { if (!chosen) return; const id = crypto.randomUUID(); setJobId(id); setBusy(true); setProgress({ jobId: id, stage: 'inspect', completed: 0, total: 1 }); setError(undefined); setReport(undefined); try { setReport(await translateDocument(id, chosen.sourcePath, options)); } catch (reason) { setError(String(reason)); } finally { setBusy(false); } };

@@ -89,7 +89,7 @@ pub fn inspect_document(
         format,
         manifest,
         segments,
-        pdf_rasters: std::collections::HashMap::new(),
+        pdf_spool: None,
         resumed_from_stage: None,
     })
 }
@@ -101,7 +101,7 @@ pub fn rebuild_document(
     job_id: uuid::Uuid,
 ) -> Result<DocumentReport, DocumentError> {
     let cancelled = std::sync::atomic::AtomicBool::new(false);
-    rebuild_document_checked(plan, translated, options, job_id, &cancelled, &|_, _, _| {})
+    rebuild_document_checked(plan, translated, options, job_id, &cancelled, &|_| {})
 }
 
 pub fn rebuild_document_checked(
@@ -110,7 +110,7 @@ pub fn rebuild_document_checked(
     options: &DocumentOptions,
     job_id: uuid::Uuid,
     cancelled: &std::sync::atomic::AtomicBool,
-    checkpoint: &(dyn Fn(DocumentStage, usize, usize) + Sync),
+    checkpoint: &(dyn Fn(&DocumentCheckpoint) + Sync),
 ) -> Result<DocumentReport, DocumentError> {
     use std::sync::atomic::Ordering;
     if cancelled.load(Ordering::Acquire) {
@@ -134,7 +134,7 @@ pub fn rebuild_document_checked(
                 translated,
                 &partial,
                 options,
-                &plan.pdf_rasters,
+                plan.pdf_spool.as_ref(),
                 cancelled,
                 checkpoint,
             )?;
@@ -225,6 +225,41 @@ pub fn rebuild_document_checked(
         output_hash: hash_bytes(&output_bytes),
         resumed_from_stage: plan.resumed_from_stage.clone(),
     })
+}
+
+pub fn set_resume_checkpoint(
+    plan: &mut DocumentPlan,
+    checkpoint: &DocumentCheckpoint,
+) -> Result<(), DocumentError> {
+    if checkpoint.source_fingerprint != plan.manifest.source_hash
+        || checkpoint.raster_refs.iter().any(|value| {
+            let path = Path::new(value);
+            path.is_absolute()
+                || path.components().any(|part| {
+                    matches!(
+                        part,
+                        std::path::Component::ParentDir
+                            | std::path::Component::RootDir
+                            | std::path::Component::Prefix(_)
+                    )
+                })
+        })
+    {
+        return Err(DocumentError::InvalidPackage);
+    }
+    plan.resumed_from_stage = Some(format!("{:?}", checkpoint.stage).to_ascii_lowercase());
+    if let Some(spool) = plan.pdf_spool.as_mut() {
+        spool.refs = checkpoint
+            .raster_refs
+            .iter()
+            .filter_map(|relative| {
+                let stem = Path::new(relative).file_stem()?.to_str()?;
+                let page = stem.strip_prefix("page-")?.parse().ok()?;
+                Some((page, relative.clone()))
+            })
+            .collect();
+    }
+    Ok(())
 }
 
 pub(crate) fn replace_selected_nodes(

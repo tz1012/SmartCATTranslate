@@ -270,3 +270,9 @@ OCR: Windows는 Windows.Data.Pdf, macOS는 PDFKit/CoreGraphics Objective-C bridg
 재조립 경계: CropBox 원점과 rotation을 page/display/OCR 사이에서 명시적으로 변환한다. 복잡·스캔 페이지는 최대 300DPI raster fallback을 사용하고 일반 페이지는 실제 fit 결과를 검사한다. low-confidence OCR, font substitution, background approximation, overflow와 raster fallback은 내용 없는 code와 위치로 경고한다. annotations/forms/attachments 보존 선택과 재열기 구조 검증을 결과 발행 전에 적용한다.
 발행 경계: 결과 partial은 create-new handle에 쓰고 flush/sync한 뒤 동일 volume hard link로 존재하지 않는 최종 이름에만 원자 발행한다. 오류 시 이번 작업이 만든 partial 또는 새 output만 제거하며 source나 기존 결과는 건드리지 않는다.
 진행·재개: inspect/extract/ocr/translate/reflow/save/validate/completed 단계와 결정적 unit ID를 event/checkpoint 경계로 제공한다. 취소는 OCR·재조립·저장 사이에도 검사한다. 내구 resume는 암호화 JobStore를 도입하는 history/recovery milestone이 권위 저장소를 제공할 때 `resumed_from_stage` 연결점을 사용하며, 그 전에는 프로세스 간 재개 완료를 주장하지 않는다.
+
+[D-044] PDF page spool·순차 render 검증·typed document event 계약
+상태: 확정
+메모리 경계: PDF 페이지 bitmap은 `DocumentPlan`에 RGBA로 누적하지 않는다. app data 아래 UUID job root의 `pages/page-NNNNN.png` 상대 ref만 checkpoint에 보유하고, OCR·배경 판정·재조립은 한 페이지씩 decode 후 해제한다. job cleanup은 예상 root의 32자리 UUID 자식인지 확인한 뒤 현재 job 폴더만 제거한다.
+시각 경계: 일반 text page도 OS renderer 결과에서 block 영역을 제한 sampling해 중앙 배경색과 색 변화 비율을 구한다. 균일 영역은 추정색 text overlay, 복잡 영역·큰 이미지·스캔 page는 최대 300DPI page raster fallback을 사용한다. 발행 결과는 모든 페이지를 72DPI로 순차 렌더해 CropBox/rotation 기준 크기를 확인하고, EmbeddedFiles는 name tree leaf 항목 수로 검증한다.
+이벤트·재개: `document-job` 하나가 progress checkpoint, warning, completed report와 sanitized failed code/location을 tagged event로 전달한다. checkpoint는 source fingerprint, stable page/batch unit ID, 상대 raster refs와 content-free translated result refs를 포함해 암호화 JobStore가 그대로 저장·rehydrate할 수 있다. 실제 영구 저장은 후속 history/recovery milestone 전까지 주장하지 않는다.

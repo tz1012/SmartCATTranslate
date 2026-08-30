@@ -773,3 +773,14 @@ TDD 및 검증
 속도 우선 검증과 제한
 - 새 실패 시험, 실패 주입, 전체 회귀와 실제 PDF 장시간 smoke는 실행하지 않았다. 변경 Rust 파일 rustfmt와 프런트엔드 production build가 통과했고, 보강 중 D 드라이브 공유 target의 Windows `cargo check --lib`가 10.56초에 통과했다. 마지막 소규모 좌표·경고 보강 뒤에는 사용자 지시에 따라 같은 장시간 관문을 반복하지 않았다.
 - Windows/macOS 실제 시각 비교, macOS bridge 실기, page anchor 직접 이동과 시스템에 없는 CJK glyph는 후속 packaged acceptance 대상으로 남긴다.
+
+[2026-08-31] 문서 번역 Tasks 7–8 검토 보강 2 — bounded spool·렌더 검증·재개 payload
+
+- OCR location의 x,y,w,h,confidence 다섯 값을 모두 검증해 스캔·혼합 페이지 block과 낮은 신뢰도 경고가 재조립까지 유지되게 했다.
+- 전체 문서 RGBA를 메모리에 쌓지 않고 앱 전용 job root의 결정적 상대 PNG ref로 페이지를 spool한다. 렌더·OCR·재조립은 한 페이지씩 decode하고 drop하며 완료·취소·실패 뒤 UUID job root만 경로 확인 후 제거한다.
+- 일반 text page도 렌더 sampling으로 번역 영역 배경의 중앙색과 복잡도를 판정한다. 균일 배경은 추정색 overlay를 사용하고 복잡한 배경은 bounded page raster fallback을 사용한다. 결과 PDF도 페이지를 순차 렌더해 크기·회전 결과를 확인하고 EmbeddedFiles name tree의 실제 항목 수를 비교한다.
+- 진행·경고·완료 report·실패를 단일 `document-job` typed event로 통합했다. checkpoint는 source fingerprint, stable page/batch unit ID, sanitized raster ref와 translated-result ref를 직렬화하며 같은 fingerprint의 payload를 plan에 다시 연결할 수 있다.
+- 보고서 경고마다 고유 DOM anchor와 focus/scroll 이동을 제공하고 결과 파일 열기는 별도 action으로 유지한다.
+
+검증
+- rustfmt 통과, `pnpm build` 통과(59 modules, 711ms), D 공유 target `cargo check --lib` 최종 통과(10.10s), diff/records 검사를 사용했다. 첫 Rust 검사는 이동된 PathBuf 한 건만 발견했고 borrow로 고친 뒤 동일 최소 검사가 통과했다. 새 실패·장기·전체 회귀·실제 PDF smoke는 실행하지 않았다.

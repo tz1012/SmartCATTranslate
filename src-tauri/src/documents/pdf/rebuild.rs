@@ -16,7 +16,8 @@ use lopdf::{
 use crate::{
     capture::{render::RenderEngine, DecodedImage, TranslatedBlock},
     documents::{
-        DocumentError, DocumentOptions, DocumentStage, DocumentWarning, Segment, TranslatedSegment,
+        DocumentCheckpoint, DocumentError, DocumentOptions, DocumentStage, DocumentWarning,
+        PdfRasterSpool, Segment, TranslatedSegment,
     },
 };
 
@@ -32,9 +33,9 @@ pub fn rebuild(
     translated: &[TranslatedSegment],
     output: &Path,
     options: &DocumentOptions,
-    rasters: &HashMap<u32, DecodedImage>,
+    spool: Option<&PdfRasterSpool>,
     cancelled: &AtomicBool,
-    checkpoint: &(dyn Fn(DocumentStage, usize, usize) + Sync),
+    checkpoint: &(dyn Fn(&DocumentCheckpoint) + Sync),
 ) -> Result<Vec<DocumentWarning>, DocumentError> {
     let bytes = fs::read(source).map_err(|_| DocumentError::Io)?;
     let mut doc = Document::load_mem(&bytes).map_err(|_| DocumentError::InvalidPackage)?;
@@ -56,7 +57,17 @@ pub fn rebuild(
         if cancelled.load(Ordering::Acquire) {
             return Err(DocumentError::Cancelled);
         }
-        checkpoint(DocumentStage::Reflow, page_index, inspection.pages.len());
+        let spool = spool.ok_or(DocumentError::Io)?;
+        super::emit_checkpoint(
+            checkpoint,
+            &inspection.source_hash,
+            DocumentStage::Reflow,
+            format!("page:{}", page.number),
+            page_index,
+            inspection.pages.len(),
+            spool,
+            &[],
+        );
         let page_part = format!("page:{}", page.number);
         let mut effective_blocks = page.blocks.clone();
         if matches!(page.kind, super::PdfPageKind::Scanned) {
@@ -84,11 +95,16 @@ pub fn rebuild(
             .cloned()
             .unwrap_or_default();
         let mut operations = Vec::new();
-        let rasterize = page.has_large_image || matches!(page.kind, super::PdfPageKind::Scanned);
+        let relative = spool
+            .refs
+            .get(&page.number)
+            .ok_or(DocumentError::OcrUnavailable)?;
+        let source_raster = super::load_spooled_page(spool, relative)?;
+        let background = estimate_page_background(&source_raster, &effective_blocks);
+        let rasterize = page.has_large_image
+            || background.complex
+            || matches!(page.kind, super::PdfPageKind::Scanned);
         if rasterize {
-            let source = rasters
-                .get(&page.number)
-                .ok_or(DocumentError::OcrUnavailable)?;
             let translated_blocks = effective_blocks
                 .iter()
                 .filter_map(|block| {
@@ -112,7 +128,7 @@ pub fn rebuild(
                     })
                 })
                 .collect::<Vec<_>>();
-            let rendered = RenderEngine::render(source, &translated_blocks)
+            let rendered = RenderEngine::render(&source_raster, &translated_blocks)
                 .map_err(|_| DocumentError::ValidationFailed)?;
             let rgb = rendered
                 .rgba
@@ -167,7 +183,8 @@ pub fn rebuild(
                 let pixel_h = (block.bounds[3] * page.height * 2.0)
                     .round()
                     .clamp(8.0, 2048.0) as u32;
-                let rendered = render_text(text, pixel_w, pixel_h, options.pdf_fit);
+                let rendered =
+                    render_text(text, pixel_w, pixel_h, options.pdf_fit, background.color);
                 let mut image = Stream::new(
                     dictionary! {"Type"=>"XObject","Subtype"=>"Image","Width"=>pixel_w as i64,"Height"=>pixel_h as i64,"ColorSpace"=>"DeviceRGB","BitsPerComponent"=>8},
                     rendered.rgb,
@@ -248,10 +265,16 @@ pub fn rebuild(
             page_obj.remove(b"Annots");
         }
     }
-    checkpoint(
+    let spool = spool.ok_or(DocumentError::Io)?;
+    super::emit_checkpoint(
+        checkpoint,
+        &inspection.source_hash,
         DocumentStage::Reflow,
+        "reflow:completed".into(),
         inspection.pages.len(),
         inspection.pages.len(),
+        spool,
+        &[],
     );
     for page in &inspection.pages {
         if let Some(reason) = &page.fallback_reason {
@@ -282,7 +305,16 @@ pub fn rebuild(
     if cancelled.load(Ordering::Acquire) {
         return Err(DocumentError::Cancelled);
     }
-    checkpoint(DocumentStage::Save, 0, 1);
+    super::emit_checkpoint(
+        checkpoint,
+        &inspection.source_hash,
+        DocumentStage::Save,
+        "save:partial".into(),
+        0,
+        1,
+        spool,
+        &[],
+    );
     let file = OpenOptions::new()
         .create_new(true)
         .write(true)
@@ -293,7 +325,16 @@ pub fn rebuild(
     writer.flush().map_err(|_| DocumentError::Io)?;
     writer.get_ref().sync_all().map_err(|_| DocumentError::Io)?;
     drop(writer);
-    checkpoint(DocumentStage::Save, 1, 1);
+    super::emit_checkpoint(
+        checkpoint,
+        &inspection.source_hash,
+        DocumentStage::Save,
+        "save:synced".into(),
+        1,
+        1,
+        spool,
+        &[],
+    );
     let reopened = inspect(output, false)?;
     if reopened.pages.len() != inspection.pages.len() {
         return Err(DocumentError::ValidationFailed);
@@ -320,8 +361,14 @@ struct RenderedText {
     rgb: Vec<u8>,
     overflow: bool,
 }
-fn render_text(text: &str, width: u32, height: u32, fit: bool) -> RenderedText {
-    let mut image = RgbImage::from_pixel(width, height, image::Rgb([255, 255, 255]));
+fn render_text(
+    text: &str,
+    width: u32,
+    height: u32,
+    fit: bool,
+    background: [u8; 3],
+) -> RenderedText {
+    let mut image = RgbImage::from_pixel(width, height, image::Rgb(background));
     let mut fonts = FontSystem::new();
     fonts.db_mut().load_font_data(BUNDLED_FONT.to_vec());
     fonts.db_mut().load_system_fonts();
@@ -420,7 +467,10 @@ fn parse_ocr_block(segment: &Segment, page: u32) -> Option<super::PdfBlock> {
         .map(str::parse::<f32>)
         .collect::<Result<Vec<_>, _>>()
         .ok()?;
-    if values.len() != 4 || values.iter().any(|v| !v.is_finite()) {
+    if values.len() != 5
+        || values.iter().any(|v| !v.is_finite())
+        || !(0.0..=1.0).contains(&values[4])
+    {
         return None;
     }
     Some(super::PdfBlock {
@@ -430,6 +480,78 @@ fn parse_ocr_block(segment: &Segment, page: u32) -> Option<super::PdfBlock> {
         bounds: [values[0], values[1], values[2], values[3]],
         font_hint: None,
     })
+}
+
+struct BackgroundEstimate {
+    color: [u8; 3],
+    complex: bool,
+}
+
+fn estimate_page_background(
+    image: &DecodedImage,
+    blocks: &[super::PdfBlock],
+) -> BackgroundEstimate {
+    let mut samples = Vec::new();
+    for block in blocks.iter().take(512) {
+        let left = (block.bounds[0].clamp(0.0, 1.0) * image.width as f32) as u32;
+        let top = (block.bounds[1].clamp(0.0, 1.0) * image.height as f32) as u32;
+        let right =
+            ((block.bounds[0] + block.bounds[2]).clamp(0.0, 1.0) * image.width as f32) as u32;
+        let bottom =
+            ((block.bounds[1] + block.bounds[3]).clamp(0.0, 1.0) * image.height as f32) as u32;
+        let step_x = ((right.saturating_sub(left)) / 12).max(1);
+        let step_y = ((bottom.saturating_sub(top)) / 8).max(1);
+        let mut y = top;
+        while y < bottom.min(image.height) {
+            let mut x = left;
+            while x < right.min(image.width) {
+                let offset = (u64::from(y) * u64::from(image.width) + u64::from(x)) * 4;
+                let offset = offset as usize;
+                if offset + 2 < image.rgba.len() {
+                    samples.push([
+                        image.rgba[offset],
+                        image.rgba[offset + 1],
+                        image.rgba[offset + 2],
+                    ]);
+                }
+                x = x.saturating_add(step_x);
+            }
+            y = y.saturating_add(step_y);
+        }
+    }
+    if samples.is_empty() {
+        return BackgroundEstimate {
+            color: [255, 255, 255],
+            complex: true,
+        };
+    }
+    let mut channels = [Vec::new(), Vec::new(), Vec::new()];
+    for sample in &samples {
+        for channel in 0..3 {
+            channels[channel].push(sample[channel]);
+        }
+    }
+    for values in &mut channels {
+        values.sort_unstable();
+    }
+    let color = [
+        channels[0][channels[0].len() / 2],
+        channels[1][channels[1].len() / 2],
+        channels[2][channels[2].len() / 2],
+    ];
+    let differing = samples
+        .iter()
+        .filter(|sample| {
+            sample
+                .iter()
+                .zip(color)
+                .any(|(value, median)| value.abs_diff(median) > 32)
+        })
+        .count();
+    BackgroundEstimate {
+        color,
+        complex: differing * 5 > samples.len(),
+    }
 }
 fn confidence_for(segments: &[Segment], page: u32, ordinal: usize) -> Option<f32> {
     let part = format!("page:{page}");
