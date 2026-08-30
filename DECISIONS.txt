@@ -325,3 +325,7 @@ XLSX 위치: workbook relationship으로 worksheet part와 실제 sheet name을 
 [D-054] 시크릿 메모리 복구와 삭제 재시도
 상태: 확정
 결정: 시크릿 문서 checkpoint는 SQLite에 기록하지 않고 같은 프로세스의 RecoveryPrompt/list/prepare/resume에서만 사용하며 성공·취소·비재시도 실패·앱 종료에 zeroize 후 삭제한다. private temp 삭제 실패는 UUID만 포함한 content-free pending metadata와 typed diagnostic으로 기록하고 사용자에게 개인정보 상태를 알린 뒤 startup에 재시도한다.
+
+[D-055] 완료 전이와 cleanup metadata 원자성
+상태: 확정
+결정: JobStage Completed는 Save에서만 전이할 수 있고 active stage의 Cancelled/Failed 및 Paused 복귀 규칙은 유지한다. cleanup pending metadata는 같은 private root의 고정 temp를 create_new로 열어 write/flush/sync_all한 뒤 플랫폼 원자 replace하고 parent directory를 best-effort sync한다. 손상된 primary를 빈 목록으로 대체하지 않고 valid temp를 우선 복구하거나 UUID job root를 pending으로 재구성한다.

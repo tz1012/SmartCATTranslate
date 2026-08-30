@@ -1,7 +1,7 @@
 use crate::core::diagnostics::{DiagnosticEvent, DiagnosticEventName, DiagnosticOutcome};
 use std::{
     collections::HashSet,
-    fs::{self, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
     sync::{
@@ -12,6 +12,7 @@ use std::{
 };
 
 const PENDING_FILE: &str = ".cleanup-pending.json";
+const PENDING_TEMP_FILE: &str = ".cleanup-pending.json.tmp";
 const MAX_PENDING_BYTES: u64 = 1024 * 1024;
 
 #[derive(Clone)]
@@ -48,10 +49,11 @@ impl CleanupService {
         fs::create_dir_all(&root).map_err(|_| CleanupError::Unavailable)?;
         let root = root.canonicalize().map_err(|_| CleanupError::Unavailable)?;
         let pending_path = root.join(PENDING_FILE);
-        let (pending, metadata_error) = match load_pending(&pending_path) {
-            Ok(pending) => (pending, false),
-            Err(_) => (HashSet::new(), true),
-        };
+        let temporary_path = root.join(PENDING_TEMP_FILE);
+        let primary = load_pending(&pending_path);
+        let temporary = load_pending(&temporary_path);
+        let (pending, metadata_error) =
+            recover_pending_metadata(&root, &pending_path, &temporary_path, primary, temporary)?;
         Ok(Self {
             root,
             pending_path,
@@ -244,19 +246,30 @@ impl CleanupService {
             .cloned()
             .collect::<Vec<_>>();
         pending.sort();
+        let temporary_path = self.root.join(PENDING_TEMP_FILE);
+        let mut ready_for_recovery = false;
         let result = (|| {
             let encoded = serde_json::to_vec(&pending).map_err(|_| CleanupError::Unavailable)?;
+            remove_safe_regular_file(&temporary_path)?;
             let mut output = OpenOptions::new()
-                .create(true)
-                .truncate(true)
+                .create_new(true)
                 .write(true)
-                .open(&self.pending_path)
+                .open(&temporary_path)
                 .map_err(|_| CleanupError::Unavailable)?;
             output
                 .write_all(&encoded)
+                .and_then(|_| output.flush())
                 .and_then(|_| output.sync_all())
-                .map_err(|_| CleanupError::Unavailable)
+                .map_err(|_| CleanupError::Unavailable)?;
+            drop(output);
+            ready_for_recovery = true;
+            atomic_replace(&temporary_path, &self.pending_path)?;
+            let _ = File::open(&self.root).and_then(|directory| directory.sync_all());
+            Ok(())
         })();
+        if result.is_err() && !ready_for_recovery {
+            let _ = remove_safe_regular_file(&temporary_path);
+        }
         self.metadata_error
             .store(result.is_err(), Ordering::Release);
         result
@@ -304,10 +317,10 @@ impl CleanupService {
     }
 }
 
-fn load_pending(path: &Path) -> Result<HashSet<String>, CleanupError> {
+fn load_pending(path: &Path) -> Result<Option<HashSet<String>>, CleanupError> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(HashSet::new()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err(CleanupError::Unavailable),
     };
     if is_link_or_reparse(&metadata) || !metadata.is_file() || metadata.len() > MAX_PENDING_BYTES {
@@ -319,7 +332,104 @@ fn load_pending(path: &Path) -> Result<HashSet<String>, CleanupError> {
     if values.iter().any(|value| !valid_job_id(value)) {
         return Err(CleanupError::Unavailable);
     }
-    Ok(values.into_iter().collect())
+    Ok(Some(values.into_iter().collect()))
+}
+
+fn recover_pending_metadata(
+    root: &Path,
+    primary_path: &Path,
+    temporary_path: &Path,
+    primary: Result<Option<HashSet<String>>, CleanupError>,
+    temporary: Result<Option<HashSet<String>>, CleanupError>,
+) -> Result<(HashSet<String>, bool), CleanupError> {
+    match temporary {
+        Ok(Some(values)) => {
+            let recovered = atomic_replace(temporary_path, primary_path).is_ok();
+            if recovered {
+                let _ = File::open(root).and_then(|directory| directory.sync_all());
+            }
+            Ok((values, !recovered))
+        }
+        Ok(None) => match primary {
+            Ok(Some(values)) => Ok((values, false)),
+            Ok(None) => Ok((scan_uuid_job_roots(root)?, false)),
+            Err(_) => Ok((scan_uuid_job_roots(root)?, true)),
+        },
+        Err(_) => match primary {
+            Ok(Some(values)) => Ok((values, true)),
+            Ok(None) | Err(_) => Ok((scan_uuid_job_roots(root)?, true)),
+        },
+    }
+}
+
+fn scan_uuid_job_roots(root: &Path) -> Result<HashSet<String>, CleanupError> {
+    let mut pending = HashSet::new();
+    for entry in fs::read_dir(root).map_err(|_| CleanupError::Unavailable)? {
+        let entry = entry.map_err(|_| CleanupError::Unavailable)?;
+        if let Some(name) = entry
+            .file_name()
+            .to_str()
+            .filter(|value| valid_job_id(value))
+        {
+            pending.insert(name.to_owned());
+        }
+    }
+    Ok(pending)
+}
+
+fn remove_safe_regular_file(path: &Path) -> Result<(), CleanupError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if is_link_or_reparse(&metadata) || !metadata.is_file() => {
+            Err(CleanupError::OutsideRoot)
+        }
+        Ok(_) => fs::remove_file(path).map_err(|_| CleanupError::Unavailable),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err(CleanupError::Unavailable),
+    }
+}
+
+fn validate_replace_target(path: &Path) -> Result<(), CleanupError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if is_link_or_reparse(&metadata) || !metadata.is_file() => {
+            Err(CleanupError::OutsideRoot)
+        }
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err(CleanupError::Unavailable),
+    }
+}
+
+#[cfg(windows)]
+fn atomic_replace(source: &Path, destination: &Path) -> Result<(), CleanupError> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    validate_replace_target(destination)?;
+    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+    let destination: Vec<u16> = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    if unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    } == 0
+    {
+        return Err(CleanupError::Unavailable);
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn atomic_replace(source: &Path, destination: &Path) -> Result<(), CleanupError> {
+    validate_replace_target(destination)?;
+    fs::rename(source, destination).map_err(|_| CleanupError::Unavailable)
 }
 
 fn measure_confined(root: &Path, path: &Path) -> Result<CleanupStats, CleanupError> {

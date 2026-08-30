@@ -867,3 +867,16 @@ TDD 및 검증
 - 지정된 D shared target의 `cargo check --lib --offline`은 120초 동안 의존성을 계속 컴파일했으나 제품 crate에 도달하기 전에 ceiling으로 중단했다. 출력된 코드 오류는 0개이며 Rust 통과를 주장하지 않는다.
 - `pnpm privacy:check` PASS(5 files), `pnpm records:test` PASS(16/16), `pnpm records:check` PASS, `git diff --check` PASS.
 - 사용자 지시에 따라 새 실패 테스트·실패 주입·전체 회귀·장시간 smoke는 추가하거나 실행하지 않았다.
+
+[2026-08-31] Tasks 1–4 검토 보강 3 — 완료 전이·cleanup metadata 원자 복구
+
+구현
+- JobStage Completed를 오직 Save→Completed로 제한했다. active stage의 Cancelled/Failed, active→Paused, Paused→직전 active stage 규칙은 그대로 유지한다.
+- `.cleanup-pending.json`은 same-root 고정 temp를 `create_new`로 열고 write/flush/sync_all한 뒤 Windows write-through replace 또는 Unix rename으로 원자 교체하며 parent directory를 best-effort sync한다.
+- 시작 시 valid temp가 있으면 primary보다 우선 복구한다. primary가 손상되고 valid temp도 없으면 private root의 UUID direct-child를 pending으로 재구성하며 빈 목록으로 조용히 대체하지 않는다. 충돌한 temp는 regular non-link일 때만 정리한다.
+
+검증
+- Rust formatter PASS, `pnpm build` PASS(63 modules).
+- D shared `cargo check --lib --offline`은 120초 동안 Tauri/Wry를 포함한 의존성을 계속 컴파일했지만 제품 crate에 도달하기 전에 ceiling으로 중단했다. 출력 코드 오류는 0개이며 Rust 통과를 주장하지 않는다.
+- `pnpm privacy:check` PASS(5 files), `pnpm records:test` PASS(16/16), `pnpm records:check` PASS, `git diff --check` PASS.
+- 사용자 지시에 따라 전이 validation test, 새 실패 테스트, 전체 회귀와 장시간 smoke는 추가하거나 실행하지 않았다.

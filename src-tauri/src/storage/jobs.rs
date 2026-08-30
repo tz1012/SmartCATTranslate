@@ -60,13 +60,7 @@ impl JobCheckpoint {
                 | (JobStage::Validate, JobStage::Save)
                 | (JobStage::Save, JobStage::Completed)
         );
-        if sequential
-            || (active
-                && matches!(
-                    next,
-                    JobStage::Cancelled | JobStage::Failed | JobStage::Completed
-                ))
-        {
+        if sequential || (active && matches!(next, JobStage::Cancelled | JobStage::Failed)) {
             self.previous_active_stage = None;
             self.stage = next;
             return Ok(());

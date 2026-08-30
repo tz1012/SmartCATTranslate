@@ -51,3 +51,11 @@ Final short gates: `pnpm privacy:check` PASS (5 files); `pnpm records:test` PASS
 - HistoryView and secret-mode UI were reformatted; privacy and recovery updates refresh through typed Tauri events.
 
 Round-2 gates: Rust formatter PASS; `pnpm build` PASS (63 modules); `pnpm privacy:check` PASS (5 files); `pnpm records:test` PASS (16/16); `pnpm records:check` PASS; `git diff --check` PASS. The requested shared-cache `cargo check --lib --offline` made continuous dependency-compilation progress for the full 120-second ceiling but did not reach the product crate, so Rust PASS is not claimed; it emitted zero code diagnostics before being stopped. No new failing test, failure injection, full regression, or long smoke was added or run. No credential or Codex token was copied.
+
+## Review fix round 3 — 2026-08-31
+
+- Completed is again restricted to the real `Save -> Completed` transition. Active stages may still become Cancelled or Failed, and Paused resumes only to its recorded active stage.
+- Cleanup pending metadata is written through a same-root fixed temporary file opened with `create_new`, followed by write, flush, file `sync_all`, atomic platform replacement, and best-effort parent-directory sync. Unsafe temp collisions are rejected and safe stale files are cleaned before reuse.
+- Startup prefers a fully validated temporary metadata file left by an interrupted replacement. If the primary is corrupt and no valid temporary survives, every UUID direct-child job root is conservatively reconstructed as pending rather than silently accepting an empty set.
+
+Round-3 verification: Rust formatter PASS; `pnpm build` PASS (63 modules); `pnpm privacy:check` PASS (5 files); `pnpm records:test` PASS (16/16); `pnpm records:check` PASS; `git diff --check` PASS. The single shared-cache `cargo check --lib --offline` made continuous dependency progress for 120 seconds through Tauri/Wry dependencies, but did not reach the product crate; zero code diagnostics were emitted and Rust PASS is not claimed. Transition validation tests and other new failure/long-running tests were intentionally not added per instruction.
