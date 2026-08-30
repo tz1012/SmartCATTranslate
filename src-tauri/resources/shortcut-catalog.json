@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "catalogVersion": "2026.08.30.2",
+  "catalogVersion": "2026.08.30.3",
   "entries": [
     {
       "platform": "windows",
@@ -94,7 +94,7 @@
       "platform": "windows",
       "kind": "application",
       "application": "Visual Studio Code",
-      "processNames": ["Code.exe", "Code", "Electron.exe", "Electron"],
+      "processNames": ["Code.exe", "Code"],
       "bundleIds": ["com.microsoft.VSCode"],
       "trigger": "Ctrl+Shift+P",
       "feature": "명령 팔레트 표시",
@@ -105,7 +105,7 @@
       "platform": "windows",
       "kind": "application",
       "application": "Visual Studio Code",
-      "processNames": ["Code.exe", "Code", "Electron.exe", "Electron"],
+      "processNames": ["Code.exe", "Code"],
       "bundleIds": ["com.microsoft.VSCode"],
       "trigger": "F8",
       "feature": "다음 오류 또는 경고로 이동",
@@ -116,7 +116,7 @@
       "platform": "windows",
       "kind": "application",
       "application": "Visual Studio Code",
-      "processNames": ["Code.exe", "Code", "Electron.exe", "Electron"],
+      "processNames": ["Code.exe", "Code"],
       "bundleIds": ["com.microsoft.VSCode"],
       "trigger": "F9",
       "feature": "중단점 설정 또는 해제",
@@ -127,7 +127,7 @@
       "platform": "macos",
       "kind": "application",
       "application": "Visual Studio Code",
-      "processNames": ["Visual Studio Code", "Code", "Electron"],
+      "processNames": ["Visual Studio Code", "Code"],
       "bundleIds": ["com.microsoft.VSCode"],
       "trigger": "Shift+Meta+P",
       "feature": "명령 팔레트 표시",

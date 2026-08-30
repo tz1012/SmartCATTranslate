@@ -1,11 +1,12 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 
 use chrono::NaiveDate;
 use sha2::{Digest, Sha256};
 use smartcat_translate::hotkeys::{
     parse_trigger, AppIdentity, AppInspector, CatalogError, ConflictAnalyzer, ConflictLevel,
-    ConflictSeverity, Platform, RegistrationProbe, RegistrationProbeStatus, ShortcutCatalog,
+    ConflictSeverity, KeyCode, PhysicalKey, Platform, RegistrationProbe, RegistrationProbeStatus,
+    ShortcutCatalog, Trigger,
 };
 
 const AS_OF: &str = "2026-08-30";
@@ -43,13 +44,38 @@ impl SelectiveProbe {
 }
 
 impl RegistrationProbe for SelectiveProbe {
-    fn probe(&self, trigger: &smartcat_translate::hotkeys::Trigger) -> RegistrationProbeStatus {
+    fn probe_and_restore(
+        &self,
+        trigger: &smartcat_translate::hotkeys::Trigger,
+    ) -> RegistrationProbeStatus {
         let normalized = trigger.to_string();
         self.observed.lock().unwrap().push(normalized.clone());
         self.statuses
             .get(&normalized)
             .copied()
             .unwrap_or(RegistrationProbeStatus::Available)
+    }
+}
+
+#[derive(Default)]
+struct RestoringTrialProbe {
+    temporarily_registered: Mutex<BTreeSet<String>>,
+}
+
+impl RegistrationProbe for RestoringTrialProbe {
+    fn probe_and_restore(&self, trigger: &Trigger) -> RegistrationProbeStatus {
+        let normalized = trigger.to_string();
+        assert!(self
+            .temporarily_registered
+            .lock()
+            .unwrap()
+            .insert(normalized.clone()));
+        assert!(self
+            .temporarily_registered
+            .lock()
+            .unwrap()
+            .remove(&normalized));
+        RegistrationProbeStatus::Available
     }
 }
 
@@ -63,10 +89,6 @@ impl AppInspector for RunningApps {
 
 fn executable(name: &str) -> AppIdentity {
     AppIdentity::new(Some(name), None).unwrap()
-}
-
-fn bundle(identifier: &str) -> AppIdentity {
-    AppIdentity::new(None, Some(identifier)).unwrap()
 }
 
 fn date() -> NaiveDate {
@@ -207,21 +229,16 @@ fn app_identity_accepts_only_sanitized_basename_or_bundle_id() {
 }
 
 #[test]
-fn matches_vscode_executable_aliases_and_bundle_identifier() {
-    // Mutation caught: relying only on Code.exe and missing real platform identities.
+fn matches_vscode_identity_without_falling_back_after_a_bundle_mismatch() {
+    // Mutation caught: OR-matching a generic Electron basename after a bundle mismatch.
     let catalog = ShortcutCatalog::from_embedded(date()).unwrap();
     let probe = SelectiveProbe::default();
     for (platform, identity, trigger) in [
         (Platform::Windows, executable("Code.exe"), "Ctrl+Shift+P"),
         (Platform::Windows, executable("Code"), "Ctrl+Shift+P"),
         (
-            Platform::Windows,
-            executable("Electron.exe"),
-            "Ctrl+Shift+P",
-        ),
-        (
             Platform::Macos,
-            bundle("com.microsoft.VSCode"),
+            AppIdentity::new(Some("Electron"), Some("com.microsoft.VSCode")).unwrap(),
             "Shift+Meta+P",
         ),
     ] {
@@ -233,21 +250,29 @@ fn matches_vscode_executable_aliases_and_bundle_identifier() {
             Some("Visual Studio Code")
         );
     }
+
+    let slack = RunningApps(vec![AppIdentity::new(
+        Some("Electron"),
+        Some("com.tinyspeck.slackmacgap"),
+    )
+    .unwrap()]);
+    let report = analyzer(Platform::Macos, &catalog, &probe, &slack)
+        .analyze(&parse_trigger("Shift+Meta+P").unwrap());
+    assert_eq!(report.level, ConflictLevel::None);
+    assert!(report.causes.is_empty());
 }
 
 #[test]
-fn checks_every_sequence_step_and_catalog_prefix_overlap() {
-    // Mutation caught: comparing only the whole normalized trigger string.
+fn sequence_catalog_blocks_only_full_containment_and_advises_on_a_strict_prefix() {
+    // Mutation caught: symmetric overlap that blocks one prefix chord or an unrelated lead-in.
     let catalog = ShortcutCatalog::from_embedded(date()).unwrap();
-    let probe = SelectiveProbe::with_status(
-        "Ctrl+L, C",
-        RegistrationProbeStatus::UnsupportedSequence {
-            observer_available: true,
-        },
-    );
+    let probe =
+        SelectiveProbe::with_status("Ctrl+L, C", RegistrationProbeStatus::AvailableViaObserver);
     let chrome = RunningApps(vec![executable("chrome.exe")]);
     let chrome_report = analyzer(Platform::Windows, &catalog, &probe, &chrome)
         .analyze(&parse_trigger("Ctrl+L, C").unwrap());
+    assert_eq!(chrome_report.level, ConflictLevel::Possible);
+    assert!(!chrome_report.registration_allowed(false));
     assert!(chrome_report.causes.iter().any(|cause| {
         cause.application.as_deref() == Some("Google Chrome")
             && cause.feature.as_deref() == Some("주소 표시줄로 이동")
@@ -255,26 +280,46 @@ fn checks_every_sequence_step_and_catalog_prefix_overlap() {
 
     let deep_l = RunningApps(vec![executable("DeepL.exe")]);
     for trigger in [
-        "Ctrl+C",
+        "Ctrl+C, C",
         "Ctrl+C, C, Ctrl+X",
-        "Ctrl+X, Ctrl+C",
         "Ctrl+X, Ctrl+C, C, Ctrl+V",
     ] {
-        let report = analyzer(
-            Platform::Windows,
-            &catalog,
-            &SelectiveProbe::default(),
-            &deep_l,
-        )
-        .analyze(&parse_trigger(trigger).unwrap());
-        assert!(
-            report
-                .causes
-                .iter()
-                .any(|cause| cause.application.as_deref() == Some("DeepL")),
-            "{trigger}"
-        );
+        let probe =
+            SelectiveProbe::with_status(trigger, RegistrationProbeStatus::AvailableViaObserver);
+        let report = analyzer(Platform::Windows, &catalog, &probe, &deep_l)
+            .analyze(&parse_trigger(trigger).unwrap());
+        assert_eq!(report.level, ConflictLevel::Possible, "{trigger}");
+        assert!(!report.registration_allowed(false), "{trigger}");
     }
+
+    let strict_prefix = analyzer(
+        Platform::Windows,
+        &catalog,
+        &SelectiveProbe::default(),
+        &deep_l,
+    )
+    .analyze(&parse_trigger("Ctrl+C").unwrap());
+    assert_eq!(strict_prefix.level, ConflictLevel::None);
+    assert!(strict_prefix.registration_allowed(false));
+    assert!(strict_prefix.causes.iter().any(|cause| {
+        cause.application.as_deref() == Some("DeepL")
+            && cause.severity == ConflictSeverity::Advisory
+    }));
+
+    let unrelated_lead_in_probe = SelectiveProbe::with_status(
+        "Ctrl+X, Ctrl+C",
+        RegistrationProbeStatus::AvailableViaObserver,
+    );
+    let unrelated_lead_in = analyzer(
+        Platform::Windows,
+        &catalog,
+        &unrelated_lead_in_probe,
+        &deep_l,
+    )
+    .analyze(&parse_trigger("Ctrl+X, Ctrl+C").unwrap());
+    assert_eq!(unrelated_lead_in.level, ConflictLevel::None);
+    assert!(unrelated_lead_in.registration_allowed(false));
+    assert!(unrelated_lead_in.causes.is_empty());
 }
 
 #[test]
@@ -350,11 +395,38 @@ fn force_depends_on_structured_probe_status_and_observer_availability() {
     )
     .analyze(&parse_trigger("Ctrl+Alt+9").unwrap());
     assert_eq!(available.level, ConflictLevel::None);
+
+    let observer_available = analyzer(
+        Platform::Windows,
+        &catalog,
+        &SelectiveProbe::with_status(
+            "Ctrl+Alt+C, C",
+            RegistrationProbeStatus::AvailableViaObserver,
+        ),
+        &none,
+    )
+    .analyze(&parse_trigger("Ctrl+Alt+C, C").unwrap());
+    assert_eq!(observer_available.level, ConflictLevel::None);
+    assert!(observer_available.registration_allowed(false));
+    assert!(!observer_available.can_force);
+    assert!(observer_available.causes.is_empty());
 }
 
 #[test]
-fn alternatives_avoid_bare_function_keys_and_known_running_app_shortcuts() {
-    // Mutation caught: falling back to common bare F8/F9 or Word's Ctrl+Shift+L.
+fn a_successful_direct_registration_trial_is_restored_before_probe_return() {
+    // Mutation caught: a Task 4 adapter returning Available while retaining registration.
+    let catalog = ShortcutCatalog::from_embedded(date()).unwrap();
+    let probe = RestoringTrialProbe::default();
+    let none = RunningApps(Vec::new());
+    let report = ConflictAnalyzer::new(Platform::Windows, &catalog, &probe, &none)
+        .analyze(&parse_trigger("Ctrl+Alt+9").unwrap());
+    assert_eq!(report.level, ConflictLevel::None);
+    assert!(probe.temporarily_registered.lock().unwrap().is_empty());
+}
+
+#[test]
+fn alternatives_use_only_common_physical_keys_and_avoid_known_running_app_shortcuts() {
+    // Mutation caught: falling back to F13-F24 or Word's Ctrl+Shift+L.
     let catalog = ShortcutCatalog::from_embedded(date()).unwrap();
 
     let vscode_probe = SelectiveProbe::blocking(&["Ctrl+Shift+P"]);
@@ -368,7 +440,13 @@ fn alternatives_avoid_bare_function_keys_and_known_running_app_shortcuts() {
         .collect::<Vec<_>>();
     assert!(!vscode_alternatives.contains(&"F8".to_owned()));
     assert!(!vscode_alternatives.contains(&"F9".to_owned()));
-    assert!(vscode_alternatives.iter().all(|value| value.contains('+')));
+    assert!(vscode_report
+        .alternatives
+        .iter()
+        .all(is_common_physical_trigger));
+    assert!(vscode_alternatives
+        .iter()
+        .all(|value| !value.contains("F13") && !value.contains("F24")));
 
     let word_probe = SelectiveProbe::blocking(&["Ctrl+L"]);
     let word = RunningApps(vec![executable("WINWORD.EXE")]);
@@ -378,6 +456,56 @@ fn alternatives_avoid_bare_function_keys_and_known_running_app_shortcuts() {
         .alternatives
         .iter()
         .any(|trigger| trigger.to_string() == "Ctrl+Shift+L"));
+}
+
+fn is_common_physical_trigger(trigger: &Trigger) -> bool {
+    let is_common = |key: PhysicalKey| {
+        matches!(
+            key,
+            PhysicalKey::KeyA
+                | PhysicalKey::KeyB
+                | PhysicalKey::KeyC
+                | PhysicalKey::KeyD
+                | PhysicalKey::KeyE
+                | PhysicalKey::KeyF
+                | PhysicalKey::KeyG
+                | PhysicalKey::KeyH
+                | PhysicalKey::KeyI
+                | PhysicalKey::KeyJ
+                | PhysicalKey::KeyK
+                | PhysicalKey::KeyL
+                | PhysicalKey::KeyM
+                | PhysicalKey::KeyN
+                | PhysicalKey::KeyO
+                | PhysicalKey::KeyP
+                | PhysicalKey::KeyQ
+                | PhysicalKey::KeyR
+                | PhysicalKey::KeyS
+                | PhysicalKey::KeyT
+                | PhysicalKey::KeyU
+                | PhysicalKey::KeyV
+                | PhysicalKey::KeyW
+                | PhysicalKey::KeyX
+                | PhysicalKey::KeyY
+                | PhysicalKey::KeyZ
+                | PhysicalKey::Digit0
+                | PhysicalKey::Digit1
+                | PhysicalKey::Digit2
+                | PhysicalKey::Digit3
+                | PhysicalKey::Digit4
+                | PhysicalKey::Digit5
+                | PhysicalKey::Digit6
+                | PhysicalKey::Digit7
+                | PhysicalKey::Digit8
+                | PhysicalKey::Digit9
+        )
+    };
+    match trigger {
+        Trigger::Chord { chord } => matches!(chord.key, KeyCode::Physical(key) if is_common(key)),
+        Trigger::Sequence { steps, .. } => steps
+            .iter()
+            .all(|chord| matches!(chord.key, KeyCode::Physical(key) if is_common(key))),
+    }
 }
 
 #[test]
@@ -454,7 +582,7 @@ fn embedded_catalog_has_a_bounded_schema_version_and_verified_hash() {
 
     let catalog = ShortcutCatalog::from_embedded(date()).unwrap();
     assert_eq!(catalog.schema_version(), 1);
-    assert_eq!(catalog.catalog_version(), "2026.08.30.2");
+    assert_eq!(catalog.catalog_version(), "2026.08.30.3");
     assert_eq!(catalog.sha256(), format!("{:x}", Sha256::digest(bytes)));
     assert!(catalog.entries().len() >= 13);
     let powerpoint = catalog

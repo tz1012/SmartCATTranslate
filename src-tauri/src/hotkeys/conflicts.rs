@@ -29,7 +29,7 @@ const PRIMARY_SOURCE_HOSTS: [&str; 6] = [
 // This is the SHA-256 of resources/shortcut-catalog.json. Updating the reviewed
 // catalog therefore requires an explicit source change as well as new data.
 const SHORTCUT_CATALOG_SHA256: &str =
-    "262d9b4ad07b97d3f35d8e212b9a1a9bd84e869a452218c10a3c1fae58986524";
+    "55baa2b0d1187ec23851a53821d6304c7b5173be34a8a013702c7e1878c33d9f";
 const EMBEDDED_CATALOG: &[u8] = include_bytes!("../../resources/shortcut-catalog.json");
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -297,6 +297,7 @@ pub enum CatalogError {
 #[serde(tag = "status", rename_all = "camelCase")]
 pub enum RegistrationProbeStatus {
     Available,
+    AvailableViaObserver,
     Occupied { observer_available: bool },
     UnsupportedSequence { observer_available: bool },
     PermissionDenied,
@@ -306,10 +307,13 @@ pub enum RegistrationProbeStatus {
 }
 
 pub trait RegistrationProbe: Send + Sync {
-    /// Separates direct single-chord registration from the observer fallback
-    /// required by sequences or an occupied chord. Task 4 supplies the native
-    /// implementation and must not place backend details in this result.
-    fn probe(&self, trigger: &Trigger) -> RegistrationProbeStatus;
+    /// Performs a non-persistent availability trial and restores the exact
+    /// pre-call registration state before returning. A successful direct
+    /// trial must unregister immediately; `AvailableViaObserver` means the
+    /// non-consuming observer is already usable without a fallback warning.
+    /// Task 4 supplies the native implementation and must not place backend
+    /// details in this result.
+    fn probe_and_restore(&self, trigger: &Trigger) -> RegistrationProbeStatus;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -363,6 +367,7 @@ pub enum ConflictLevel {
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum ConflictSeverity {
+    Advisory,
     Warning,
     Blocking,
 }
@@ -459,10 +464,12 @@ impl<'a> ConflictAnalyzer<'a> {
         let probe_status = if hard_block {
             RegistrationProbeStatus::OsReserved
         } else {
-            self.registration_probe.probe(trigger)
+            self.registration_probe.probe_and_restore(trigger)
         };
         let observer_force_available = match probe_status {
-            RegistrationProbeStatus::Available => false,
+            RegistrationProbeStatus::Available | RegistrationProbeStatus::AvailableViaObserver => {
+                false
+            }
             RegistrationProbeStatus::Occupied { observer_available } => {
                 causes.push(fixed_probe_cause("다른 프로그램이 사용 중일 수 있습니다."));
                 observer_available
@@ -508,14 +515,26 @@ impl<'a> ConflictAnalyzer<'a> {
             entry.platform == self.platform
                 && entry.kind == CatalogKind::Application
                 && entry_matches_running_app(entry, running_apps)
-                && super::parse_trigger(&entry.trigger)
-                    .is_ok_and(|catalog_trigger| triggers_overlap(trigger, &catalog_trigger))
         }) {
-            causes.push(cause_from_entry(entry, ConflictSeverity::Warning));
-            has_application_conflict = true;
+            let Ok(catalog_trigger) = super::parse_trigger(&entry.trigger) else {
+                continue;
+            };
+            match catalog_relationship(trigger, &catalog_trigger) {
+                CatalogRelationship::FullConflict => {
+                    causes.push(cause_from_entry(entry, ConflictSeverity::Warning));
+                    has_application_conflict = true;
+                }
+                CatalogRelationship::StrictPrefixRisk => {
+                    causes.push(cause_from_entry(entry, ConflictSeverity::Advisory));
+                }
+                CatalogRelationship::None => {}
+            }
         }
 
-        let probe_conflict = probe_status != RegistrationProbeStatus::Available;
+        let probe_conflict = !matches!(
+            probe_status,
+            RegistrationProbeStatus::Available | RegistrationProbeStatus::AvailableViaObserver
+        );
         let level = if hard_block || probe_conflict {
             ConflictLevel::Confirmed
         } else if has_application_conflict {
@@ -525,7 +544,8 @@ impl<'a> ConflictAnalyzer<'a> {
         };
         let can_force = !hard_block
             && match probe_status {
-                RegistrationProbeStatus::Available => has_application_conflict,
+                RegistrationProbeStatus::Available
+                | RegistrationProbeStatus::AvailableViaObserver => has_application_conflict,
                 RegistrationProbeStatus::Occupied { .. }
                 | RegistrationProbeStatus::UnsupportedSequence { .. } => observer_force_available,
                 RegistrationProbeStatus::PermissionDenied
@@ -557,9 +577,9 @@ impl<'a> ConflictAnalyzer<'a> {
             if seen.contains(&entry.trigger) {
                 continue;
             }
-            if super::parse_trigger(&entry.trigger)
-                .is_ok_and(|reserved| triggers_overlap(trigger, &reserved))
-            {
+            if super::parse_trigger(&entry.trigger).is_ok_and(|reserved| {
+                catalog_relationship(trigger, &reserved) == CatalogRelationship::FullConflict
+            }) {
                 seen.insert(entry.trigger.clone());
                 matches.push(entry);
             }
@@ -607,13 +627,16 @@ impl<'a> ConflictAnalyzer<'a> {
 
         for candidate in modifier_candidates(trigger, self.platform)
             .into_iter()
-            .chain(function_key_candidates(trigger, self.platform))
+            .chain(common_key_candidates())
         {
             if suggestions.len() == MAX_ALTERNATIVES {
                 break;
             }
             let normalized = candidate.to_string();
             if !seen.insert(normalized) {
+                continue;
+            }
+            if !is_common_physical_trigger(&candidate) {
                 continue;
             }
             if self.classify(&candidate, running_apps).0 == ConflictLevel::None {
@@ -627,10 +650,14 @@ impl<'a> ConflictAnalyzer<'a> {
 fn cause_from_entry(entry: &CatalogEntry, severity: ConflictSeverity) -> ConflictCause {
     ConflictCause {
         severity,
-        description: if entry.kind == CatalogKind::OsReserved {
-            "운영체제가 사용하는 단축키입니다.".to_owned()
-        } else {
-            "실행 중인 프로그램의 알려진 단축키와 겹칠 수 있습니다.".to_owned()
+        description: match (entry.kind, severity) {
+            (CatalogKind::OsReserved, _) => "운영체제가 사용하는 단축키입니다.".to_owned(),
+            (CatalogKind::Application, ConflictSeverity::Advisory) => {
+                "실행 중인 프로그램의 연속 단축키 시작과 같아 입력이 지연될 수 있습니다.".to_owned()
+            }
+            (CatalogKind::Application, _) => {
+                "실행 중인 프로그램의 알려진 단축키와 겹칠 수 있습니다.".to_owned()
+            }
         },
         application: Some(entry.application.clone()),
         feature: Some(entry.feature.clone()),
@@ -652,37 +679,37 @@ fn fixed_probe_cause(description: &str) -> ConflictCause {
 
 fn entry_matches_running_app(entry: &CatalogEntry, running_apps: &BTreeSet<AppIdentity>) -> bool {
     running_apps.iter().any(|identity| {
-        identity.executable_basename().is_some_and(|running| {
-            entry.process_names.iter().any(|catalog| {
-                sanitize_process_name(catalog).is_some_and(|catalog| catalog == running)
-            })
-        }) || identity.bundle_id().is_some_and(|running| {
+        if let Some(running) = identity.bundle_id() {
             entry.bundle_ids.iter().any(|catalog| {
                 sanitize_bundle_id(catalog).is_some_and(|catalog| catalog == running)
             })
-        })
+        } else {
+            identity.executable_basename().is_some_and(|running| {
+                entry.process_names.iter().any(|catalog| {
+                    sanitize_process_name(catalog).is_some_and(|catalog| catalog == running)
+                })
+            })
+        }
     })
 }
 
-fn triggers_overlap(left: &Trigger, right: &Trigger) -> bool {
-    let left = trigger_steps(left);
-    let right = trigger_steps(right);
-    if left.len() == 1 {
-        return right.contains(&left[0]);
-    }
-    if right.len() == 1 {
-        return left.contains(&right[0]);
-    }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CatalogRelationship {
+    None,
+    StrictPrefixRisk,
+    FullConflict,
+}
 
-    if contains_contiguous(left, right) || contains_contiguous(right, left) {
-        return true;
+fn catalog_relationship(candidate: &Trigger, catalog: &Trigger) -> CatalogRelationship {
+    let candidate = trigger_steps(candidate);
+    let catalog = trigger_steps(catalog);
+    if contains_contiguous(candidate, catalog) {
+        CatalogRelationship::FullConflict
+    } else if candidate.len() < catalog.len() && catalog.starts_with(candidate) {
+        CatalogRelationship::StrictPrefixRisk
+    } else {
+        CatalogRelationship::None
     }
-
-    let maximum = left.len().min(right.len());
-    (1..=maximum).any(|length| {
-        left[left.len() - length..] == right[..length]
-            || right[right.len() - length..] == left[..length]
-    })
 }
 
 fn contains_contiguous(haystack: &[Chord], needle: &[Chord]) -> bool {
@@ -763,40 +790,17 @@ fn with_added_modifiers(trigger: &Trigger, addition: u8) -> Option<Trigger> {
     }
 }
 
-fn function_key_candidates(trigger: &Trigger, platform: Platform) -> Vec<Trigger> {
-    let mut keys = Vec::new();
-    if let Some(number) = primary_function_number(trigger).filter(|number| *number >= 13) {
-        for distance in 1..=11 {
-            if number > 13 + distance - 1 {
-                keys.push(number - distance);
-            }
-            if number + distance <= 24 {
-                keys.push(number + distance);
-            }
-        }
-    } else {
-        keys.extend(13..=24);
-    }
-    keys.extend([11, 10]);
-    let modifiers = match platform {
-        Platform::Windows => Modifiers {
-            ctrl: true,
-            alt: true,
-            shift: true,
-            meta: false,
-        },
-        Platform::Macos => Modifiers {
-            ctrl: true,
-            alt: true,
-            shift: true,
-            meta: true,
-        },
-    };
-    keys.into_iter()
-        .filter_map(function_key)
+fn common_key_candidates() -> Vec<Trigger> {
+    common_physical_keys()
+        .into_iter()
         .filter_map(|key| {
             Trigger::chord(Chord {
-                modifiers,
+                modifiers: Modifiers {
+                    ctrl: true,
+                    alt: true,
+                    shift: true,
+                    meta: false,
+                },
                 key: KeyCode::Physical(key),
             })
             .ok()
@@ -804,73 +808,53 @@ fn function_key_candidates(trigger: &Trigger, platform: Platform) -> Vec<Trigger
         .collect()
 }
 
-fn primary_function_number(trigger: &Trigger) -> Option<u8> {
-    let chord = match trigger {
-        Trigger::Chord { chord } => chord,
-        Trigger::Sequence { steps, .. } => steps.first()?,
-    };
-    match chord.key {
-        KeyCode::Physical(key) => function_number(key),
-        KeyCode::Logical(_) => None,
-    }
+fn is_common_physical_trigger(trigger: &Trigger) -> bool {
+    trigger_steps(trigger)
+        .iter()
+        .all(|chord| matches!(chord.key, KeyCode::Physical(key) if is_common_physical_key(key)))
 }
 
-fn function_number(key: PhysicalKey) -> Option<u8> {
-    Some(match key {
-        PhysicalKey::F1 => 1,
-        PhysicalKey::F2 => 2,
-        PhysicalKey::F3 => 3,
-        PhysicalKey::F4 => 4,
-        PhysicalKey::F5 => 5,
-        PhysicalKey::F6 => 6,
-        PhysicalKey::F7 => 7,
-        PhysicalKey::F8 => 8,
-        PhysicalKey::F9 => 9,
-        PhysicalKey::F10 => 10,
-        PhysicalKey::F11 => 11,
-        PhysicalKey::F12 => 12,
-        PhysicalKey::F13 => 13,
-        PhysicalKey::F14 => 14,
-        PhysicalKey::F15 => 15,
-        PhysicalKey::F16 => 16,
-        PhysicalKey::F17 => 17,
-        PhysicalKey::F18 => 18,
-        PhysicalKey::F19 => 19,
-        PhysicalKey::F20 => 20,
-        PhysicalKey::F21 => 21,
-        PhysicalKey::F22 => 22,
-        PhysicalKey::F23 => 23,
-        PhysicalKey::F24 => 24,
-        _ => return None,
-    })
+fn is_common_physical_key(key: PhysicalKey) -> bool {
+    common_physical_keys().contains(&key)
 }
 
-fn function_key(number: u8) -> Option<PhysicalKey> {
-    Some(match number {
-        1 => PhysicalKey::F1,
-        2 => PhysicalKey::F2,
-        3 => PhysicalKey::F3,
-        4 => PhysicalKey::F4,
-        5 => PhysicalKey::F5,
-        6 => PhysicalKey::F6,
-        7 => PhysicalKey::F7,
-        8 => PhysicalKey::F8,
-        9 => PhysicalKey::F9,
-        10 => PhysicalKey::F10,
-        11 => PhysicalKey::F11,
-        12 => PhysicalKey::F12,
-        13 => PhysicalKey::F13,
-        14 => PhysicalKey::F14,
-        15 => PhysicalKey::F15,
-        16 => PhysicalKey::F16,
-        17 => PhysicalKey::F17,
-        18 => PhysicalKey::F18,
-        19 => PhysicalKey::F19,
-        20 => PhysicalKey::F20,
-        21 => PhysicalKey::F21,
-        22 => PhysicalKey::F22,
-        23 => PhysicalKey::F23,
-        24 => PhysicalKey::F24,
-        _ => return None,
-    })
+fn common_physical_keys() -> [PhysicalKey; 36] {
+    [
+        PhysicalKey::KeyT,
+        PhysicalKey::KeyY,
+        PhysicalKey::KeyU,
+        PhysicalKey::KeyI,
+        PhysicalKey::KeyO,
+        PhysicalKey::KeyP,
+        PhysicalKey::KeyA,
+        PhysicalKey::KeyS,
+        PhysicalKey::KeyD,
+        PhysicalKey::KeyF,
+        PhysicalKey::KeyG,
+        PhysicalKey::KeyH,
+        PhysicalKey::KeyJ,
+        PhysicalKey::KeyK,
+        PhysicalKey::KeyL,
+        PhysicalKey::KeyZ,
+        PhysicalKey::KeyX,
+        PhysicalKey::KeyC,
+        PhysicalKey::KeyV,
+        PhysicalKey::KeyB,
+        PhysicalKey::KeyN,
+        PhysicalKey::KeyM,
+        PhysicalKey::KeyQ,
+        PhysicalKey::KeyW,
+        PhysicalKey::KeyE,
+        PhysicalKey::KeyR,
+        PhysicalKey::Digit1,
+        PhysicalKey::Digit2,
+        PhysicalKey::Digit3,
+        PhysicalKey::Digit4,
+        PhysicalKey::Digit5,
+        PhysicalKey::Digit6,
+        PhysicalKey::Digit7,
+        PhysicalKey::Digit8,
+        PhysicalKey::Digit9,
+        PhysicalKey::Digit0,
+    ]
 }
