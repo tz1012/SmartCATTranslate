@@ -233,3 +233,11 @@ macOS 경계: 속도 우선 중간 구현에서는 텍스트 전용 폴백으로
 상태: 확정
 결정: Windows 트레이와 macOS 메뉴 막대는 프로세스당 고정 ID의 Tauri tray 하나로 구성한다. 로그인 시 실행은 설치 앱에서만 Tauri autostart 플러그인으로 변경하고 OS 호출 실패 시 저장값을 바꾸지 않는다. 명시적 종료는 번역 작업과 Codex transport 및 전역키 관찰기를 정리한 뒤 종료한다.
 근거: 개발 실행 파일의 자동 시작 등록과 중복 tray/listener를 방지하면서 UI·OS 실제 상태를 일치시키고 사용자 데이터 작업을 안전하게 닫기 위함이다.
+
+[D-039] 이미지 입력과 화면 영역 캡처의 좌표·개인정보 경계
+상태: 확정
+좌표 계약: 화면 선택의 권위 값은 음수 원점을 허용하는 전역 물리 픽셀 사각형이다. 각 모니터는 전역 물리 bounds, 논리 bounds와 운영체제 유효 scale factor를 함께 제공하며 React pointer의 논리 좌표를 해당 모니터에서 한 번만 물리 좌표로 변환한다. 원본/번역 이미지 안의 OCR 좌표는 유한한 0..=1 정규화 값만 허용한다.
+입력 경계: 이미지 경로는 native picker에서만 받고 source는 read-only handle로 읽는다. magic byte로 PNG/JPEG/WebP/TIFF/BMP를 식별하고 입력 50MiB, 80MP, RGBA 해제 크기 200MiB, 요청당 32개를 넘으면 decode 전에 거부한다. EXIF 방향을 적용하되 원본 SHA-256·원래 크기·방향·색상 형식·ICC 존재 metadata를 immutable app-owned copy와 함께 보존하며 원본은 쓰지 않는다.
+캡처 수명주기: overlay를 띄우기 전에 모니터 frame을 고정하고 세션 하나만 허용한다. 모니터별 투명 전체 화면 overlay는 같은 전역 물리 선택을 공유하며 완료·취소·창 생성 실패 시 전체 집합을 닫는다. 캡처 결과는 앱 전용 immutable PNG와 내용 없는 job metadata로 다음 OCR 단계에 전달한다.
+권한·개인정보: 포그라운드 앱이 사용자 차단 목록에 있으면 화면 접근 전에 거부한다. macOS 화면 기록 권한이 없으면 overlay 전에 typed permission error와 System Settings 위치를 제공한다. 화면/이미지 픽셀, OCR 전 원문, 전체 source/copy 경로와 모니터 외 사용자 식별 데이터는 로그·오류·Debug 출력에 포함하지 않는다.
+검증 범위: 사용자의 속도 우선 지시에 따라 frontend production build와 Windows library check만 관문으로 사용했다. Windows 실제 캡처와 macOS 실기는 완료를 주장하지 않고 후속 짧은 실행/CI 검증 대상으로 남긴다.

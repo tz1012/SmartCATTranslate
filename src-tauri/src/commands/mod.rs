@@ -1,4 +1,5 @@
 pub mod account;
+pub mod capture;
 pub mod hotkeys;
 pub mod lifecycle;
 pub mod settings;

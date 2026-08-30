@@ -705,3 +705,18 @@ TDD 및 검증
 - launchAtLogin은 설치 앱에서만 Tauri autostart를 사용하며 OS 권한/등록 실패 시 저장 설정을 롤백한다.
 - 명시적 종료는 AppState shutdown을 통해 번역 취소, 전역키 observer 정지, Codex transport 종료 후 앱을 닫는다. 시작 시 observer는 설정과 계정 bootstrap 이후에만 시작한다.
 - 속도 우선 최소 검증: 프런트엔드 `pnpm build` 통과, 공유 target의 Windows `cargo check --lib` 통과, `pnpm records:check` 및 `git diff --check` 통과. 새 실패 테스트·전체 회귀·장시간 실행 빌드는 수행하지 않았다.
+
+[2026-08-30] 이미지·화면 번역 Tasks 1–3 — 입력 계약, 안전 가져오기와 영역 캡처
+
+구현
+- 물리 픽셀·논리 포인트·정규화 좌표를 명시한 제한형 계약과 OCR 문서, 번역 블록, 캡처 작업 결과를 Rust/TypeScript에 추가했다. 음수 원점의 다중 모니터, 모니터별 배율과 전역 물리 선택 사각형을 보존한다.
+- PNG/JPEG/WebP/TIFF/BMP를 magic byte로 확인하고 50MiB 입력, 80MP, 200MiB 해제 메모리, 한 번에 32개 제한 안에서 read-only로 연다. EXIF 방향을 적용하고 원본 크기·SHA-256·색상 형식·ICC 존재 여부를 보존한 뒤 앱 전용 위치에 UUID immutable source copy를 만든다.
+- Windows는 GDI로 모니터별 화면을 overlay 표시 전에 한 번만 고정 캡처하고 모니터별 유효 DPI로 논리·물리 좌표를 변환한다. 전역 선택이 모니터 경계를 가로지르면 각 고정 frame의 교집합을 하나의 RGBA 이미지로 합성한다.
+- macOS는 화면 기록 권한을 먼저 확인하고 없으면 System Settings URL이 연결된 구조화 오류로 실패 폐쇄한다. 권한이 있으면 CoreGraphics 모니터 좌표와 시스템 screencapture adapter를 사용하며 실제 macOS 실행 통과는 후속 CI/실기 단계 전까지 주장하지 않는다.
+- Tauri는 세션당 overlay 집합 하나만 유지하고 모니터별 frameless/transparent/always-on-top 창을 생성한다. frozen screenshot, crosshair, 모든 방향 drag, Enter/Escape, 방향키 이동, Alt+방향키 크기 조절, 한국어·영어 안내를 제공한다. 완료·취소·창 생성 실패는 모든 overlay와 session을 정리하고 source-ready 결과를 다음 OCR 작업 화면으로 전달한다.
+- 화면 캡처 전 정제된 포그라운드 앱을 기존 사용자 차단 목록으로 확인한다. 화면·이미지 내용, 원본 전체 경로와 immutable copy 경로는 로그·오류·Debug에 기록하지 않는다. 이미지 선택은 webview 경로 입력이 아니라 운영체제 native picker만 허용한다.
+
+속도 우선 검증
+- 사용자의 최신 지시에 따라 새 실패 테스트, 실패 주입, 전체 회귀를 추가·실행하지 않았다.
+- 프런트엔드 TypeScript/Vite 프로덕션 빌드가 통과했고, D 드라이브 공유 target의 Windows `cargo check --lib`가 통과했다.
+- 실제 8×8 Windows 캡처 smoke는 첫 example 링크가 2분을 넘어 속도 우선 지시에 따라 중단했다. 실행 통과를 주장하지 않으며 화면 내용이나 경로는 저장·출력하지 않았다.

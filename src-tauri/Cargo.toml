@@ -26,6 +26,8 @@ tauri-build = { version = "2", features = [] }
 async-trait = "0.1"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 flate2 = "1"
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["bmp", "jpeg", "png", "tiff", "webp"] }
 regex = "1"
 reqwest = { version = "0.13", default-features = false, features = ["native-tls-no-alpn"] }
 semver = "1"
@@ -46,7 +48,7 @@ uuid = { version = "1", features = ["serde", "v4"] }
 zip = { version = "4", default-features = false, features = ["deflate"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 
 [dev-dependencies]
 jsonschema = { version = "0.37", default-features = false }

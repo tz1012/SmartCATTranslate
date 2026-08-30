@@ -7,6 +7,7 @@ use crate::codex::bootstrap::bootstrap_account_service;
 use crate::commands::account::TauriAccountEventSink;
 
 pub mod app_state;
+pub mod capture;
 pub mod codex;
 pub mod commands;
 pub mod core;
@@ -22,6 +23,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::Builder::new().build())
         .manage(app_state::AppState::default())
+        .manage(capture::CaptureCoordinator::default())
         .setup(|app| {
             lifecycle::setup(app)?;
             let app_data_root = app.path().app_local_data_dir()?;
@@ -89,6 +91,12 @@ pub fn run() {
             commands::windows::show_quick_popup,
             commands::windows::close_quick_popup,
             commands::windows::open_main_window,
+            commands::capture::start_screen_capture,
+            commands::capture::get_capture_overlay,
+            commands::capture::update_screen_selection,
+            commands::capture::complete_screen_capture,
+            commands::capture::cancel_screen_capture,
+            commands::capture::choose_image,
         ])
         .build(tauri::generate_context!())
         .expect("failed to run SmartCAT Translate");
