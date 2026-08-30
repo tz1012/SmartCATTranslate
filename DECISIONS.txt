@@ -329,3 +329,7 @@ XLSX 위치: workbook relationship으로 worksheet part와 실제 sheet name을 
 [D-055] 완료 전이와 cleanup metadata 원자성
 상태: 확정
 결정: JobStage Completed는 Save에서만 전이할 수 있고 active stage의 Cancelled/Failed 및 Paused 복귀 규칙은 유지한다. cleanup pending metadata는 같은 private root의 고정 temp를 create_new로 열어 write/flush/sync_all한 뒤 플랫폼 원자 replace하고 parent directory를 best-effort sync한다. 손상된 primary를 빈 목록으로 대체하지 않고 valid temp를 우선 복구하거나 UUID job root를 pending으로 재구성한다.
+
+[D-056] cleanup 상태의 process-wide 직렬화와 보수적 합집합
+상태: 확정
+결정: canonical private root별 CleanupService는 process-wide registry의 단일 Arc<Mutex<State>>를 공유하며 pending load/retry/mutate/persist 전체를 그 잠금 아래 수행한다. startup pending은 valid primary, valid temp, 실제 UUID direct-child의 합집합이고 temp 오류 흔적은 경고 상태로 유지한다. 어떤 valid UUID도 metadata 선택 과정에서 버리지 않는다.

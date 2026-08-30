@@ -59,3 +59,11 @@ Round-2 gates: Rust formatter PASS; `pnpm build` PASS (63 modules); `pnpm privac
 - Startup prefers a fully validated temporary metadata file left by an interrupted replacement. If the primary is corrupt and no valid temporary survives, every UUID direct-child job root is conservatively reconstructed as pending rather than silently accepting an empty set.
 
 Round-3 verification: Rust formatter PASS; `pnpm build` PASS (63 modules); `pnpm privacy:check` PASS (5 files); `pnpm records:test` PASS (16/16); `pnpm records:check` PASS; `git diff --check` PASS. The single shared-cache `cargo check --lib --offline` made continuous dependency progress for 120 seconds through Tauri/Wry dependencies, but did not reach the product crate; zero code diagnostics were emitted and Rust PASS is not claimed. Transition validation tests and other new failure/long-running tests were intentionally not added per instruction.
+
+## Review fix round 4 — 2026-08-31
+
+- Cleanup services for the same canonical private root now obtain one process-wide registry entry and share a single `Arc<Mutex<CleanupSharedState>>`. Startup load, retries, pending mutations, purge updates, and atomic persistence are serialized across clones and separately constructed instances.
+- Startup reconstructs pending as the union of every valid primary ID, every valid temporary ID, and every UUID direct-child currently present under the root. A valid primary no longer masks an interrupted temp write or an unrecorded crash leftover, and invalid metadata remains a visible warning.
+- The fixed create-new temporary file remains safe because every in-process writer for that root holds the same state lock. Runtime purge failures are persisted under that lock before returning.
+
+Round-4 verification: Rust formatter PASS; `pnpm build` PASS (63 modules); `pnpm privacy:check` PASS (5 files); `pnpm records:test` PASS (16/16); `pnpm records:check` PASS; `git diff --check` PASS. The optional shared-cache `cargo check --lib --offline` reached compilation of the `smartcat-translate` product crate at the 60-second ceiling but was stopped before completion or product diagnostics; zero code errors were emitted and Rust PASS is not claimed. No new failing/full-regression/long-running tests were added.

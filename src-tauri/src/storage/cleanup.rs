@@ -1,13 +1,10 @@
 use crate::core::diagnostics::{DiagnosticEvent, DiagnosticEventName, DiagnosticOutcome};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs::{self, File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
-    },
+    sync::{Arc, Mutex, OnceLock, Weak},
     time::{Duration, SystemTime},
 };
 
@@ -19,9 +16,16 @@ const MAX_PENDING_BYTES: u64 = 1024 * 1024;
 pub struct CleanupService {
     root: PathBuf,
     pending_path: PathBuf,
-    pending: Arc<Mutex<HashSet<String>>>,
-    metadata_error: Arc<AtomicBool>,
+    shared: Arc<Mutex<CleanupSharedState>>,
 }
+
+struct CleanupSharedState {
+    pending: HashSet<String>,
+    metadata_error: bool,
+}
+
+type SharedCleanupState = Mutex<HashMap<PathBuf, Weak<Mutex<CleanupSharedState>>>>;
+static SHARED_STATES: OnceLock<SharedCleanupState> = OnceLock::new();
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CleanupStats {
@@ -49,50 +53,58 @@ impl CleanupService {
         fs::create_dir_all(&root).map_err(|_| CleanupError::Unavailable)?;
         let root = root.canonicalize().map_err(|_| CleanupError::Unavailable)?;
         let pending_path = root.join(PENDING_FILE);
-        let temporary_path = root.join(PENDING_TEMP_FILE);
-        let primary = load_pending(&pending_path);
-        let temporary = load_pending(&temporary_path);
-        let (pending, metadata_error) =
-            recover_pending_metadata(&root, &pending_path, &temporary_path, primary, temporary)?;
+        let registry = SHARED_STATES.get_or_init(|| Mutex::new(HashMap::new()));
+        let mut registry = registry.lock().unwrap_or_else(|value| value.into_inner());
+        if let Some(shared) = registry.get(&root).and_then(Weak::upgrade) {
+            return Ok(Self {
+                root,
+                pending_path,
+                shared,
+            });
+        }
+        let (pending, metadata_error) = recover_pending_metadata(
+            &root,
+            load_pending(&pending_path),
+            load_pending(&root.join(PENDING_TEMP_FILE)),
+        )?;
+        let shared = Arc::new(Mutex::new(CleanupSharedState {
+            pending,
+            metadata_error,
+        }));
+        registry.insert(root.clone(), Arc::downgrade(&shared));
         Ok(Self {
             root,
             pending_path,
-            pending: Arc::new(Mutex::new(pending)),
-            metadata_error: Arc::new(AtomicBool::new(metadata_error)),
+            shared,
         })
     }
 
     pub fn on_start(&self) -> Result<CleanupStats, CleanupError> {
         let mut stats = CleanupStats::default();
-        let mut failed = self.metadata_error.load(Ordering::Acquire);
-        let pending = self
-            .pending
+        let mut state = self
+            .shared
             .lock()
-            .unwrap_or_else(|value| value.into_inner())
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>();
+            .unwrap_or_else(|value| value.into_inner());
+        let mut failed = state.metadata_error;
+        let pending = state.pending.iter().cloned().collect::<Vec<_>>();
         for job_id in pending {
             match self.remove_job_raw(&job_id) {
                 Ok(removed) => {
                     stats.include(removed);
-                    self.pending
-                        .lock()
-                        .unwrap_or_else(|value| value.into_inner())
-                        .remove(&job_id);
+                    state.pending.remove(&job_id);
                 }
                 Err(_) => failed = true,
             }
         }
-        match self.purge_internal(Duration::from_secs(7 * 24 * 60 * 60)) {
+        match self.purge_internal(Duration::from_secs(7 * 24 * 60 * 60), &mut state.pending) {
             Ok(removed) => stats.include(removed),
             Err(_) => failed = true,
         }
-        if self.persist_pending().is_err() {
+        if self.persist_pending(&mut state).is_err() {
             failed = true;
         }
-        if failed || self.has_pending() {
-            self.metadata_error.store(true, Ordering::Release);
+        if failed || !state.pending.is_empty() {
+            state.metadata_error = true;
             self.emit_failed();
             return Err(CleanupError::Unavailable);
         }
@@ -133,12 +145,18 @@ impl CleanupService {
     }
 
     pub fn purge(&self, maximum_age: Duration) -> Result<CleanupStats, CleanupError> {
-        match self.purge_internal(maximum_age) {
-            Ok(stats) if self.persist_pending().is_ok() && !self.has_pending() => {
+        let mut state = self
+            .shared
+            .lock()
+            .unwrap_or_else(|value| value.into_inner());
+        let cleanup_result = self.purge_internal(maximum_age, &mut state.pending);
+        let persistence_result = self.persist_pending(&mut state);
+        match (cleanup_result, persistence_result) {
+            (Ok(stats), Ok(())) if state.pending.is_empty() => {
                 self.emit_succeeded(stats);
                 Ok(stats)
             }
-            Ok(_) | Err(_) => {
+            _ => {
                 self.emit_failed();
                 Err(CleanupError::Unavailable)
             }
@@ -146,12 +164,11 @@ impl CleanupService {
     }
 
     pub fn has_pending(&self) -> bool {
-        self.metadata_error.load(Ordering::Acquire)
-            || !self
-                .pending
-                .lock()
-                .unwrap_or_else(|value| value.into_inner())
-                .is_empty()
+        let state = self
+            .shared
+            .lock()
+            .unwrap_or_else(|value| value.into_inner());
+        state.metadata_error || !state.pending.is_empty()
     }
 
     pub fn root(&self) -> &Path {
@@ -159,13 +176,14 @@ impl CleanupService {
     }
 
     fn finish_cleanup(&self, job_id: &str) -> Result<CleanupStats, CleanupError> {
+        let mut state = self
+            .shared
+            .lock()
+            .unwrap_or_else(|value| value.into_inner());
         match self.remove_job_raw(job_id) {
             Ok(stats) => {
-                self.pending
-                    .lock()
-                    .unwrap_or_else(|value| value.into_inner())
-                    .remove(job_id);
-                if self.persist_pending().is_err() {
+                state.pending.remove(job_id);
+                if self.persist_pending(&mut state).is_err() {
                     self.emit_failed();
                     return Err(CleanupError::Unavailable);
                 }
@@ -174,11 +192,8 @@ impl CleanupService {
             }
             Err(error) => {
                 if valid_job_id(job_id) {
-                    self.pending
-                        .lock()
-                        .unwrap_or_else(|value| value.into_inner())
-                        .insert(job_id.to_owned());
-                    let _ = self.persist_pending();
+                    state.pending.insert(job_id.to_owned());
+                    let _ = self.persist_pending(&mut state);
                 }
                 self.emit_failed();
                 Err(error)
@@ -186,7 +201,11 @@ impl CleanupService {
         }
     }
 
-    fn purge_internal(&self, maximum_age: Duration) -> Result<CleanupStats, CleanupError> {
+    fn purge_internal(
+        &self,
+        maximum_age: Duration,
+        pending: &mut HashSet<String>,
+    ) -> Result<CleanupStats, CleanupError> {
         let mut stats = CleanupStats::default();
         let mut failed = false;
         let now = SystemTime::now();
@@ -200,13 +219,13 @@ impl CleanupService {
             let metadata = match fs::symlink_metadata(entry.path()) {
                 Ok(metadata) => metadata,
                 Err(_) => {
-                    self.schedule(name);
+                    pending.insert(name.to_owned());
                     failed = true;
                     continue;
                 }
             };
             if is_link_or_reparse(&metadata) || !metadata.is_dir() {
-                self.schedule(name);
+                pending.insert(name.to_owned());
                 failed = true;
                 continue;
             }
@@ -215,7 +234,7 @@ impl CleanupService {
                 match self.remove_job_raw(name) {
                     Ok(removed) => stats.include(removed),
                     Err(_) => {
-                        self.schedule(name);
+                        pending.insert(name.to_owned());
                         failed = true;
                     }
                 }
@@ -228,23 +247,8 @@ impl CleanupService {
         }
     }
 
-    fn schedule(&self, job_id: &str) {
-        if valid_job_id(job_id) {
-            self.pending
-                .lock()
-                .unwrap_or_else(|value| value.into_inner())
-                .insert(job_id.to_owned());
-        }
-    }
-
-    fn persist_pending(&self) -> Result<(), CleanupError> {
-        let mut pending = self
-            .pending
-            .lock()
-            .unwrap_or_else(|value| value.into_inner())
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>();
+    fn persist_pending(&self, state: &mut CleanupSharedState) -> Result<(), CleanupError> {
+        let mut pending = state.pending.iter().cloned().collect::<Vec<_>>();
         pending.sort();
         let temporary_path = self.root.join(PENDING_TEMP_FILE);
         let mut ready_for_recovery = false;
@@ -270,8 +274,7 @@ impl CleanupService {
         if result.is_err() && !ready_for_recovery {
             let _ = remove_safe_regular_file(&temporary_path);
         }
-        self.metadata_error
-            .store(result.is_err(), Ordering::Release);
+        state.metadata_error = result.is_err();
         result
     }
 
@@ -337,29 +340,25 @@ fn load_pending(path: &Path) -> Result<Option<HashSet<String>>, CleanupError> {
 
 fn recover_pending_metadata(
     root: &Path,
-    primary_path: &Path,
-    temporary_path: &Path,
     primary: Result<Option<HashSet<String>>, CleanupError>,
     temporary: Result<Option<HashSet<String>>, CleanupError>,
 ) -> Result<(HashSet<String>, bool), CleanupError> {
+    let mut pending = scan_uuid_job_roots(root)?;
+    let mut metadata_error = false;
+    match primary {
+        Ok(Some(values)) => pending.extend(values),
+        Ok(None) => {}
+        Err(_) => metadata_error = true,
+    }
     match temporary {
         Ok(Some(values)) => {
-            let recovered = atomic_replace(temporary_path, primary_path).is_ok();
-            if recovered {
-                let _ = File::open(root).and_then(|directory| directory.sync_all());
-            }
-            Ok((values, !recovered))
+            pending.extend(values);
+            metadata_error = true;
         }
-        Ok(None) => match primary {
-            Ok(Some(values)) => Ok((values, false)),
-            Ok(None) => Ok((scan_uuid_job_roots(root)?, false)),
-            Err(_) => Ok((scan_uuid_job_roots(root)?, true)),
-        },
-        Err(_) => match primary {
-            Ok(Some(values)) => Ok((values, true)),
-            Ok(None) | Err(_) => Ok((scan_uuid_job_roots(root)?, true)),
-        },
+        Ok(None) => {}
+        Err(_) => metadata_error = true,
     }
+    Ok((pending, metadata_error))
 }
 
 fn scan_uuid_job_roots(root: &Path) -> Result<HashSet<String>, CleanupError> {
