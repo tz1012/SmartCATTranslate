@@ -1,9 +1,10 @@
 use std::{
     sync::Arc,
+    thread,
     time::{Duration, Instant},
 };
 
-use tokio::sync::Mutex;
+use tokio::sync::{oneshot, Semaphore};
 
 use super::{AppIdentity, Blocklist, ForegroundAppProvider, PlatformError};
 
@@ -195,7 +196,7 @@ impl std::fmt::Debug for CapturedSelection {
 pub struct ClipboardGuard<C, S> {
     clipboard: Arc<C>,
     copier: Arc<S>,
-    serial: Arc<Mutex<()>>,
+    serial: Arc<Semaphore>,
     limits: ClipboardLimits,
 }
 
@@ -208,7 +209,7 @@ where
         Self {
             clipboard,
             copier,
-            serial: Arc::new(Mutex::new(())),
+            serial: Arc::new(Semaphore::new(1)),
             limits: ClipboardLimits::default(),
         }
     }
@@ -218,15 +219,51 @@ where
         timeout: Duration,
         trigger_already_copied: bool,
     ) -> Result<CapturedSelection, CaptureError> {
-        let _serial = self.serial.lock().await;
+        let permit = Arc::clone(&self.serial)
+            .acquire_owned()
+            .await
+            .map_err(|_| CaptureError::BackendUnavailable)?;
+        let clipboard = Arc::clone(&self.clipboard);
+        let copier = Arc::clone(&self.copier);
+        let limits = self.limits;
+        let (result_sender, result_receiver) = oneshot::channel();
+        thread::Builder::new()
+            .name("smartcat-clipboard-capture".to_owned())
+            .spawn(move || {
+                // The permit is deliberately owned by this worker. Dropping
+                // the calling future cannot let a second capture overlap the
+                // pending OS copy or its conditional restoration.
+                let _permit = permit;
+                let result = Self::capture_selected_text_blocking(
+                    &clipboard,
+                    &copier,
+                    limits,
+                    timeout,
+                    trigger_already_copied,
+                );
+                let _ = result_sender.send(result);
+            })
+            .map_err(|_| CaptureError::BackendUnavailable)?;
+        result_receiver
+            .await
+            .map_err(|_| CaptureError::BackendUnavailable)?
+    }
+
+    fn capture_selected_text_blocking(
+        clipboard: &Arc<C>,
+        copier: &Arc<S>,
+        limits: ClipboardLimits,
+        timeout: Duration,
+        trigger_already_copied: bool,
+    ) -> Result<CapturedSelection, CaptureError> {
         if trigger_already_copied {
-            return self.read_without_copy();
+            return Self::read_without_copy(clipboard, limits);
         }
 
-        let snapshot = self.clipboard.snapshot(self.limits)?;
-        let mut restoration = Restoration::new(Arc::clone(&self.clipboard), snapshot);
-        let copy_result = self.copier.synthesize_copy();
-        let generation_after_input = self.clipboard.generation()?;
+        let snapshot = clipboard.snapshot(limits)?;
+        let mut restoration = Restoration::new(Arc::clone(clipboard), snapshot);
+        let copy_result = copier.synthesize_copy();
+        let generation_after_input = clipboard.generation()?;
         if generation_after_input != restoration.snapshot.generation() {
             restoration.owned_generation = Some(generation_after_input);
         }
@@ -236,7 +273,7 @@ where
         let timeout = timeout.min(MAX_CAPTURE_TIMEOUT);
         let deadline = Instant::now() + timeout;
         let captured_generation = loop {
-            let generation = match self.clipboard.generation() {
+            let generation = match clipboard.generation() {
                 Ok(generation) => generation,
                 Err(error) => return Err(restoration.finish_error(error)),
             };
@@ -246,13 +283,10 @@ where
             if Instant::now() >= deadline {
                 return Err(restoration.finish_error(CaptureError::ClipboardUnchanged));
             }
-            tokio::time::sleep(POLL_INTERVAL.min(timeout)).await;
+            thread::sleep(POLL_INTERVAL.min(timeout));
         };
         restoration.owned_generation = Some(captured_generation);
-        let text = match self
-            .clipboard
-            .read_plain_text(self.limits.max_selection_bytes)
-        {
+        let text = match clipboard.read_plain_text(limits.max_selection_bytes) {
             Ok(text) => text,
             Err(error) => return Err(restoration.finish_error(error)),
         }
@@ -270,10 +304,12 @@ where
         })
     }
 
-    fn read_without_copy(&self) -> Result<CapturedSelection, CaptureError> {
-        let text = self
-            .clipboard
-            .read_plain_text(self.limits.max_selection_bytes)?
+    fn read_without_copy(
+        clipboard: &Arc<C>,
+        limits: ClipboardLimits,
+    ) -> Result<CapturedSelection, CaptureError> {
+        let text = clipboard
+            .read_plain_text(limits.max_selection_bytes)?
             .filter(|value| !value.trim().is_empty())
             .ok_or(CaptureError::NoSelection)?;
         Ok(CapturedSelection {
