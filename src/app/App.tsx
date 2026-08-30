@@ -1,4 +1,5 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { listen } from '@tauri-apps/api/event';
 import { AccountPanel } from '../features/account/AccountPanel';
 import { SettingsView, type Theme } from '../features/settings/SettingsView';
 import { TextWorkspace } from '../features/translation/TextWorkspace';
@@ -11,6 +12,14 @@ export function App({ locale }: { locale?: AppLocale }) {
   const [activeView, setActiveView] = useState<'translate' | 'settings'>('translate');
   const [translationActive, setTranslationActive] = useState(false);
   const accountLocale = locale ?? savedLocale;
+  useEffect(() => {
+    let disposed = false;
+    let stop: (() => void) | undefined;
+    void listen('open-settings', () => setActiveView('settings')).then((unlisten) => {
+      if (disposed) unlisten(); else stop = unlisten;
+    });
+    return () => { disposed = true; stop?.(); };
+  }, []);
   const acceptPreferences = useCallback((loadedLocale: AppLocale, loadedTheme: Theme) => {
     if (locale === undefined) setSavedLocale(loadedLocale);
     setSavedTheme(loadedTheme);

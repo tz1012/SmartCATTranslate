@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import type { Field, Quality, Tone, TranslationProfile } from '../../lib/types';
 export type { Field } from '../../lib/types';
 import { onAccountStateChanged } from '../account/accountApi';
@@ -62,7 +63,7 @@ const copy = {
     launch: '로그인할 때 실행', close: '닫기 동작', keepInTray: '트레이에 유지', quit: '앱 종료', askEveryTime: '매번 묻기',
     quickPosition: '빠른 번역 위치', popup: '작은 팝업', mainWindow: '전체 창', save: '설정 저장', saved: '저장됨', saveError: '설정을 저장할 수 없습니다',
     modelListStatus: '모델 목록 상태', modelListError: '모델 목록을 불러올 수 없습니다. 저장된 선택을 유지합니다.', signedOutModels: 'ChatGPT 계정 연결 후 모델 목록을 확인할 수 있습니다.',
-    retryModels: '다시 시도',
+    retryModels: '다시 시도', installedOnly: '설치된 앱에서만 사용할 수 있습니다', lifecycleError: '운영체제 설정을 변경하지 못했습니다', pauseHotkeys: '단축키 일시 중지',
     rewritePrompt: '문장을 개선할까요?', rewrite: '문장 개선', changeTarget: '대상 언어 변경', defaultProfile: '기본 프로필', newProfile: '새 프로필',
   },
   en: {
@@ -74,7 +75,7 @@ const copy = {
     launch: 'Launch at login', close: 'Close behavior', keepInTray: 'Keep in tray', quit: 'Quit app', askEveryTime: 'Ask every time',
     quickPosition: 'Quick translation position', popup: 'Small popup', mainWindow: 'Main window', save: 'Save settings', saved: 'Saved', saveError: 'Could not save settings',
     modelListStatus: 'Model list status', modelListError: 'Could not load the model list. The saved selection is preserved.', signedOutModels: 'Connect a ChatGPT account to view available models.',
-    retryModels: 'Retry',
+    retryModels: 'Retry', installedOnly: 'Available in the installed app only', lifecycleError: 'Could not change the operating system setting', pauseHotkeys: 'Pause hotkeys',
     rewritePrompt: 'Improve the sentence?', rewrite: 'Improve writing', changeTarget: 'Change target language', defaultProfile: 'Default profile', newProfile: 'New profile',
   },
 } as const;
@@ -108,6 +109,8 @@ export function SettingsView({
   const [selectedProfileId, setSelectedProfileId] = useState('');
   const [status, setStatus] = useState('');
   const [loadFailed, setLoadFailed] = useState(false);
+  const [launchAtLoginAvailable, setLaunchAtLoginAvailable] = useState(true);
+  const [hotkeysPaused, setHotkeysPaused] = useState(false);
   const settingsRevision = useRef(0);
   const saveGeneration = useRef(0);
   const mounted = useRef(false);
@@ -138,7 +141,18 @@ export function SettingsView({
       setSettings(loadedSettings);
       setSelectedProfileId(loadedSettings.defaultProfileId);
       onPreferencesLoaded?.(loadedSettings.locale, loadedSettings.theme);
+      void invoke<{ launchAtLoginAvailable: boolean; launchAtLoginEnabled: boolean; hotkeysPaused: boolean }>('get_lifecycle_status')
+        .then((lifecycle) => {
+          if (disposed) return;
+          setLaunchAtLoginAvailable(lifecycle.launchAtLoginAvailable);
+          setHotkeysPaused(lifecycle.hotkeysPaused);
+          setSettings((current) => current ? { ...current, launchAtLogin: lifecycle.launchAtLoginEnabled } : current);
+        }).catch(() => !disposed && setLaunchAtLoginAvailable(false));
     }).catch(() => !disposed && setLoadFailed(true));
+    let stopPause: (() => void) | undefined;
+    void listen<boolean>('hotkeys-paused', (event) => setHotkeysPaused(event.payload)).then((stop) => {
+      if (disposed) stop(); else stopPause = stop;
+    });
     try {
       void onAccountStateChanged(() => {
         void refreshModels();
@@ -160,6 +174,7 @@ export function SettingsView({
       mounted.current = false;
       modelRefreshGeneration.current += 1;
       unlisten?.();
+      stopPause?.();
     };
   }, [onPreferencesLoaded, refreshModels]);
 
@@ -221,6 +236,20 @@ export function SettingsView({
     }
   };
 
+  const updateLifecycle = async (
+    command: 'set_launch_at_login' | 'set_close_behavior' | 'set_quick_access_position',
+    args: Record<string, unknown>,
+  ) => {
+    try {
+      const saved = await invoke<AppSettings>(command, args);
+      setSettings(saved);
+      settingsRevision.current += 1;
+      setStatus(labels.saved);
+    } catch {
+      setStatus(command === 'set_launch_at_login' && !launchAtLoginAvailable ? labels.installedOnly : labels.lifecycleError);
+    }
+  };
+
   const effectiveSourceLanguage = selectedProfile.profile.sourceLanguage ?? detectedSourceLanguage;
   const rewriteSuggested = Boolean(effectiveSourceLanguage
     && effectiveSourceLanguage.toLowerCase() === selectedProfile.profile.targetLanguage.toLowerCase());
@@ -268,11 +297,17 @@ export function SettingsView({
       {modelCatalogStatus === 'unavailable' && <div><p role="status" aria-label={labels.modelListStatus}>{labels.modelListError}</p><button type="button" onClick={() => void refreshModels()}>{labels.retryModels}</button></div>}
       {modelCatalogStatus === 'signedOut' && <div><p role="status" aria-label={labels.modelListStatus}>{labels.signedOutModels}</p><button type="button" onClick={() => void refreshModels()}>{labels.retryModels}</button></div>}
 
-      <label><input type="checkbox" checked={settings.launchAtLogin} onChange={(event) => editSettings((current) => ({ ...current, launchAtLogin: event.target.checked }))} />{labels.launch}</label>
-      <label>{labels.close}<select value={settings.closeBehavior} onChange={(event) => editSettings((current) => ({ ...current, closeBehavior: event.target.value as CloseBehavior }))}>
+      <label><input type="checkbox" checked={settings.launchAtLogin} disabled={!launchAtLoginAvailable} onChange={(event) => void updateLifecycle('set_launch_at_login', { enabled: event.target.checked })} />{labels.launch}</label>
+      {!launchAtLoginAvailable && <p className="settings-help">{labels.installedOnly}</p>}
+      <label><input type="checkbox" checked={hotkeysPaused} onChange={(event) => {
+        const paused = event.target.checked;
+        setHotkeysPaused(paused);
+        void invoke('set_hotkeys_paused', { paused }).catch(() => setHotkeysPaused(!paused));
+      }} />{labels.pauseHotkeys}</label>
+      <label>{labels.close}<select value={settings.closeBehavior} onChange={(event) => void updateLifecycle('set_close_behavior', { closeBehavior: event.target.value as CloseBehavior })}>
         <option value="keepInTray">{labels.keepInTray}</option><option value="quit">{labels.quit}</option><option value="askEveryTime">{labels.askEveryTime}</option>
       </select></label>
-      <label>{labels.quickPosition}<select value={settings.quickAccessPosition} onChange={(event) => editSettings((current) => ({ ...current, quickAccessPosition: event.target.value as QuickAccessPosition }))}>
+      <label>{labels.quickPosition}<select value={settings.quickAccessPosition} onChange={(event) => void updateLifecycle('set_quick_access_position', { quickAccessPosition: event.target.value as QuickAccessPosition })}>
         <option value="popup">{labels.popup}</option><option value="mainWindow">{labels.mainWindow}</option>
       </select></label>
       <button type="button" onClick={() => void save()}>{labels.save}</button>

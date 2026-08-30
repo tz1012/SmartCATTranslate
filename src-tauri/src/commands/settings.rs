@@ -50,6 +50,8 @@ pub async fn save_settings<R: Runtime>(
         .save(&settings)
         .await
         .map_err(settings_error_code)?;
+    app.state::<crate::lifecycle::LifecycleState>()
+        .set_locale(settings.locale, state.hotkeys_suspended());
     Ok(settings)
 }
 

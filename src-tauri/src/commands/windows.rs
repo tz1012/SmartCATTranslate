@@ -74,6 +74,8 @@ pub fn close_quick_popup<R: Runtime>(app: tauri::AppHandle<R>) -> Result<(), Str
 
 #[tauri::command]
 pub fn open_main_window<R: Runtime>(app: tauri::AppHandle<R>) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
     let main = app
         .get_webview_window("main")
         .ok_or("main_window_unavailable")?;
