@@ -327,7 +327,7 @@ git commit -m "feat: add consent-based signed updates"
 
 - [ ] **Step 1: Add failing CI configuration checks**
 
-Create a Node test that parses both workflow YAML files and asserts CI contains frontend, Rust, records and privacy jobs; release contains `windows-latest`, `macos-13` Intel and `macos-14` Apple Silicon targets; every release job runs tests before `tauri-action`.
+Create a Node test that parses both workflow YAML files and asserts CI contains frontend, Rust, records and privacy jobs; release contains `windows-latest`, `macos-15-intel` Intel and `macos-14` Apple Silicon targets; every release job runs tests before `tauri-action`.
 
 Run: `node --test scripts/workflow-policy.test.mjs`
 
@@ -343,7 +343,7 @@ strategy:
       - os: windows-latest
         target: x86_64-pc-windows-msvc
         bundles: msi,nsis
-      - os: macos-13
+      - os: macos-15-intel
         target: x86_64-apple-darwin
         bundles: app,dmg
       - os: macos-14

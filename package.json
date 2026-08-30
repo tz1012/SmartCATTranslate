@@ -23,6 +23,8 @@
     "release:sbom": "node scripts/generate-sbom.mjs",
     "release:licenses": "node scripts/bundle-licenses.mjs",
     "release:workflow:check": "node scripts/workflow-policy.mjs",
+    "release:ref:verify": "node scripts/verify-release-ref.mjs",
+    "release:keypair:verify": "node scripts/verify-updater-keypair.mjs",
     "release:package:windows": "pwsh -NoProfile -File tests/release/package-unsigned.ps1",
     "release:accept:windows": "pwsh -NoProfile -File tests/release/acceptance.ps1",
     "release:package:macos": "bash tests/release/package-unsigned.sh",

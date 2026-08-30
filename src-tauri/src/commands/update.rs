@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     path::PathBuf,
+    sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant},
 };
 
@@ -17,6 +18,8 @@ const CONSENT_TTL: Duration = Duration::from_secs(15 * 60);
 pub struct UpdateState {
     checks: Mutex<HashMap<String, CheckedUpdate>>,
     prepared: Mutex<HashMap<String, PreparedUpdate>>,
+    restart_consents: Mutex<HashMap<String, RestartConsent>>,
+    healthy_marked: AtomicBool,
 }
 
 struct CheckedUpdate {
@@ -30,6 +33,12 @@ struct PreparedUpdate {
     expires_at: Instant,
     update: Update,
     bytes: Vec<u8>,
+}
+
+struct RestartConsent {
+    version: String,
+    install_token: String,
+    expires_at: Instant,
 }
 
 #[derive(Serialize)]
@@ -50,6 +59,12 @@ pub struct PreparedUpdateResult {
     size_bytes: u64,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestartConsentResult {
+    restart_consent_token: String,
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct UpdateProgress {
@@ -60,10 +75,11 @@ struct UpdateProgress {
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct RollbackRecord {
-    previous_version: String,
+struct PendingUpdate {
+    from_version: String,
+    target_version: String,
     previous_installer_url: String,
-    pending_version: String,
+    target_installer_url: String,
     installed_at: String,
 }
 
@@ -217,8 +233,21 @@ pub async fn install_update(
     state: State<'_, UpdateState>,
     version: String,
     install_token: String,
+    restart_consent_token: String,
 ) -> Result<(), String> {
     require_configured()?;
+    let restart_consent = state
+        .restart_consents
+        .lock()
+        .await
+        .remove(&restart_consent_token)
+        .ok_or_else(|| "update_restart_consent_invalid".to_owned())?;
+    if restart_consent.expires_at <= Instant::now() {
+        return Err("update_restart_consent_expired".to_owned());
+    }
+    if restart_consent.version != version || restart_consent.install_token != install_token {
+        return Err("update_restart_consent_mismatch".to_owned());
+    }
     let prepared = state
         .prepared
         .lock()
@@ -231,34 +260,73 @@ pub async fn install_update(
     if prepared.version != version {
         return Err("update_version_mismatch".to_owned());
     }
-    write_rollback_record(&app, &version)?;
+    write_pending_update(&app, &version)?;
     prepared
         .update
         .install(&prepared.bytes)
-        .map_err(map_install_error)
+        .map_err(map_install_error)?;
+    std::thread::spawn(move || app.restart());
+    Ok(())
 }
 
 #[tauri::command]
-pub fn restart_after_update(app: AppHandle) -> Result<(), String> {
+pub async fn authorize_update_restart(
+    state: State<'_, UpdateState>,
+    version: String,
+    install_token: String,
+) -> Result<RestartConsentResult, String> {
     require_configured()?;
-    std::thread::spawn(move || app.restart());
-    Ok(())
+    let prepared = state.prepared.lock().await;
+    let update = prepared
+        .get(&install_token)
+        .ok_or_else(|| "update_consent_invalid".to_owned())?;
+    if update.expires_at <= Instant::now() || update.version != version {
+        return Err("update_consent_invalid".to_owned());
+    }
+    drop(prepared);
+    let token = Uuid::new_v4().to_string();
+    let mut consents = state.restart_consents.lock().await;
+    consents.retain(|_, consent| consent.expires_at > Instant::now());
+    consents.insert(
+        token.clone(),
+        RestartConsent {
+            version,
+            install_token,
+            expires_at: Instant::now() + Duration::from_secs(2 * 60),
+        },
+    );
+    Ok(RestartConsentResult {
+        restart_consent_token: token,
+    })
 }
 
 #[tauri::command]
 pub fn get_update_recovery_instructions(
     app: AppHandle,
 ) -> Result<Option<RecoveryInstructions>, String> {
-    let path = update_state_dir(&app)?.join("rollback.json");
-    let record: RollbackRecord = match std::fs::read(&path) {
+    let root = update_state_dir(&app)?;
+    let path = root.join("pending-update.json");
+    let record: PendingUpdate = match std::fs::read(&path) {
         Ok(bytes) => {
             serde_json::from_slice(&bytes).map_err(|_| "rollback_record_invalid".to_owned())?
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err("rollback_record_unavailable".to_owned()),
     };
+    let from = semver::Version::parse(&record.from_version)
+        .map_err(|_| "rollback_record_invalid".to_owned())?;
+    let target = semver::Version::parse(&record.target_version)
+        .map_err(|_| "rollback_record_invalid".to_owned())?;
+    let current = app.package_info().version.clone();
+    if target <= from || (current != from && current != target) {
+        clear_pending_records(&root);
+        return Ok(None);
+    }
+    if current == target {
+        return Ok(None);
+    }
     Ok(Some(RecoveryInstructions {
-        previous_version: record.previous_version,
+        previous_version: record.from_version,
         previous_installer_url: record.previous_installer_url,
         message: "새 버전이 시작되지 않으면 이전 설치 관리자를 직접 다운로드해 실행하세요. 앱은 자동으로 롤백하지 않습니다.".to_owned(),
     }))
@@ -266,9 +334,9 @@ pub fn get_update_recovery_instructions(
 
 #[tauri::command]
 pub fn open_previous_installer(app: AppHandle) -> Result<(), String> {
-    let path = update_state_dir(&app)?.join("rollback.json");
+    let path = update_state_dir(&app)?.join("pending-update.json");
     let bytes = std::fs::read(path).map_err(|_| "rollback_record_unavailable".to_owned())?;
-    let record: RollbackRecord =
+    let record: PendingUpdate =
         serde_json::from_slice(&bytes).map_err(|_| "rollback_record_invalid".to_owned())?;
     if !record
         .previous_installer_url
@@ -281,31 +349,85 @@ pub fn open_previous_installer(app: AppHandle) -> Result<(), String> {
         .map_err(|_| "rollback_installer_unavailable".to_owned())
 }
 
-pub fn mark_current_version_good(app: &AppHandle) -> Result<(), String> {
-    let root = update_state_dir(app)?;
+#[tauri::command]
+pub fn mark_app_healthy(app: AppHandle, state: State<'_, UpdateState>) -> Result<bool, String> {
+    if state.healthy_marked.swap(true, Ordering::AcqRel) {
+        return Ok(false);
+    }
+    write_acceptance_ready_marker(&app)?;
+    let root = update_state_dir(&app)?;
+    let pending_path = root.join("pending-update.json");
+    let pending: PendingUpdate = match std::fs::read(&pending_path) {
+        Ok(bytes) => {
+            serde_json::from_slice(&bytes).map_err(|_| "rollback_record_invalid".to_owned())?
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(_) => return Err("rollback_record_unavailable".to_owned()),
+    };
+    let target = semver::Version::parse(&pending.target_version)
+        .map_err(|_| "rollback_record_invalid".to_owned())?;
+    if app.package_info().version != target {
+        return Ok(false);
+    }
     std::fs::create_dir_all(&root).map_err(|_| "update_state_unavailable".to_owned())?;
     let record = LastKnownGood {
         version: app.package_info().version.to_string(),
         reached_main_window_at: chrono::Utc::now().to_rfc3339(),
     };
-    write_private_json(root.join("last-known-good.json"), &record)
+    write_private_json(root.join("last-known-good.json"), &record)?;
+    clear_pending_records(&root);
+    Ok(true)
 }
 
-fn write_rollback_record(app: &AppHandle, pending_version: &str) -> Result<(), String> {
+fn write_pending_update(app: &AppHandle, target_version: &str) -> Result<(), String> {
     let repository = option_env!("SMARTCAT_RELEASE_REPOSITORY")
         .ok_or_else(|| "updater_not_configured".to_owned())?;
-    let previous_version = app.package_info().version.to_string();
-    let record = RollbackRecord {
+    let from_version = app.package_info().version.to_string();
+    let record = PendingUpdate {
         previous_installer_url: format!(
-            "https://github.com/{repository}/releases/tag/app-v{previous_version}"
+            "https://github.com/{repository}/releases/tag/app-v{from_version}"
         ),
-        previous_version,
-        pending_version: pending_version.to_owned(),
+        target_installer_url: format!(
+            "https://github.com/{repository}/releases/tag/app-v{target_version}"
+        ),
+        from_version,
+        target_version: target_version.to_owned(),
         installed_at: chrono::Utc::now().to_rfc3339(),
     };
     let root = update_state_dir(app)?;
     std::fs::create_dir_all(&root).map_err(|_| "update_state_unavailable".to_owned())?;
+    write_private_json(root.join("pending-update.json"), &record)?;
     write_private_json(root.join("rollback.json"), &record)
+}
+
+fn clear_pending_records(root: &std::path::Path) {
+    for name in ["pending-update.json", "rollback.json"] {
+        match std::fs::remove_file(root.join(name)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => {}
+        }
+    }
+}
+
+fn write_acceptance_ready_marker(app: &AppHandle) -> Result<(), String> {
+    if std::env::var("CI").as_deref() != Ok("true")
+        || std::env::var("SMARTCAT_ACCEPTANCE_MODE").as_deref() != Ok("1")
+    {
+        return Ok(());
+    }
+    let root = std::env::var_os("SMARTCAT_ACCEPTANCE_ROOT")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .ok_or_else(|| "acceptance_root_invalid".to_owned())?;
+    std::fs::create_dir_all(&root).map_err(|_| "acceptance_root_invalid".to_owned())?;
+    write_private_json(
+        root.join("app-ready.json"),
+        &serde_json::json!({
+            "version": app.package_info().version.to_string(),
+            "readyAt": chrono::Utc::now().to_rfc3339(),
+        }),
+    )
 }
 
 fn update_state_dir(app: &AppHandle) -> Result<PathBuf, String> {

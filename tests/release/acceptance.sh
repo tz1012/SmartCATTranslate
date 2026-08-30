@@ -1,22 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 [[ "$(uname -s)" == Darwin ]] || { echo 'macOS acceptance must run on macOS.' >&2; exit 1; }
-dmg="${1:?usage: acceptance.sh /path/to/SmartCAT.dmg [--run-short-smoke]}"
+dmg="${1:?usage: acceptance.sh /path/to/SmartCAT.dmg [--ci-ephemeral]}"; mode="${2:-}"
 [[ -f "$dmg" && "$dmg" == *.dmg ]] || { echo 'A DMG artifact is required.' >&2; exit 1; }
-root="$(mktemp -d "${TMPDIR:-/tmp}/smartcat-release-acceptance.XXXXXX")"
-mount="$root/mount"; app_root="$root/app"; data="$root/test-data"; mkdir -p "$mount" "$app_root" "$data/home" "$data/tmp"
-cleanup() { hdiutil detach "$mount" -quiet 2>/dev/null || true; case "$root" in "${TMPDIR:-/tmp}"/smartcat-release-acceptance.*) rm -rf -- "$root";; *) echo 'refusing unsafe cleanup' >&2;; esac; }
+if [[ "$mode" == --ci-ephemeral && "${CI:-}" != true ]]; then echo '--ci-ephemeral requires CI=true.' >&2; exit 1; fi
+[[ -z "$mode" || "$mode" == --ci-ephemeral ]] || { echo 'unknown acceptance mode' >&2; exit 1; }
+root="$(mktemp -d "${TMPDIR:-/tmp}/smartcat-release-acceptance.XXXXXX")"; mount="$root/mount"; app_root="$root/app"; data="$root/test-data"
+mkdir -p "$mount" "$app_root" "$data/home" "$data/tmp"
+cleanup() { hdiutil detach "$mount" -quiet 2>/dev/null || true; if [[ "$mode" == --ci-ephemeral ]]; then case "$root" in "${TMPDIR:-/tmp}"/smartcat-release-acceptance.*) rm -rf -- "$root";; *) echo 'refusing unsafe cleanup' >&2; exit 1;; esac; fi; }
 trap cleanup EXIT
 hdiutil attach "$dmg" -readonly -nobrowse -mountpoint "$mount"
 app="$(find "$mount" -maxdepth 1 -name '*.app' -print -quit)"; [[ -n "$app" ]] || { echo 'App bundle missing.' >&2; exit 1; }
-cp -R "$app" "$app_root/"
-copied="$app_root/$(basename "$app")"
+ditto "$app" "$app_root/$(basename "$app")"; copied="$app_root/$(basename "$app")"
 codesign --verify --deep --strict --verbose=2 "$copied"
-codesign -dv --verbose=4 "$copied" 2> "$root/codesign.txt"
-spctl --assess --type execute --verbose=4 "$copied" > "$root/gatekeeper.txt" 2>&1 || true
-if [[ "${2:-}" == --run-short-smoke ]]; then
-  HOME="$data/home" TMPDIR="$data/tmp" open -W -n "$copied" --args --smartcat-acceptance-root "$data" &
-  echo 'Perform docs/release-smoke-checklist.md, then close the app.'
-  wait
-fi
-echo 'macOS acceptance used only a disposable app/test-data root; actual Intel and Apple Silicon runs remain required in CI.'
+spctl --assess --type execute --verbose=4 "$copied"
+xcrun stapler validate "$copied"
+xcrun stapler validate "$dmg"
+if [[ "$mode" != --ci-ephemeral ]]; then echo "Dry acceptance passed; signed/notarized copy retained at $root and was not launched."; exit 0; fi
+executable="$(find "$copied/Contents/MacOS" -maxdepth 1 -type f -perm -111 -print -quit)"; [[ -n "$executable" ]] || { echo 'App executable missing.' >&2; exit 1; }
+CI=true SMARTCAT_ACCEPTANCE_MODE=1 SMARTCAT_ACCEPTANCE_ROOT="$data" HOME="$data/home" TMPDIR="$data/tmp" "$executable" >"$root/app.log" 2>&1 &
+pid=$!; deadline=$((SECONDS + 25))
+while [[ ! -f "$data/app-ready.json" && $SECONDS -lt $deadline ]] && kill -0 "$pid" 2>/dev/null; do sleep 0.25; done
+[[ -f "$data/app-ready.json" ]] || { echo 'App did not reach hydrated main-window readiness in time.' >&2; exit 1; }
+kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true
+echo 'CI ephemeral macOS signature, notarization, staple, isolated launch-ready assertions passed.'

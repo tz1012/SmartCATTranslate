@@ -15,6 +15,9 @@ const messages: Record<string, string> = {
   update_consent_invalid: '이 승인은 이미 사용되었거나 유효하지 않습니다.',
   update_version_mismatch: '표시한 버전과 설치할 버전이 달라 중단했습니다.',
   update_install_failed: '업데이트 설치에 실패했습니다. 현재 버전은 그대로 유지됩니다.',
+  update_restart_consent_invalid: '재시작 승인이 유효하지 않습니다. 설치를 다시 준비하세요.',
+  update_restart_consent_expired: '재시작 승인 시간이 지나 설치를 다시 확인해야 합니다.',
+  update_restart_consent_mismatch: '재시작 승인과 설치할 버전이 달라 중단했습니다.',
 };
 
 export function UpdatePanel({ locale = 'ko' }: { locale?: 'ko' | 'en' }) {
@@ -64,8 +67,15 @@ export function UpdatePanel({ locale = 'ko' }: { locale?: 'ko' | 'en' }) {
     if (!confirmed) { setStatus(locale === 'ko' ? '설치를 취소했습니다. 자동으로 재시작하지 않습니다.' : 'Installation cancelled. The app will not restart automatically.'); return; }
     setBusy(true);
     try {
-      await invoke('install_update', { version: update.version, installToken: prepared.installToken });
-      await invoke('restart_after_update');
+      const consent = await invoke<{ restartConsentToken: string }>('authorize_update_restart', {
+        version: update.version,
+        installToken: prepared.installToken,
+      });
+      await invoke('install_update', {
+        version: update.version,
+        installToken: prepared.installToken,
+        restartConsentToken: consent.restartConsentToken,
+      });
     } catch (error) { fail(error); setBusy(false); }
   };
 

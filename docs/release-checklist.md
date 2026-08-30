@@ -14,6 +14,7 @@
 ## Before tagging
 
 - [ ] Versions match in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`; tag is `app-v<semver>`.
+- [ ] The dispatch input names an exact existing `refs/tags/app-vSEMVER`; `scripts/verify-release-ref.mjs` rejects branch/SHA inputs and requires tag/package/Cargo/Tauri versions to match before the protected environment is entered.
 - [ ] `CHANGELOG.md`, `PROJECT_LOG.txt`, `DECISIONS.txt`, the implementation report, and this checklist describe the exact release.
 - [ ] Frontend build, Rust format/check, records, privacy, runtime/font checksum, workflow policy, and diff gates pass.
 - [ ] Codex runtime archives remain pinned to HTTPS GitHub release URLs and literal SHA-256 values; the built sidecar checksum matches its manifest.
@@ -23,16 +24,17 @@
 ## CI and artifact review
 
 - [ ] PR package artifacts are named `UNSIGNED-*`; expected platform trust warnings are recorded and they are never promoted.
-- [ ] Release matrix succeeds on Windows x64 (`msi,nsis`), macOS 13 Intel (`app,dmg`), and macOS 14 Apple Silicon (`app,dmg`).
-- [ ] Windows Authenticode validation succeeds for executables/installers. macOS nested code signing, hardened runtime, notarization acceptance, and stapling succeed before upload.
+- [ ] Release matrix succeeds on Windows x64 (`msi,nsis`), macOS 15 Intel (`app,dmg`), and macOS 14 Apple Silicon (`app,dmg`).
+- [ ] The protected job signs a disposable canary and the maintained `minisign-verify` verifier proves the public/private updater key pairing before packaging; canary and signature are deleted and never uploaded.
+- [ ] Windows Authenticode status is exactly `Valid` for MSI and installed executable. macOS `codesign --verify --deep --strict`, `spctl --assess`, and `xcrun stapler validate` for both app and DMG all succeed before upload.
 - [ ] Tauri updater archives and `.sig` files exist for every platform; `latest.json` contains the exact tag URLs, version, signature, date, notes and byte size.
-- [ ] SHA-256 inventories, npm/Cargo CycloneDX SBOMs, bundled license files, commit/run/target provenance records, records/privacy summaries, and GitHub artifact attestation are attached.
+- [ ] SHA-256 inventories, npm/Cargo CycloneDX SBOMs with license expressions, actual dependency license/notice texts and reviewed exceptions, commit/run/target provenance records, records/privacy summaries, and GitHub artifact attestation are attached.
 - [ ] The draft GitHub Release appears only after all matrix legs succeed. Review it before publishing; never publish directly from an individual matrix leg.
 
 ## Short installed-app acceptance
 
-- [ ] Run `tests/release/acceptance.ps1` against the Windows MSI with disposable app/test-data roots; verify Documents hashes are unchanged.
-- [ ] Run `tests/release/acceptance.sh` on both macOS 13 Intel and macOS 14 Apple Silicon against their DMGs. These actual macOS runs are CI-required and are not claimed by local Windows validation.
+- [ ] Release CI runs `tests/release/acceptance.ps1 -CiEphemeral` against the Windows MSI with a real silent install, isolated app/key storage, hydrated-window ready marker, uninstall, valid signatures, and unchanged Documents hashes. Local default is administrative extraction only.
+- [ ] Release CI runs `tests/release/acceptance.sh --ci-ephemeral` on macOS 15 Intel and macOS 14 Apple Silicon against their DMGs with disposable copy/data roots. Local default verifies without launching.
 - [ ] Complete every item in `docs/release-smoke-checklist.md`: login, text, hotkey, capture, document, history, recovery, and updater consent/restart behavior.
 - [ ] Verify previous-installer and last-known-good instructions. A rollback is always a user action; the app never silently downloads, installs, restarts, or rolls back.
 - [ ] Record artifact hashes, OS/architecture, expected unsigned warnings (if any), tester, time, result, and remaining signing/notarization requirements without user content or secrets.

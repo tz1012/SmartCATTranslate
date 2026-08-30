@@ -910,3 +910,14 @@ TDD 및 검증
 - protected signing/updater secrets, GitHub remote, Windows/macOS 실제 public artifacts와 macOS installed-app smoke는 현재 checkout에서 사용할 수 없어 검증 전이며 공개를 차단하는 checklist 항목으로 남긴다.
 - `pnpm build` PASS(64 modules), Rust formatter PASS, workflow YAML parse/policy PASS, runtime/font checksum·PDFium non-bundle PASS, `pnpm records:test` PASS(16/16), `pnpm privacy:check` PASS(5 files), `pnpm records:check`와 `git diff --check` PASS.
 - 단 한 번의 D shared `cargo check --lib`은 180초 동안 updater lock/download 뒤 Tauri/Wry/rustls 의존성을 컴파일했으나 product crate 전에 ceiling으로 중단했다. product code diagnostic은 0개이며 Rust PASS를 주장하지 않는다.
+
+[2026-08-31] Tasks 5–7 publication fix round 1 — 태그/LKG/실행형 서명·acceptance 관문
+
+구현
+- Intel release/PR runner를 macOS 15 Intel로 교체하고 retired label을 workflow policy가 거부한다. protected Environment 전 exact refs/tags app-vSEMVER를 commit으로 해석하며 tag/package/Cargo/Tauri 버전 불일치를 실패한다.
+- updater는 install 전 from/target version과 양쪽 installer refs를 pending/rollback record에 남긴다. 새 App hydration과 main-window ready 뒤 one-shot backend handshake에서 current==target일 때만 LKG로 승격하고 pending/rollback을 제거한다. UI 재시작 확인은 version/install token에 결합된 2분 one-use backend consent로 install/restart 시 소비한다.
+- release package는 platform별 최소 secret scope로 updater key canary를 서명하고 maintained minisign verifier로 pairing을 확인한다. Windows는 실제 silent MSI install/ready/uninstall과 Authenticode Valid, macOS는 disposable app copy/isolated ready와 strict codesign, Gatekeeper, app/DMG staple을 fail closed로 확인한다. mac app directory는 ditto zip으로 보존하고 DMG/updater tar/signature를 함께 업로드한다.
+- npm/Cargo SBOM에 license expressions를 넣고 production dependency registry/package의 실제 license/notice texts를 inventory와 함께 묶는다. 텍스트/metadata 예외는 명시적 reason/license 없이는 실패한다.
+
+검증 범위
+- 사용자 속도 지시에 따라 새 negative/E2E/failure-injection/full regression은 작성·실행하지 않았다. 해당 미작성은 ledger의 verification gap이다. 실제 signing secret, public artifacts, macOS acceptance와 publish는 protected CI 전까지 검증 전이다.

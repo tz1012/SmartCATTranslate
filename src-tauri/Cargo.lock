@@ -4386,6 +4386,7 @@ dependencies = [
  "keyring",
  "libc",
  "lopdf",
+ "minisign-verify",
  "quick-xml",
  "rand 0.8.8",
  "regex",

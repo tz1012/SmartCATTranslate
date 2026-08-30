@@ -22,6 +22,12 @@ export function App({ locale }: { locale?: AppLocale }) {
   const [translationActive, setTranslationActive] = useState(false);
   const accountLocale = locale ?? savedLocale;
   useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      void invoke<boolean>('mark_app_healthy').catch(() => undefined);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, []);
+  useEffect(() => {
     let disposed = false;
     let stopSettings: (() => void) | undefined;
     let stopPrivacy: (() => void) | undefined;

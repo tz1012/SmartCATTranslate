@@ -42,7 +42,7 @@ impl KeyStore for OsKeyStore {
             }
             Err(keyring::Error::NoEntry) => {
                 let mut key = Zeroizing::new([0_u8; 32]);
-                OsRng.fill_bytes(&mut key);
+                OsRng.fill_bytes(&mut *key);
                 let encoded = Zeroizing::new(STANDARD.encode(key.as_ref()));
                 if entry.set_password(&encoded).is_err() {
                     return Err(KeyStoreError::SecureStorageUnavailable);

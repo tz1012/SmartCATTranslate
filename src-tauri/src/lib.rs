@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use tauri::Manager;
@@ -36,8 +37,14 @@ pub fn run() {
         .manage(commands::update::UpdateState::default())
         .setup(move |app| {
             lifecycle::setup(app)?;
-            let app_data_root = app.path().app_local_data_dir()?;
-            let key = match storage::OsKeyStore.load_or_create() {
+            let acceptance_root = acceptance_root()?;
+            let app_data_root = match &acceptance_root {
+                Some(root) => root.join("app-data"),
+                None => app.path().app_local_data_dir()?,
+            };
+            let key = match &acceptance_root {
+                Some(_) => zeroize::Zeroizing::new([0xA5; 32]),
+                None => match storage::OsKeyStore.load_or_create() {
                 Ok(key) => key,
                 Err(error) => {
                     let _ = app
@@ -54,6 +61,7 @@ pub fn run() {
                     .emit();
                     return Err(error.into());
                 }
+                },
             };
             let crypto = Arc::new(storage::CryptoBox::from_zeroizing(key));
             let database = storage::StorageDatabase::open(
@@ -76,9 +84,6 @@ pub fn run() {
             app.manage(history_store);
             app.manage(job_store);
             app.manage(cleanup.clone());
-            if option_env!("SMARTCAT_UPDATER_CONFIGURED") == Some("1") {
-                let _ = commands::update::mark_current_version_good(app.handle());
-            }
             let _ = cleanup.on_start();
             let resource_root = app.path().resource_dir()?;
             let executable_path = std::env::current_exe()?;
@@ -204,7 +209,8 @@ pub fn run() {
             commands::update::check_for_update,
             commands::update::prepare_update,
             commands::update::install_update,
-            commands::update::restart_after_update,
+            commands::update::authorize_update_restart,
+            commands::update::mark_app_healthy,
             commands::update::get_update_recovery_instructions,
             commands::update::open_previous_installer,
         ])
@@ -239,6 +245,23 @@ pub fn run() {
             let _ = tauri::async_runtime::block_on(state.shutdown());
         }
     });
+}
+
+fn acceptance_root() -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
+    if std::env::var("CI").as_deref() != Ok("true")
+        || std::env::var("SMARTCAT_ACCEPTANCE_MODE").as_deref() != Ok("1")
+    {
+        return Ok(None);
+    }
+    let root = std::env::var_os("SMARTCAT_ACCEPTANCE_ROOT")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .ok_or("SMARTCAT_ACCEPTANCE_ROOT must be an absolute path in CI")?;
+    std::fs::create_dir_all(&root)?;
+    if std::fs::symlink_metadata(&root)?.file_type().is_symlink() {
+        return Err("SMARTCAT_ACCEPTANCE_ROOT must not be a symlink".into());
+    }
+    Ok(Some(root.canonicalize()?))
 }
 
 #[cfg(test)]

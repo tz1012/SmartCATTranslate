@@ -345,3 +345,7 @@ XLSX 위치: workbook relationship으로 worksheet part와 실제 sheet name을 
 [D-059] 비파괴 acceptance와 미검증 플랫폼 표기
 상태: 확정
 결정: 로컬 prerelease 스크립트는 OS temp 아래 disposable app/test-data root와 MSI administrative image 또는 read-only DMG copy만 사용한다. 사용자 Documents는 삭제·이동하지 않고 Windows에서는 전후 hash가 같아야 한다. 실제 macOS Intel/ARM installed-app smoke, protected signing secret, 공증과 release publication은 CI/사용자 환경에서만 검증할 수 있으므로 실행 전에는 통과로 기록하지 않는다.
+
+[D-060] publication fix round의 태그·LKG·플랫폼 신뢰 관문
+상태: 확정
+결정: protected environment보다 먼저 exact refs/tags app-vSEMVER와 package/Cargo/Tauri 버전을 일치시킨다. Intel runner는 macOS 15 Intel을 사용한다. pending update는 이전/대상 버전과 installer refs를 남기며 대상 버전 UI hydration/main-window ready 뒤에만 LKG로 승격한다. restart consent는 backend가 install token/version에 결합해 1회 소비한다. release package는 updater key-pair canary, Windows Authenticode Valid 또는 macOS codesign/spctl/stapler, CI-only disposable installed-app readiness, 실제 dependency license texts를 모두 통과한 뒤에만 draft publish 단계로 간다. 사용자 지시에 따라 새 negative/E2E test는 추가하지 않고 이 미작성 범위를 verification gap으로 남긴다.
