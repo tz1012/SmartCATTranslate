@@ -250,3 +250,24 @@ main[data-theme="dark"] :is(.conflict-cause, .force-warning, .permission-note) {
   main[data-theme="system"] :is(.hotkey-recorder output, .blocked-app) { background: #222f42; }
   main[data-theme="system"] :is(.conflict-cause, .force-warning, .permission-note) { color: #f4dfad; background: #332b18; }
 }
+
+/* Compact, reusable quick-translation surface. */
+body:has(.quick-popup-shell) { margin: 0; overflow: hidden; background: transparent; }
+.quick-popup-shell { min-height: 100vh; padding: 0; color: #152238; background: #f8fbff; font-family: Inter, "Segoe UI", sans-serif; }
+.quick-popup { height: 100vh; display: grid; grid-template-rows: auto 1fr auto; border: 1px solid #c7d4e5; border-radius: 12px; overflow: hidden; box-shadow: 0 16px 42px rgb(18 44 75 / 22%); }
+.quick-popup-header { display: flex; justify-content: space-between; gap: 1rem; align-items: center; padding: .7rem .85rem; border-bottom: 1px solid #dce5f0; background: #fff; user-select: none; }
+.quick-popup-header > div:first-child { min-width: 0; display: flex; gap: .65rem; align-items: baseline; }
+.quick-popup-header span { color: #5a6a7e; font-size: .78rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.quick-popup-header-actions, .quick-popup-actions { display: flex; gap: .4rem; }
+.quick-popup-header button { width: 2rem; height: 2rem; padding: 0; border: 0; background: transparent; font-size: 1.2rem; }
+.quick-popup-content { min-height: 0; display: grid; grid-template-columns: 1fr 1fr; }
+.quick-popup-content article { min-width: 0; overflow: auto; padding: .8rem .9rem; }
+.quick-popup-content article + article { border-left: 1px solid #dce5f0; background: #fff; }
+.quick-popup-content h2 { margin: 0 0 .45rem; color: #63748a; font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; }
+.quick-popup-content p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .92rem; line-height: 1.5; }
+.quick-popup-placeholder { color: #718198; }
+.quick-popup-error { color: #a3292f; }
+.quick-popup-actions { justify-content: flex-end; align-items: center; padding: .65rem .85rem; border-top: 1px solid #dce5f0; background: #f5f8fc; }
+.quick-popup-actions button { min-height: 2.2rem; }
+.quick-popup-waiting { padding: 1rem; color: #64748b; }
+@media (max-width: 440px) { .quick-popup-content { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; } .quick-popup-content article + article { border-left: 0; border-top: 1px solid #dce5f0; } }

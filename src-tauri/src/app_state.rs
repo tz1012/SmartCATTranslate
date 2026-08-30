@@ -17,6 +17,7 @@ pub struct AppState {
     translation_owners: SharedOwnerJobRegistry,
     settings_operation: Mutex<()>,
     hotkeys_suspended: AtomicBool,
+    quick_hotkeys: std::sync::Mutex<Option<crate::commands::windows::QuickHotkeyRuntime>>,
 }
 
 impl Default for AppState {
@@ -27,6 +28,7 @@ impl Default for AppState {
             translation_owners: new_owner_job_registry(),
             settings_operation: Mutex::new(()),
             hotkeys_suspended: AtomicBool::new(false),
+            quick_hotkeys: std::sync::Mutex::new(None),
         }
     }
 }
@@ -109,6 +111,19 @@ impl AppState {
         self.hotkeys_suspended.load(Ordering::Acquire)
     }
 
+    pub(crate) fn replace_quick_hotkeys(
+        &self,
+        runtime: Option<crate::commands::windows::QuickHotkeyRuntime>,
+    ) {
+        let mut slot = self
+            .quick_hotkeys
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = std::mem::replace(&mut *slot, runtime);
+        drop(slot);
+        drop(previous);
+    }
+
     pub(crate) fn reserve_window_translation_job(
         &self,
         owner: &str,
@@ -148,6 +163,7 @@ impl AppState {
 
     pub async fn shutdown(&self) -> Result<(), AppShutdownError> {
         self.shutting_down.store(true, Ordering::Release);
+        self.replace_quick_hotkeys(None);
         let settings_operation = self.settings_operation.lock().await;
         drop(settings_operation);
         let installed = self.runtime.write().await.take();

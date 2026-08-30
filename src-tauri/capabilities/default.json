@@ -2,6 +2,6 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Default capabilities for SmartCAT Translate",
-  "windows": ["main"],
+  "windows": ["main", "quick-popup"],
   "permissions": ["core:default"]
 }

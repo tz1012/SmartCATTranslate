@@ -139,6 +139,7 @@ pub async fn save_hotkey<R: Runtime>(
         .save(&settings)
         .await
         .map_err(|error| error.code().to_owned())?;
+    crate::commands::windows::restart_quick_hotkeys(app.clone()).await?;
     Ok(settings.hotkeys)
 }
 

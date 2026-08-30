@@ -40,6 +40,7 @@ pub fn run() {
                 {
                     event_sink.account_state_changed(AccountChangeReason::AccountUpdated);
                 }
+                let _ = commands::windows::restart_quick_hotkeys(app_handle.clone()).await;
             });
             Ok(())
         })
@@ -60,6 +61,9 @@ pub fn run() {
             commands::settings::get_settings,
             commands::settings::save_settings,
             commands::settings::list_available_models,
+            commands::windows::show_quick_popup,
+            commands::windows::close_quick_popup,
+            commands::windows::open_main_window,
         ])
         .build(tauri::generate_context!())
         .expect("failed to run SmartCAT Translate");
