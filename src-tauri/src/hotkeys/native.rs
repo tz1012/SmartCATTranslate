@@ -1,7 +1,10 @@
 use std::{
-    sync::{mpsc, Mutex},
+    sync::{
+        atomic::{AtomicBool, AtomicU8, Ordering},
+        mpsc, Arc, Mutex,
+    },
     thread::{self, JoinHandle},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use uuid::Uuid;
@@ -36,6 +39,78 @@ pub enum PlatformError {
     InvalidKey,
     #[error("platform resource shutdown failed")]
     ShutdownFailed,
+    #[error("keyboard observer was disabled and could not be reactivated")]
+    ObserverDisabled,
+}
+
+pub(crate) struct ObserverActivationGuard<'a> {
+    active: &'a AtomicBool,
+    committed: bool,
+}
+
+pub(crate) struct ObserverExitHandshake(AtomicU8);
+
+impl ObserverExitHandshake {
+    const OWNED: u8 = 0;
+    const RELEASE_ON_EXIT: u8 = 1;
+    const EXITED: u8 = 2;
+
+    pub(crate) fn new() -> Self {
+        Self(AtomicU8::new(Self::OWNED))
+    }
+
+    pub(crate) fn request_release(&self, active: &AtomicBool) {
+        match self.0.compare_exchange(
+            Self::OWNED,
+            Self::RELEASE_ON_EXIT,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) | Err(Self::RELEASE_ON_EXIT) => {}
+            Err(Self::EXITED) => active.store(false, Ordering::Release),
+            Err(_) => unreachable!("observer exit handshake has an invalid state"),
+        }
+    }
+
+    pub(crate) fn mark_exited(&self, active: &AtomicBool) {
+        match self.0.compare_exchange(
+            Self::OWNED,
+            Self::EXITED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) | Err(Self::EXITED) => {}
+            Err(Self::RELEASE_ON_EXIT) => {
+                self.0.store(Self::EXITED, Ordering::Release);
+                active.store(false, Ordering::Release);
+            }
+            Err(_) => unreachable!("observer exit handshake has an invalid state"),
+        }
+    }
+}
+
+impl<'a> ObserverActivationGuard<'a> {
+    pub(crate) fn acquire(active: &'a AtomicBool) -> Result<Self, PlatformError> {
+        if active.swap(true, Ordering::AcqRel) {
+            return Err(PlatformError::AlreadyRunning);
+        }
+        Ok(Self {
+            active,
+            committed: false,
+        })
+    }
+
+    pub(crate) fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for ObserverActivationGuard<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.active.store(false, Ordering::Release);
+        }
+    }
 }
 
 pub trait HotkeyObserver: Send {
@@ -76,6 +151,7 @@ pub type NativeEventReceiver = mpsc::Receiver<Vec<Uuid>>;
 pub struct NativeController {
     observer: Mutex<Option<Box<dyn HotkeyObserver>>>,
     worker: Mutex<Option<JoinHandle<()>>>,
+    shutdown: Arc<AtomicBool>,
 }
 
 impl NativeController {
@@ -88,10 +164,17 @@ impl NativeController {
         let (activation_sender, activation_receiver) =
             mpsc::sync_channel(ACTIVATION_QUEUE_CAPACITY);
         let origin = Instant::now();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let worker_shutdown = Arc::clone(&shutdown);
         let worker = thread::Builder::new()
             .name("smartcat-hotkey-engine".to_owned())
             .spawn(move || {
-                while let Ok(event) = event_receiver.recv() {
+                while !worker_shutdown.load(Ordering::Acquire) {
+                    let event = match event_receiver.recv_timeout(Duration::from_millis(50)) {
+                        Ok(event) => event,
+                        Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    };
                     let Ok(outcome) = engine.on_event(event, origin.elapsed()) else {
                         break;
                     };
@@ -110,12 +193,14 @@ impl NativeController {
             Self {
                 observer: Mutex::new(Some(observer)),
                 worker: Mutex::new(Some(worker)),
+                shutdown,
             },
             activation_receiver,
         ))
     }
 
     pub fn stop(&self) -> Result<(), NativeControllerError> {
+        self.shutdown.store(true, Ordering::Release);
         let mut shutdown_error = None;
         let observer = self
             .observer
@@ -155,8 +240,11 @@ impl Drop for NativeController {
 #[cfg(test)]
 mod tests {
     use std::{
-        sync::{mpsc, Arc},
-        time::Duration,
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            mpsc, Arc,
+        },
+        time::{Duration, Instant},
     };
 
     use uuid::Uuid;
@@ -318,6 +406,78 @@ mod tests {
         );
         assert!(controller.worker.lock().unwrap().is_none());
         assert!(controller.observer.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn controller_shutdown_is_bounded_even_if_observer_keeps_sender_alive() {
+        struct StuckObserver(mpsc::SyncSender<KeyEvent>);
+        impl HotkeyObserver for StuckObserver {
+            fn stop(&mut self) -> Result<(), PlatformError> {
+                let _ = &self.0;
+                Err(PlatformError::ShutdownFailed)
+            }
+        }
+        struct Source;
+        impl KeyEventSource for Source {
+            fn availability(&self) -> ObserverAvailability {
+                ObserverAvailability::Available
+            }
+            fn start(
+                &self,
+                sender: mpsc::SyncSender<KeyEvent>,
+            ) -> Result<Box<dyn HotkeyObserver>, PlatformError> {
+                Ok(Box::new(StuckObserver(sender)))
+            }
+        }
+
+        let engine = SequenceEngine::new(Vec::<HotkeyBinding>::new()).unwrap();
+        let (controller, _receiver) = NativeController::start(Source, engine).unwrap();
+        let started = Instant::now();
+        assert_eq!(
+            controller.stop(),
+            Err(NativeControllerError::Platform(
+                PlatformError::ShutdownFailed
+            ))
+        );
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn observer_activation_rolls_back_after_startup_failure() {
+        let active = AtomicBool::new(false);
+        {
+            let _guard = super::ObserverActivationGuard::acquire(&active).unwrap();
+            assert!(active.load(Ordering::Acquire));
+        }
+        assert!(!active.load(Ordering::Acquire));
+        let guard = super::ObserverActivationGuard::acquire(&active).unwrap();
+        guard.commit();
+        assert!(active.load(Ordering::Acquire));
+        // A timed-out worker owns this final transition. Until it executes,
+        // a newer singleton must remain blocked.
+        assert!(matches!(
+            super::ObserverActivationGuard::acquire(&active),
+            Err(PlatformError::AlreadyRunning)
+        ));
+        active.store(false, Ordering::Release);
+        assert!(super::ObserverActivationGuard::acquire(&active).is_ok());
+    }
+
+    #[test]
+    fn observer_exit_handshake_releases_active_in_both_race_orders() {
+        let active = AtomicBool::new(true);
+        let worker_first = super::ObserverExitHandshake::new();
+        worker_first.mark_exited(&active);
+        assert!(active.load(Ordering::Acquire));
+        worker_first.request_release(&active);
+        assert!(!active.load(Ordering::Acquire));
+
+        active.store(true, Ordering::Release);
+        let timeout_first = super::ObserverExitHandshake::new();
+        timeout_first.request_release(&active);
+        assert!(active.load(Ordering::Acquire));
+        timeout_first.mark_exited(&active);
+        assert!(!active.load(Ordering::Acquire));
     }
 
     fn assert_send_sync<T: Send + Sync>() {}

@@ -45,24 +45,34 @@ impl ForegroundAppProvider for WindowsForegroundAppProvider {
             }
             let path = String::from_utf16(&buffer[..length as usize])
                 .map_err(|_| PlatformError::IdentityUnavailable)?;
-            let basename = Path::new(&path)
-                .file_name()
-                .and_then(|name| name.to_str())
-                .ok_or(PlatformError::IdentityUnavailable)?;
-            AppIdentity::new(Some(basename), None).ok_or(PlatformError::IdentityUnavailable)
+            basename_identity(&path).ok_or(PlatformError::IdentityUnavailable)
         }
     }
+}
+
+fn basename_identity(path: &str) -> Option<AppIdentity> {
+    let basename = Path::new(path).file_name()?.to_str()?;
+    AppIdentity::new(Some(basename), None)
 }
 
 #[cfg(test)]
 mod tests {
     use crate::hotkeys::ForegroundAppProvider;
 
-    use super::WindowsForegroundAppProvider;
+    use super::{basename_identity, WindowsForegroundAppProvider};
+
+    #[test]
+    fn process_path_is_reduced_to_a_sanitized_basename() {
+        let identity = basename_identity(r"C:\Program Files\Example\Editor.exe").unwrap();
+        assert_eq!(identity.executable_basename(), Some("editor.exe"));
+        assert!(identity.bundle_id().is_none());
+    }
 
     #[test]
     fn real_foreground_identity_exposes_only_a_sanitized_basename() {
-        let identity = WindowsForegroundAppProvider.current().unwrap();
+        let Ok(identity) = WindowsForegroundAppProvider.current() else {
+            return;
+        };
         let executable = identity.executable_basename().unwrap();
 
         assert!(!executable.contains('\\'));

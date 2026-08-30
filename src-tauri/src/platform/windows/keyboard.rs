@@ -1,18 +1,21 @@
 use std::{
     collections::HashSet,
+    ffi::c_void,
     ptr,
     sync::{
-        atomic::{AtomicBool, AtomicI32, Ordering},
-        mpsc, Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc, Mutex, OnceLock,
     },
     thread::{self, JoinHandle},
+    time::Duration,
 };
 
 use windows_sys::Win32::{
     Foundation::{
-        GetLastError, ERROR_ACCESS_DENIED, ERROR_HOTKEY_ALREADY_REGISTERED, ERROR_INVALID_PARAMETER,
+        CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_HOTKEY_ALREADY_REGISTERED,
+        ERROR_INVALID_PARAMETER,
     },
-    System::Threading::GetCurrentThreadId,
+    System::Threading::{CreateEventW, SetEvent},
     UI::{
         Input::KeyboardAndMouse::{
             GetAsyncKeyState, RegisterHotKey, UnregisterHotKey, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT,
@@ -23,32 +26,124 @@ use windows_sys::Win32::{
             VK_UP,
         },
         WindowsAndMessaging::{
-            CallNextHookEx, DispatchMessageW, GetMessageW, PeekMessageW, PostThreadMessageW,
+            CallNextHookEx, DispatchMessageW, MsgWaitForMultipleObjectsEx, PeekMessageW,
             SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, HC_ACTION, KBDLLHOOKSTRUCT,
-            MSG, PM_NOREMOVE, WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN,
-            WM_SYSKEYUP,
+            LLKHF_EXTENDED, MSG, MWMO_INPUTAVAILABLE, PM_NOREMOVE, PM_REMOVE, QS_ALLINPUT,
+            WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP,
         },
     },
 };
 
 use crate::hotkeys::{
     Chord, HotkeyObserver, KeyCode, KeyDevice, KeyEvent, KeyEventPhase, KeyEventSource, LogicalKey,
-    Modifiers, ObserverAvailability, PhysicalKey, PlatformError, RegistrationProbe,
-    RegistrationProbeStatus, Trigger,
+    Modifiers, ObserverActivationGuard, ObserverAvailability, ObserverExitHandshake, PhysicalKey,
+    PlatformError, RegistrationProbe, RegistrationProbeStatus, Trigger,
 };
 
 static OBSERVER_ACTIVE: AtomicBool = AtomicBool::new(false);
+static OBSERVER_HEALTHY: AtomicBool = AtomicBool::new(false);
 static EVENT_SENDER: OnceLock<Mutex<Option<mpsc::SyncSender<KeyEvent>>>> = OnceLock::new();
-static HELD_KEYS: OnceLock<Mutex<HashSet<u32>>> = OnceLock::new();
-static NEXT_PROBE_ID: AtomicI32 = AtomicI32::new(0x5000);
+static HELD_KEYS: OnceLock<Mutex<HashSet<u64>>> = OnceLock::new();
 
-pub struct WindowsRegistrationProbe {
-    observer_available: bool,
+const START_TIMEOUT: Duration = Duration::from_secs(5);
+const STOP_TIMEOUT: Duration = Duration::from_secs(5);
+const WAIT_OBJECT_0: u32 = 0;
+const WAIT_INFINITE: u32 = u32::MAX;
+const UNREGISTER_ATTEMPTS: usize = 3;
+
+trait RegistrationApi {
+    fn register(&self, id: i32, modifiers: u32, vk: u32) -> Result<(), u32>;
+    fn unregister(&self, id: i32) -> Result<(), u32>;
 }
 
+struct WinRegistrationApi;
+
+impl RegistrationApi for WinRegistrationApi {
+    fn register(&self, id: i32, modifiers: u32, vk: u32) -> Result<(), u32> {
+        if unsafe { RegisterHotKey(ptr::null_mut(), id, modifiers, vk) } == 0 {
+            Err(unsafe { GetLastError() })
+        } else {
+            Ok(())
+        }
+    }
+
+    fn unregister(&self, id: i32) -> Result<(), u32> {
+        if unsafe { UnregisterHotKey(ptr::null_mut(), id) } == 0 {
+            Err(unsafe { GetLastError() })
+        } else {
+            Ok(())
+        }
+    }
+}
+
+struct RegistrationLease<'a, A: RegistrationApi> {
+    api: &'a A,
+    id: i32,
+    registered: bool,
+}
+
+impl<'a, A: RegistrationApi> RegistrationLease<'a, A> {
+    fn acquire(api: &'a A, id: i32, modifiers: u32, vk: u32) -> Result<Self, u32> {
+        api.register(id, modifiers, vk)?;
+        Ok(Self {
+            api,
+            id,
+            registered: true,
+        })
+    }
+
+    fn restore(&mut self) -> Result<(), u32> {
+        let mut last_error = 0;
+        for _ in 0..UNREGISTER_ATTEMPTS {
+            match self.api.unregister(self.id) {
+                Ok(()) => {
+                    self.registered = false;
+                    return Ok(());
+                }
+                Err(error) => last_error = error,
+            }
+        }
+        Err(last_error)
+    }
+}
+
+impl<A: RegistrationApi> Drop for RegistrationLease<'_, A> {
+    fn drop(&mut self) {
+        if self.registered {
+            let _ = self.restore();
+        }
+    }
+}
+
+fn probe_registered_with_api<A: RegistrationApi>(
+    api: &A,
+    id: i32,
+    modifiers: u32,
+    vk: u32,
+    observer_available: bool,
+) -> RegistrationProbeStatus {
+    let mut lease = match RegistrationLease::acquire(api, id, modifiers, vk) {
+        Ok(lease) => lease,
+        Err(ERROR_HOTKEY_ALREADY_REGISTERED) => {
+            return RegistrationProbeStatus::Occupied { observer_available };
+        }
+        Err(ERROR_ACCESS_DENIED) => return RegistrationProbeStatus::PermissionDenied,
+        Err(ERROR_INVALID_PARAMETER) => return RegistrationProbeStatus::Invalid,
+        Err(_) => return RegistrationProbeStatus::BackendError,
+    };
+    if lease.restore().is_ok() {
+        RegistrationProbeStatus::Available
+    } else {
+        RegistrationProbeStatus::BackendError
+    }
+}
+
+#[derive(Default)]
+pub struct WindowsRegistrationProbe;
+
 impl WindowsRegistrationProbe {
-    pub fn new(observer_available: bool) -> Self {
-        Self { observer_available }
+    pub fn new() -> Self {
+        Self
     }
 }
 
@@ -56,7 +151,7 @@ impl RegistrationProbe for WindowsRegistrationProbe {
     fn probe_and_restore(&self, trigger: &Trigger) -> RegistrationProbeStatus {
         let Trigger::Chord { chord } = trigger else {
             return RegistrationProbeStatus::UnsupportedSequence {
-                observer_available: self.observer_available,
+                observer_available: OBSERVER_HEALTHY.load(Ordering::Acquire),
             };
         };
         if chord.modifiers.meta {
@@ -65,34 +160,45 @@ impl RegistrationProbe for WindowsRegistrationProbe {
         let Some(vk) = chord_to_virtual_key(*chord) else {
             return RegistrationProbeStatus::Invalid;
         };
-        let id = NEXT_PROBE_ID
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                Some(if current >= 0xBFFE {
-                    0x5000
-                } else {
-                    current + 1
-                })
-            })
-            .unwrap_or(0x5000);
-        let modifiers = hotkey_modifiers(chord.modifiers) | MOD_NOREPEAT;
-        // SAFETY: this thread-scoped registration uses a bounded valid ID and
-        // is removed before the method returns.
-        if unsafe { RegisterHotKey(ptr::null_mut(), id, modifiers, vk) } == 0 {
-            // SAFETY: GetLastError is read immediately after the failed API call.
-            return match unsafe { GetLastError() } {
-                ERROR_HOTKEY_ALREADY_REGISTERED => RegistrationProbeStatus::Occupied {
-                    observer_available: self.observer_available,
-                },
-                ERROR_ACCESS_DENIED => RegistrationProbeStatus::PermissionDenied,
-                ERROR_INVALID_PARAMETER => RegistrationProbeStatus::Invalid,
-                _ => RegistrationProbeStatus::BackendError,
+        if native_key_to_key(NativeKey::from_registration(vk)) != Some(chord.key) {
+            return if OBSERVER_HEALTHY.load(Ordering::Acquire) {
+                RegistrationProbeStatus::AvailableViaObserver
+            } else {
+                RegistrationProbeStatus::Invalid
             };
         }
-        // SAFETY: the exact ID registered above is unregistered on the same thread.
-        if unsafe { UnregisterHotKey(ptr::null_mut(), id) } == 0 {
-            RegistrationProbeStatus::BackendError
-        } else {
-            RegistrationProbeStatus::Available
+        let modifiers = hotkey_modifiers(chord.modifiers) | MOD_NOREPEAT;
+        let (result_sender, result_receiver) = mpsc::sync_channel(1);
+        let Ok(worker) = thread::Builder::new()
+            .name("smartcat-hotkey-probe".to_owned())
+            .spawn(move || {
+                const PROBE_ID: i32 = 0x5000;
+                // A thread-owned registration is also removed by Windows when
+                // this short-lived probe thread exits, including unregister failures.
+                let status = probe_registered_with_api(
+                    &WinRegistrationApi,
+                    PROBE_ID,
+                    modifiers,
+                    vk,
+                    OBSERVER_HEALTHY.load(Ordering::Acquire),
+                );
+                let _ = result_sender.send(status);
+            })
+        else {
+            return RegistrationProbeStatus::BackendError;
+        };
+        match result_receiver.recv_timeout(START_TIMEOUT) {
+            Ok(status) => {
+                if worker.join().is_err() {
+                    RegistrationProbeStatus::BackendError
+                } else {
+                    status
+                }
+            }
+            Err(_) => {
+                drop(worker);
+                RegistrationProbeStatus::BackendError
+            }
         }
     }
 }
@@ -108,43 +214,76 @@ impl WindowsKeyEventSource {
 
 impl KeyEventSource for WindowsKeyEventSource {
     fn availability(&self) -> ObserverAvailability {
-        ObserverAvailability::Available
+        if OBSERVER_HEALTHY.load(Ordering::Acquire) {
+            ObserverAvailability::Available
+        } else {
+            ObserverAvailability::Unsupported
+        }
     }
 
     fn start(
         &self,
         sender: mpsc::SyncSender<KeyEvent>,
     ) -> Result<Box<dyn HotkeyObserver>, PlatformError> {
-        if OBSERVER_ACTIVE.swap(true, Ordering::AcqRel) {
-            return Err(PlatformError::AlreadyRunning);
-        }
-        *EVENT_SENDER
-            .get_or_init(|| Mutex::new(None))
-            .lock()
-            .map_err(|_| PlatformError::BackendUnavailable)? = Some(sender);
-        HELD_KEYS
-            .get_or_init(|| Mutex::new(HashSet::new()))
-            .lock()
-            .map_err(|_| PlatformError::BackendUnavailable)?
-            .clear();
+        let activation = ObserverActivationGuard::acquire(&OBSERVER_ACTIVE)?;
+        let Ok(mut event_sender) = EVENT_SENDER.get_or_init(|| Mutex::new(None)).lock() else {
+            OBSERVER_ACTIVE.store(false, Ordering::Release);
+            return Err(PlatformError::BackendUnavailable);
+        };
+        *event_sender = Some(sender);
+        drop(event_sender);
+        let Ok(mut held_keys) = HELD_KEYS.get_or_init(|| Mutex::new(HashSet::new())).lock() else {
+            clear_worker_state();
+            return Err(PlatformError::BackendUnavailable);
+        };
+        held_keys.clear();
+        drop(held_keys);
 
+        let stop_event = unsafe { CreateEventW(ptr::null(), 1, 0, ptr::null()) };
+        if stop_event.is_null() {
+            clear_worker_state();
+            return Err(PlatformError::BackendUnavailable);
+        }
+        let stop_event = Arc::new(WindowsStopEvent(stop_event as usize));
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
+        let (done_sender, done_receiver) = mpsc::sync_channel(1);
+        let exit_handshake = Arc::new(ObserverExitHandshake::new());
         let worker = thread::Builder::new()
             .name("smartcat-windows-keyboard".to_owned())
-            .spawn(move || hook_thread(ready_sender))
+            .spawn({
+                let stop_event = Arc::clone(&stop_event);
+                let exit_handshake = Arc::clone(&exit_handshake);
+                move || hook_thread(stop_event, exit_handshake, ready_sender, done_sender)
+            })
             .map_err(|_| {
-                clear_observer_state();
+                clear_worker_state();
                 PlatformError::BackendUnavailable
             })?;
-        match ready_receiver.recv() {
-            Ok(Ok(thread_id)) => Ok(Box::new(WindowsObserver {
-                thread_id,
-                worker: Some(worker),
-                stopped: false,
-            })),
+        match ready_receiver.recv_timeout(START_TIMEOUT) {
+            Ok(Ok(())) => {
+                activation.commit();
+                Ok(Box::new(WindowsObserver {
+                    stop_event,
+                    done_receiver: Some(done_receiver),
+                    worker: Some(worker),
+                    exit_handshake,
+                    stopped: false,
+                }))
+            }
             _ => {
-                let _ = worker.join();
-                clear_observer_state();
+                unsafe { SetEvent(stop_event.raw()) };
+                let completed = done_receiver.recv_timeout(STOP_TIMEOUT).is_ok();
+                if completed {
+                    let _ = worker.join();
+                } else {
+                    exit_handshake.request_release(&OBSERVER_ACTIVE);
+                    drop(worker);
+                    disconnect_event_sender();
+                    OBSERVER_HEALTHY.store(false, Ordering::Release);
+                    // The late worker exclusively owns cleanup. Keep ACTIVE set
+                    // so it cannot erase a newer observer's singleton state.
+                    activation.commit();
+                }
                 Err(PlatformError::BackendUnavailable)
             }
         }
@@ -152,8 +291,10 @@ impl KeyEventSource for WindowsKeyEventSource {
 }
 
 struct WindowsObserver {
-    thread_id: u32,
+    stop_event: Arc<WindowsStopEvent>,
+    done_receiver: Option<mpsc::Receiver<()>>,
     worker: Option<JoinHandle<()>>,
+    exit_handshake: Arc<ObserverExitHandshake>,
     stopped: bool,
 }
 
@@ -162,15 +303,89 @@ impl HotkeyObserver for WindowsObserver {
         if self.stopped {
             return Ok(());
         }
-        // SAFETY: thread_id belongs to the live hook thread, whose queue was
-        // created before start returned.
-        if unsafe { PostThreadMessageW(self.thread_id, WM_QUIT, 0, 0) } == 0 {
+        let Some(done_receiver) = self.done_receiver.take() else {
             return Err(PlatformError::ShutdownFailed);
-        }
-        if let Some(worker) = self.worker.take() {
-            worker.join().map_err(|_| PlatformError::ShutdownFailed)?;
-        }
-        self.stopped = true;
+        };
+        let already_stopped = match done_receiver.try_recv() {
+            Ok(()) | Err(mpsc::TryRecvError::Disconnected) => true,
+            Err(mpsc::TryRecvError::Empty) => false,
+        };
+        let result = if already_stopped {
+            if self
+                .worker
+                .take()
+                .is_some_and(|handle| handle.join().is_err())
+            {
+                Err(PlatformError::ShutdownFailed)
+            } else {
+                OBSERVER_ACTIVE.store(false, Ordering::Release);
+                Ok(())
+            }
+        } else {
+            finish_observer_shutdown(
+                || {
+                    if unsafe { SetEvent(self.stop_event.raw()) } == 0 {
+                        Err(PlatformError::ShutdownFailed)
+                    } else {
+                        Ok(())
+                    }
+                },
+                done_receiver,
+                &mut self.worker,
+                STOP_TIMEOUT,
+                &self.exit_handshake,
+                &OBSERVER_ACTIVE,
+            )
+        };
+        self.stopped = self.worker.is_none();
+        result
+    }
+}
+
+struct WindowsStopEvent(usize);
+
+impl WindowsStopEvent {
+    fn raw(&self) -> *mut c_void {
+        self.0 as *mut c_void
+    }
+}
+
+impl Drop for WindowsStopEvent {
+    fn drop(&mut self) {
+        unsafe { CloseHandle(self.raw()) };
+    }
+}
+
+fn finish_observer_shutdown<F>(
+    mut signal_stop: F,
+    done_receiver: mpsc::Receiver<()>,
+    worker: &mut Option<JoinHandle<()>>,
+    timeout: Duration,
+    exit_handshake: &ObserverExitHandshake,
+    active: &AtomicBool,
+) -> Result<(), PlatformError>
+where
+    F: FnMut() -> Result<(), PlatformError>,
+{
+    let signal_error = signal_stop().err();
+    let completed = done_receiver.recv_timeout(timeout).is_ok();
+    let join_error = if completed {
+        let failed = worker.take().is_some_and(|handle| handle.join().is_err());
+        active.store(false, Ordering::Release);
+        failed
+    } else {
+        // A native API failure must not turn application shutdown into an
+        // unbounded join. Dropping the handle detaches only after producers
+        // have been disconnected by the caller.
+        exit_handshake.request_release(active);
+        worker.take();
+        true
+    };
+    if let Some(error) = signal_error {
+        Err(error)
+    } else if join_error {
+        Err(PlatformError::ShutdownFailed)
+    } else {
         Ok(())
     }
 }
@@ -181,7 +396,12 @@ impl Drop for WindowsObserver {
     }
 }
 
-fn hook_thread(ready: mpsc::SyncSender<Result<u32, PlatformError>>) {
+fn hook_thread(
+    stop_event: Arc<WindowsStopEvent>,
+    exit_handshake: Arc<ObserverExitHandshake>,
+    ready: mpsc::SyncSender<Result<(), PlatformError>>,
+    done: mpsc::SyncSender<()>,
+) {
     // SAFETY: all Win32 handles remain owned by this dedicated thread.
     unsafe {
         let mut message: MSG = std::mem::zeroed();
@@ -189,21 +409,51 @@ fn hook_thread(ready: mpsc::SyncSender<Result<u32, PlatformError>>) {
         let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook), ptr::null_mut(), 0);
         if hook.is_null() {
             let _ = ready.send(Err(PlatformError::BackendUnavailable));
-            clear_observer_state();
+            clear_worker_state();
+            exit_handshake.mark_exited(&OBSERVER_ACTIVE);
+            let _ = done.send(());
             return;
         }
-        let thread_id = GetCurrentThreadId();
-        if ready.send(Ok(thread_id)).is_err() {
+        OBSERVER_HEALTHY.store(true, Ordering::Release);
+        if ready.send(Ok(())).is_err() {
             UnhookWindowsHookEx(hook);
-            clear_observer_state();
+            clear_worker_state();
+            exit_handshake.mark_exited(&OBSERVER_ACTIVE);
+            let _ = done.send(());
             return;
         }
-        while GetMessageW(&mut message, ptr::null_mut(), 0, 0) > 0 {
-            TranslateMessage(&message);
-            DispatchMessageW(&message);
+        loop {
+            let stop_handle = stop_event.raw();
+            let wait = MsgWaitForMultipleObjectsEx(
+                1,
+                &stop_handle,
+                WAIT_INFINITE,
+                QS_ALLINPUT,
+                MWMO_INPUTAVAILABLE,
+            );
+            if wait == WAIT_OBJECT_0 {
+                break;
+            }
+            if wait != WAIT_OBJECT_0 + 1 {
+                break;
+            }
+            let mut quit = false;
+            while PeekMessageW(&mut message, ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
+                if message.message == WM_QUIT {
+                    quit = true;
+                    break;
+                }
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+            if quit {
+                break;
+            }
         }
         UnhookWindowsHookEx(hook);
-        clear_observer_state();
+        clear_worker_state();
+        exit_handshake.mark_exited(&OBSERVER_ACTIVE);
+        let _ = done.send(());
     }
 }
 
@@ -217,15 +467,21 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: usize, lparam: isize)
         if let Some(phase) = phase {
             // SAFETY: Windows supplies a KBDLLHOOKSTRUCT for HC_ACTION keyboard messages.
             let native = unsafe { &*(lparam as *const KBDLLHOOKSTRUCT) };
-            if let Some(chord) = virtual_key_to_chord(native.vkCode) {
+            let native_key = NativeKey::new(
+                native.vkCode,
+                native.scanCode,
+                native.flags & LLKHF_EXTENDED != 0,
+            );
+            if let Some(chord) = native_key_to_chord(native_key) {
+                let held_id = native_key.identity();
                 let repeat = if let Ok(mut held) = HELD_KEYS
                     .get_or_init(|| Mutex::new(HashSet::new()))
                     .try_lock()
                 {
                     match phase {
-                        KeyEventPhase::Down => !held.insert(native.vkCode),
+                        KeyEventPhase::Down => !held.insert(held_id),
                         KeyEventPhase::Up => {
-                            held.remove(&native.vkCode);
+                            held.remove(&held_id);
                             false
                         }
                     }
@@ -249,14 +505,18 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: usize, lparam: isize)
     unsafe { CallNextHookEx(ptr::null_mut(), code, wparam, lparam) }
 }
 
-fn clear_observer_state() {
+fn clear_worker_state() {
+    disconnect_event_sender();
+    OBSERVER_HEALTHY.store(false, Ordering::Release);
+}
+
+fn disconnect_event_sender() {
     if let Ok(mut sender) = EVENT_SENDER.get_or_init(|| Mutex::new(None)).lock() {
         sender.take();
     }
     if let Ok(mut held) = HELD_KEYS.get_or_init(|| Mutex::new(HashSet::new())).lock() {
         held.clear();
     }
-    OBSERVER_ACTIVE.store(false, Ordering::Release);
 }
 
 fn hotkey_modifiers(modifiers: Modifiers) -> u32 {
@@ -303,11 +563,13 @@ fn physical_to_virtual_key(key: PhysicalKey) -> Option<u32> {
             0x30 + (value as u32 - Digit0 as u32)
         }
         Backquote => 0xC0,
-        Backslash | IntlBackslash => 0xDC,
+        Backslash => 0xDC,
+        IntlBackslash => 0xE2,
         BracketLeft => 0xDB,
         BracketRight => 0xDD,
         Comma => 0xBC,
-        Equal | NumpadEqual => 0xBB,
+        Equal => 0xBB,
+        NumpadEqual => 0x92,
         Minus => 0xBD,
         Period => 0xBE,
         Quote => 0xDE,
@@ -336,7 +598,33 @@ fn physical_to_virtual_key(key: PhysicalKey) -> Option<u32> {
     })
 }
 
-fn virtual_key_to_chord(vk: u32) -> Option<Chord> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct NativeKey {
+    vk_code: u32,
+    scan_code: u32,
+    extended: bool,
+}
+
+impl NativeKey {
+    const fn new(vk_code: u32, scan_code: u32, extended: bool) -> Self {
+        Self {
+            vk_code,
+            scan_code,
+            extended,
+        }
+    }
+
+    const fn from_registration(vk_code: u32) -> Self {
+        Self::new(vk_code, 0, false)
+    }
+
+    const fn identity(self) -> u64 {
+        self.vk_code as u64 | ((self.scan_code as u64) << 32) | ((self.extended as u64) << 63)
+    }
+}
+
+fn native_key_to_key(native: NativeKey) -> Option<KeyCode> {
+    let vk = native.vk_code;
     const LETTERS: [PhysicalKey; 26] = [
         PhysicalKey::KeyA,
         PhysicalKey::KeyB,
@@ -415,7 +703,7 @@ fn virtual_key_to_chord(vk: u32) -> Option<Chord> {
         PhysicalKey::Numpad8,
         PhysicalKey::Numpad9,
     ];
-    let key = if (0x41..=0x5A).contains(&vk) {
+    Some(if (0x41..=0x5A).contains(&vk) {
         KeyCode::Physical(LETTERS[(vk - 0x41) as usize])
     } else if (0x30..=0x39).contains(&vk) {
         KeyCode::Physical(DIGITS[(vk - 0x30) as usize])
@@ -426,6 +714,9 @@ fn virtual_key_to_chord(vk: u32) -> Option<Chord> {
     } else {
         match vk {
             0xBA => KeyCode::Physical(PhysicalKey::Semicolon),
+            0xBB if native.extended && native.scan_code == 0x59 => {
+                KeyCode::Physical(PhysicalKey::NumpadEqual)
+            }
             0xBB => KeyCode::Physical(PhysicalKey::Equal),
             0xBC => KeyCode::Physical(PhysicalKey::Comma),
             0xBD => KeyCode::Physical(PhysicalKey::Minus),
@@ -437,6 +728,7 @@ fn virtual_key_to_chord(vk: u32) -> Option<Chord> {
             0xDD => KeyCode::Physical(PhysicalKey::BracketRight),
             0xDE => KeyCode::Physical(PhysicalKey::Quote),
             0xE2 => KeyCode::Physical(PhysicalKey::IntlBackslash),
+            0x92 => KeyCode::Physical(PhysicalKey::NumpadEqual),
             value if value == VK_ADD as u32 => KeyCode::Physical(PhysicalKey::NumpadAdd),
             value if value == VK_DECIMAL as u32 => KeyCode::Physical(PhysicalKey::NumpadDecimal),
             value if value == VK_DIVIDE as u32 => KeyCode::Physical(PhysicalKey::NumpadDivide),
@@ -448,6 +740,35 @@ fn virtual_key_to_chord(vk: u32) -> Option<Chord> {
             value if value == VK_NUMLOCK as u32 => KeyCode::Physical(PhysicalKey::NumLock),
             value if value == VK_SCROLL as u32 => KeyCode::Physical(PhysicalKey::ScrollLock),
             0x5D => KeyCode::Physical(PhysicalKey::ContextMenu),
+            value if value == VK_INSERT as u32 && !native.extended => {
+                KeyCode::Physical(PhysicalKey::Numpad0)
+            }
+            value if value == VK_END as u32 && !native.extended => {
+                KeyCode::Physical(PhysicalKey::Numpad1)
+            }
+            value if value == VK_DOWN as u32 && !native.extended => {
+                KeyCode::Physical(PhysicalKey::Numpad2)
+            }
+            value if value == VK_NEXT as u32 && !native.extended => {
+                KeyCode::Physical(PhysicalKey::Numpad3)
+            }
+            0x25 if !native.extended => KeyCode::Physical(PhysicalKey::Numpad4),
+            0x0C if !native.extended => KeyCode::Physical(PhysicalKey::Numpad5),
+            value if value == VK_RIGHT as u32 && !native.extended => {
+                KeyCode::Physical(PhysicalKey::Numpad6)
+            }
+            value if value == VK_HOME as u32 && !native.extended => {
+                KeyCode::Physical(PhysicalKey::Numpad7)
+            }
+            value if value == VK_UP as u32 && !native.extended => {
+                KeyCode::Physical(PhysicalKey::Numpad8)
+            }
+            value if value == VK_PRIOR as u32 && !native.extended => {
+                KeyCode::Physical(PhysicalKey::Numpad9)
+            }
+            value if value == VK_DELETE as u32 && !native.extended => {
+                KeyCode::Physical(PhysicalKey::NumpadDecimal)
+            }
             value if value == VK_UP as u32 => KeyCode::Logical(LogicalKey::ArrowUp),
             value if value == VK_DOWN as u32 => KeyCode::Logical(LogicalKey::ArrowDown),
             0x25 => KeyCode::Logical(LogicalKey::ArrowLeft),
@@ -455,6 +776,9 @@ fn virtual_key_to_chord(vk: u32) -> Option<Chord> {
             value if value == VK_BACK as u32 => KeyCode::Logical(LogicalKey::Backspace),
             value if value == VK_DELETE as u32 => KeyCode::Logical(LogicalKey::Delete),
             value if value == VK_END as u32 => KeyCode::Logical(LogicalKey::End),
+            value if value == VK_RETURN as u32 && native.extended => {
+                KeyCode::Physical(PhysicalKey::NumpadEnter)
+            }
             value if value == VK_RETURN as u32 => KeyCode::Logical(LogicalKey::Enter),
             value if value == VK_ESCAPE as u32 => KeyCode::Logical(LogicalKey::Escape),
             value if value == VK_HOME as u32 => KeyCode::Logical(LogicalKey::Home),
@@ -465,7 +789,11 @@ fn virtual_key_to_chord(vk: u32) -> Option<Chord> {
             value if value == VK_TAB as u32 => KeyCode::Logical(LogicalKey::Tab),
             _ => return None,
         }
-    };
+    })
+}
+
+fn native_key_to_chord(native: NativeKey) -> Option<Chord> {
+    let key = native_key_to_key(native)?;
     let down = |key: u16| unsafe { GetAsyncKeyState(key as i32) } < 0;
     Some(Chord {
         modifiers: Modifiers {
@@ -480,31 +808,158 @@ fn virtual_key_to_chord(vk: u32) -> Option<Chord> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::mpsc;
-
-    use crate::hotkeys::{
-        parse_trigger, KeyCode, KeyEventSource, ObserverAvailability, PhysicalKey, PlatformError,
-        RegistrationProbe, RegistrationProbeStatus,
+    use std::{
+        ptr,
+        sync::{
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+            mpsc, Arc,
+        },
+        thread,
+        time::Duration,
     };
 
-    use super::{virtual_key_to_chord, WindowsKeyEventSource, WindowsRegistrationProbe};
+    use crate::hotkeys::{
+        parse_trigger, HotkeyObserver, KeyCode, KeyEventSource, ObserverAvailability, PhysicalKey,
+        PlatformError, RegistrationProbe, RegistrationProbeStatus,
+    };
+    use windows_sys::Win32::System::Threading::{CreateEventW, GetCurrentProcessId};
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_END;
+
+    use super::{
+        finish_observer_shutdown, native_key_to_chord, native_key_to_key,
+        probe_registered_with_api, NativeKey, ObserverExitHandshake, RegistrationApi,
+        WindowsKeyEventSource, WindowsObserver, WindowsRegistrationProbe, WindowsStopEvent,
+    };
+
+    static OBSERVER_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct FailingUnregisterApi {
+        registered: AtomicBool,
+        failures_remaining: AtomicUsize,
+        unregister_calls: AtomicUsize,
+    }
+
+    impl RegistrationApi for FailingUnregisterApi {
+        fn register(&self, _id: i32, _modifiers: u32, _vk: u32) -> Result<(), u32> {
+            self.registered.store(true, Ordering::Release);
+            Ok(())
+        }
+
+        fn unregister(&self, _id: i32) -> Result<(), u32> {
+            self.unregister_calls.fetch_add(1, Ordering::Relaxed);
+            if self
+                .failures_remaining
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+                    remaining.checked_sub(1)
+                })
+                .is_ok()
+            {
+                Err(5)
+            } else {
+                self.registered.store(false, Ordering::Release);
+                Ok(())
+            }
+        }
+    }
 
     #[test]
     fn maps_punctuation_and_numpad_keys_used_by_configurable_shortcuts() {
         assert_eq!(
-            virtual_key_to_chord(0xBB).unwrap().key,
+            native_key_to_chord(NativeKey::new(0xBB, 0x0D, false))
+                .unwrap()
+                .key,
             KeyCode::Physical(PhysicalKey::Equal)
         );
         assert_eq!(
-            virtual_key_to_chord(0x61).unwrap().key,
+            native_key_to_chord(NativeKey::new(0x61, 0x4F, false))
+                .unwrap()
+                .key,
             KeyCode::Physical(PhysicalKey::Numpad1)
         );
     }
 
     #[test]
+    fn unregister_failure_is_retried_until_the_registration_is_restored() {
+        let api = FailingUnregisterApi {
+            registered: AtomicBool::new(false),
+            failures_remaining: AtomicUsize::new(2),
+            unregister_calls: AtomicUsize::new(0),
+        };
+
+        assert_eq!(
+            probe_registered_with_api(&api, 1, 2, 3, true),
+            RegistrationProbeStatus::Available
+        );
+        assert!(!api.registered.load(Ordering::Acquire));
+        assert_eq!(api.unregister_calls.load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    fn permanent_unregister_failure_is_non_forceable_and_bounded() {
+        let api = FailingUnregisterApi {
+            registered: AtomicBool::new(false),
+            failures_remaining: AtomicUsize::new(usize::MAX),
+            unregister_calls: AtomicUsize::new(0),
+        };
+
+        assert_eq!(
+            probe_registered_with_api(&api, 1, 2, 3, true),
+            RegistrationProbeStatus::BackendError
+        );
+        assert!(api.registered.load(Ordering::Acquire));
+        assert!(api.unregister_calls.load(Ordering::Relaxed) <= 6);
+    }
+
+    #[test]
+    fn shutdown_preserves_signal_error_but_still_reclaims_worker() {
+        let (done_sender, done_receiver) = mpsc::sync_channel(1);
+        let mut worker = Some(thread::spawn(move || {
+            let _ = done_sender.send(());
+        }));
+
+        assert_eq!(
+            finish_observer_shutdown(
+                || Err(PlatformError::ShutdownFailed),
+                done_receiver,
+                &mut worker,
+                Duration::from_millis(100),
+                &ObserverExitHandshake::new(),
+                &AtomicBool::new(true),
+            ),
+            Err(PlatformError::ShutdownFailed)
+        );
+        assert!(worker.is_none());
+    }
+
+    #[test]
+    fn observer_stop_skips_signaling_after_worker_has_already_finished() {
+        let _serial = OBSERVER_TEST_LOCK.lock().unwrap();
+        let raw = unsafe { CreateEventW(ptr::null(), 1, 0, ptr::null()) };
+        assert!(!raw.is_null());
+        let (done_sender, done_receiver) = mpsc::sync_channel(1);
+        let (finished_sender, finished_receiver) = mpsc::sync_channel(1);
+        let worker = thread::spawn(move || {
+            done_sender.send(()).unwrap();
+            finished_sender.send(()).unwrap();
+        });
+        finished_receiver.recv().unwrap();
+        let mut observer = WindowsObserver {
+            stop_event: Arc::new(WindowsStopEvent(raw as usize)),
+            done_receiver: Some(done_receiver),
+            worker: Some(worker),
+            exit_handshake: Arc::new(ObserverExitHandshake::new()),
+            stopped: false,
+        };
+
+        assert_eq!(observer.stop(), Ok(()));
+        assert!(observer.worker.is_none());
+    }
+
+    #[test]
     fn real_registration_trial_unregisters_immediately() {
-        let probe = WindowsRegistrationProbe::new(true);
-        let trigger = parse_trigger("Ctrl+Alt+Shift+F24").unwrap();
+        let probe = WindowsRegistrationProbe::new();
+        let function_key = 13 + unsafe { GetCurrentProcessId() } % 12;
+        let trigger = parse_trigger(&format!("Ctrl+Alt+Shift+F{function_key}")).unwrap();
 
         assert_eq!(
             probe.probe_and_restore(&trigger),
@@ -518,15 +973,10 @@ mod tests {
 
     #[test]
     fn sequences_report_observer_capability_without_pretending_to_register() {
+        let _serial = OBSERVER_TEST_LOCK.lock().unwrap();
         let trigger = parse_trigger("Ctrl+C, C").unwrap();
         assert_eq!(
-            WindowsRegistrationProbe::new(true).probe_and_restore(&trigger),
-            RegistrationProbeStatus::UnsupportedSequence {
-                observer_available: true
-            }
-        );
-        assert_eq!(
-            WindowsRegistrationProbe::new(false).probe_and_restore(&trigger),
+            WindowsRegistrationProbe::new().probe_and_restore(&trigger),
             RegistrationProbeStatus::UnsupportedSequence {
                 observer_available: false
             }
@@ -535,17 +985,62 @@ mod tests {
 
     #[test]
     fn observer_reports_windows_availability() {
+        let _serial = OBSERVER_TEST_LOCK.lock().unwrap();
         assert_eq!(
             WindowsKeyEventSource::new().availability(),
-            ObserverAvailability::Available
+            ObserverAvailability::Unsupported
+        );
+    }
+
+    #[test]
+    fn preserves_distinct_extended_and_international_keys() {
+        assert_eq!(
+            native_key_to_key(NativeKey::new(0x0D, 0x1C, true)),
+            Some(KeyCode::Physical(PhysicalKey::NumpadEnter))
+        );
+        assert_eq!(
+            native_key_to_key(NativeKey::new(0x0D, 0x1C, false)),
+            Some(KeyCode::Logical(crate::hotkeys::LogicalKey::Enter))
+        );
+        assert_eq!(
+            native_key_to_key(NativeKey::new(0x92, 0x59, false)),
+            Some(KeyCode::Physical(PhysicalKey::NumpadEqual))
+        );
+        assert_eq!(
+            native_key_to_key(NativeKey::new(0xBB, 0x59, true)),
+            Some(KeyCode::Physical(PhysicalKey::NumpadEqual))
+        );
+        assert_eq!(
+            native_key_to_key(NativeKey::new(0xBB, 0x0D, false)),
+            Some(KeyCode::Physical(PhysicalKey::Equal))
+        );
+        assert_eq!(
+            native_key_to_key(NativeKey::new(0xE2, 0x56, false)),
+            Some(KeyCode::Physical(PhysicalKey::IntlBackslash))
+        );
+        assert_eq!(
+            native_key_to_key(NativeKey::new(VK_END as u32, 0x4F, false)),
+            Some(KeyCode::Physical(PhysicalKey::Numpad1))
+        );
+        assert_eq!(
+            native_key_to_key(NativeKey::new(VK_END as u32, 0x4F, true)),
+            Some(KeyCode::Logical(crate::hotkeys::LogicalKey::End))
         );
     }
 
     #[test]
     fn real_observer_rejects_duplicates_and_can_restart_after_clean_stop() {
+        let _serial = OBSERVER_TEST_LOCK.lock().unwrap();
         let source = WindowsKeyEventSource::new();
         let (sender, _receiver) = mpsc::sync_channel(4);
         let mut observer = source.start(sender).unwrap();
+        assert_eq!(source.availability(), ObserverAvailability::Available);
+        assert_eq!(
+            WindowsRegistrationProbe::new().probe_and_restore(&parse_trigger("Ctrl+C, C").unwrap()),
+            RegistrationProbeStatus::UnsupportedSequence {
+                observer_available: true
+            }
+        );
         let (duplicate_sender, _duplicate_receiver) = mpsc::sync_channel(4);
         assert!(matches!(
             source.start(duplicate_sender),

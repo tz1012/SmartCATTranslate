@@ -606,3 +606,19 @@ TDD 및 검증
 - 전체 대상·전체 기능 엄격 Clippy, Rust 포맷, 프런트엔드 59/59, 프로덕션 빌드와 자동 기록 16/16이 통과했다.
 - Windows 명시 대상 `cargo check --target x86_64-pc-windows-msvc`가 통과했다. macOS 두 아키텍처의 compile/test는 CI 행렬에 실패 폐쇄 관문으로 추가했으며 이 Windows 호스트에는 Apple 표준 라이브러리 대상이 없어 로컬 통과를 주장하지 않는다.
 - 키 입력, 창 제목, 전체 실행 경로, 프로세스 식별자, 원문·번역문과 인증 정보는 기록하지 않았다.
+
+[2026-08-30] 전역 단축키 Task 4 검토 수정 1 — 등록·종료·이벤트 탭 복구 강화
+
+구현
+- Windows 등록 시험을 테스트 가능한 WinAPI wrapper와 RAII lease로 분리했다. 등록 성공 뒤 해제는 제한된 재시도를 수행하고 영구 실패는 강제 지정할 수 없는 구조화 백엔드 오류로 닫는다. 실제 시험은 짧은 수명 스레드가 등록을 소유해 함수 반환 뒤 운영체제 등록을 남기지 않는다.
+- Windows 관찰기 종료를 이벤트 신호, 완료 확인, worker 회수의 finally-style 경로로 만들었다. 신호 오류를 그대로 반환하면서 완료된 worker는 join하고, 완료되지 않는 경우에도 제한시간 뒤 생산자를 끊어 무기한 종료 대기를 막는다. 공통 컨트롤러도 sender가 남아 있는 오류 주입에서 제한시간 안에 끝난다.
+- Windows 키 이벤트 변환에 scan code와 extended flag를 전달하고 결합 정체성으로 반복을 추적한다. 주 키보드 Enter/Equal과 NumpadEnter/NumpadEqual, Num Lock이 꺼진 숫자패드 탐색 키 및 국제 키를 별개 물리 키로 보존한다.
+- macOS 이벤트 탭의 timeout/user-input 비활성 알림을 구분하고 최대 세 번 재활성화와 상태 확인을 수행한다. 복구 실패 시 sender를 끊고 run loop를 멈추며 `ObserverDisabled`로 보고한다.
+- 공통 active-flag rollback guard와 3상태 종료 handshake를 Windows와 macOS 시작·종료 경로에 적용했다. mutex·native handle·worker·준비 단계 실패가 중복 관찰 상태를 남기지 않고, 이전 worker의 늦은 종료가 새 관찰기의 sender를 지우지 않는다. macOS callback의 실패 경로도 비차단 잠금과 원자 run-loop 참조만 사용하며 observer별 실패 세대를 보존한다. 포그라운드 실행 경로는 별도 순수 함수 시험으로 basename만 남는 경계를 고정했다.
+
+TDD 및 검증
+- RED: 등록 API/RAII helper, scan-code 키 표현과 finally-style 종료 helper가 없어 Windows 집중 시험이 컴파일 실패했다.
+- GREEN: Windows 실제 등록·즉시 해제/재등록, observer 중복 거부·종료·재시작, 해제 재시도·영구 오류, 종료 신호 실패 뒤 worker 회수, extended/scan-code·Num Lock 키 구분을 포함한 집중 시험 10/10이 통과했다. 공통 종료·rollback·종료 경합 집중 시험 7/7도 통과했다.
+- 전체 Rust 209개 통과, 2개 환경 의존 시험 제외, 실패 0개였다. 전체 대상·전체 기능 엄격 Clippy와 자동 기록 16/16이 통과했다.
+- Windows 호스트의 macOS 교차 검사는 Objective-C 컴파일러가 없어 의존성 빌드 단계에서 중단됐으며 로컬 macOS 통과를 주장하지 않는다. macOS arm64와 x86_64의 실제 check/test 실패 폐쇄 관문은 CI 행렬에 유지했다.
+- 키 입력, 키 조합, 창 제목, 전체 실행 경로, 프로세스 식별자, 원문·번역문, 계정·인증 정보는 기록하지 않았다.

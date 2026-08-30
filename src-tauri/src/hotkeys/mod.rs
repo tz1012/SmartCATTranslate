@@ -14,6 +14,7 @@ pub use native::{
     ForegroundAppProvider, HotkeyObserver, KeyEventSource, NativeController, NativeControllerError,
     NativeEventReceiver, ObserverAvailability, PlatformError,
 };
+pub(crate) use native::{ObserverActivationGuard, ObserverExitHandshake};
 pub use parser::parse_trigger;
 pub use sequence::{
     KeyDevice, KeyEvent, KeyEventPhase, KeyPropagation, SequenceEngine, SequenceEngineError,
