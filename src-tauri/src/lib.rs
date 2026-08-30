@@ -11,6 +11,7 @@ pub mod capture;
 pub mod codex;
 pub mod commands;
 pub mod core;
+pub mod documents;
 pub mod hotkeys;
 pub mod lifecycle;
 pub mod platform;
@@ -25,6 +26,7 @@ pub fn run() {
         .manage(app_state::AppState::default())
         .manage(capture::CaptureCoordinator::default())
         .manage(capture::CaptureJobStore::default())
+        .manage(documents::DocumentJobStore::default())
         .setup(|app| {
             lifecycle::setup(app)?;
             let app_data_root = app.path().app_local_data_dir()?;
@@ -102,6 +104,10 @@ pub fn run() {
             commands::capture::cancel_image_translation,
             commands::capture::update_capture_block,
             commands::capture::export_translated_image,
+            commands::documents::choose_document,
+            commands::documents::translate_document,
+            commands::documents::cancel_document_translation,
+            commands::documents::open_document_result,
         ])
         .build(tauri::generate_context!())
         .expect("failed to run SmartCAT Translate");

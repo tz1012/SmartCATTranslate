@@ -3835,6 +3835,7 @@ dependencies = [
  "flate2",
  "image",
  "jsonschema",
+ "quick-xml",
  "regex",
  "reqwest",
  "semver",

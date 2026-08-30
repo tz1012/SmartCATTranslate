@@ -4,13 +4,14 @@ import { AccountPanel } from '../features/account/AccountPanel';
 import { SettingsView, type Theme } from '../features/settings/SettingsView';
 import { TextWorkspace } from '../features/translation/TextWorkspace';
 import { CaptureWorkspace } from '../features/capture/CaptureWorkspace';
+import { DocumentWorkspace } from '../features/documents/DocumentWorkspace';
 
 export type AppLocale = 'ko' | 'en';
 
 export function App({ locale }: { locale?: AppLocale }) {
   const [savedLocale, setSavedLocale] = useState<AppLocale>('ko');
   const [savedTheme, setSavedTheme] = useState<Theme>('system');
-  const [activeView, setActiveView] = useState<'translate' | 'capture' | 'settings'>('translate');
+  const [activeView, setActiveView] = useState<'translate' | 'capture' | 'documents' | 'settings'>('translate');
   const [translationActive, setTranslationActive] = useState(false);
   const accountLocale = locale ?? savedLocale;
   useEffect(() => {
@@ -26,8 +27,8 @@ export function App({ locale }: { locale?: AppLocale }) {
     setSavedTheme(loadedTheme);
   }, [locale]);
   const labels = accountLocale === 'ko'
-    ? { navigation: '주요 화면', translate: '텍스트', capture: '이미지·화면', settings: '설정', settingsLocked: '번역 또는 취소 처리 중에는 설정을 열 수 없습니다.' }
-    : { navigation: 'Main views', translate: 'Text', capture: 'Image & screen', settings: 'Settings', settingsLocked: 'Settings are unavailable while translation or cancellation is in progress.' };
+    ? { navigation: '주요 화면', translate: '텍스트', capture: '이미지·화면', documents: '문서', settings: '설정', settingsLocked: '번역 또는 취소 처리 중에는 설정을 열 수 없습니다.' }
+    : { navigation: 'Main views', translate: 'Text', capture: 'Image & screen', documents: 'Documents', settings: 'Settings', settingsLocked: 'Settings are unavailable while translation or cancellation is in progress.' };
 
   return (
     <main data-theme={savedTheme}>
@@ -38,6 +39,7 @@ export function App({ locale }: { locale?: AppLocale }) {
       <nav className="app-navigation" role="tablist" aria-label={labels.navigation} aria-busy={translationActive}>
         <button id="app-tab-translate" type="button" role="tab" aria-selected={activeView === 'translate'} aria-controls="app-panel-translate" onClick={() => setActiveView('translate')}>{labels.translate}</button>
         <button id="app-tab-capture" type="button" role="tab" aria-selected={activeView === 'capture'} aria-controls="app-panel-capture" onClick={() => setActiveView('capture')}>{labels.capture}</button>
+        <button id="app-tab-documents" type="button" role="tab" aria-selected={activeView === 'documents'} aria-controls="app-panel-documents" onClick={() => setActiveView('documents')}>{labels.documents}</button>
         <button id="app-tab-settings" type="button" role="tab" aria-selected={activeView === 'settings'} aria-controls="app-panel-settings" aria-describedby={translationActive ? 'settings-navigation-status' : undefined} disabled={translationActive} onClick={() => {
           if (!translationActive) setActiveView('settings');
         }}>{labels.settings}</button>
@@ -50,6 +52,10 @@ export function App({ locale }: { locale?: AppLocale }) {
       ) : activeView === 'capture' ? (
         <div id="app-panel-capture" role="tabpanel" aria-labelledby="app-tab-capture">
           <CaptureWorkspace locale={accountLocale} />
+        </div>
+      ) : activeView === 'documents' ? (
+        <div id="app-panel-documents" role="tabpanel" aria-labelledby="app-tab-documents">
+          <DocumentWorkspace locale={accountLocale} />
         </div>
       ) : (
         <div id="app-panel-settings" role="tabpanel" aria-labelledby="app-tab-settings">

@@ -249,3 +249,10 @@ OCR 경계: 사용자 이미지 픽셀은 Windows.Media.Ocr 또는 macOS Vision�
 렌더 경계: 원본은 수정하지 않고 expanded text mask 밖 pixel은 건드리지 않는다. 단순 배경만 median fill하고 복잡한 배경은 제한된 interpolation과 경고를 사용한다. OFL Noto Sans와 OS fallback을 cosmic-text shaping에 사용하고 8px 미만으로 줄이지 않으며 영역 밖은 clip하고 overflow를 표시한다.
 저장·UI 경계: 결과는 job ID로만 접근하고 WebView가 임의 image bytes나 source path를 저장 명령에 전달하지 않는다. native dialog가 고른 sibling temporary에 encode·sync·decode 검증 뒤 rename하며 기본적으로 기존 파일을 덮지 않는다. UI는 progress/cancel과 원본/번역/나란히 보기, block 수정·가시성·재시도, 경고 포커스를 한국어·영어로 제공한다. 미리보기는 bounded thumbnail이고 export는 원래 해상도를 유지한다.
 검증 범위: 사용자 속도 우선 지시에 따라 frontend production build와 Windows library check를 최소 관문으로 사용한다. macOS Vision 실기와 시각적 perceptual acceptance는 후속 CI/실기 단계 전까지 통과를 주장하지 않는다.
+
+[D-041] OOXML 원본 불변·구조화 문서 번역 경계
+상태: 확정
+입출력: DOCX/PPTX/XLSX source는 read-only bytes와 SHA-256으로 고정한다. 결과는 source sibling의 고유한 새 이름만 사용하고 create-new partial을 flush/sync한 뒤 validation 성공 시 rename한다. 기존 파일을 덮어쓰지 않으며 source hash가 달라지면 결과를 제거한다.
+패키지 경계: OOXML ZIP은 traversal, absolute path, encryption, duplicate entry와 제한을 넘는 expansion을 거부한다. quick-xml 0.41(MIT) event copy로 namespace, 속성, run properties와 unknown XML을 유지하고 승인된 local text node만 escape하여 바꾼다. 관계, media, formula, number와 field instruction은 수정하지 않는다.
+번역 경계: 문서 segment JSON은 기존 보안 Codex 번역의 단일 비신뢰 source 값이다. 문서 안 문장은 명령으로 해석하지 않고 도구·파일 접근을 허용하지 않는다. 안정 ID와 job-scoped 보호 token을 모두 검증한 batch만 재조립하며 문서 내용, 전체 경로와 번역문은 progress/log/error에 기록하지 않는다.
+범위: 이번 milestone은 DOCX/PPTX/XLSX의 사용 가능한 happy path와 reopen validation을 제공한다. PDF는 별도 Task 7, hidden slide/sheet 정밀 scope, Excel style clone/wrap과 실제 Office/macOS visual acceptance는 후속 단계에서 보강하며 현재 통과를 주장하지 않는다.
