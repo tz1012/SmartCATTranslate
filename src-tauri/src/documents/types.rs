@@ -200,6 +200,7 @@ pub struct DocumentCheckpoint {
 #[serde(rename_all = "camelCase")]
 pub struct DocumentResumeRequest {
     pub record_id: String,
+    pub option_hash: String,
 }
 
 #[derive(Clone, Debug)]

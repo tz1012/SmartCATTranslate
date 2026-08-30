@@ -53,6 +53,7 @@ pub struct DocumentRetentionNotice {
     pub job_id: Uuid,
     pub retention_token: String,
     pub checkpoint: DocumentCheckpoint,
+    pub context: crate::storage::DocumentRecoveryContext,
 }
 
 /// Backend-only bridge for the future encrypted history JobStore. The public Tauri API never
@@ -64,7 +65,12 @@ pub trait DocumentResumeBackend: Send + Sync {
 
     /// Resolve an opaque encrypted-record identifier. Implementations own decryption and record
     /// authentication; this document module only validates the source fingerprint and prefix.
-    fn resolve_resume_record(&self, record_id: &str) -> Option<DocumentRetentionPayload>;
+    fn resolve_resume_record(
+        &self,
+        record_id: &str,
+        source_path: &str,
+        option_hash: &str,
+    ) -> Option<DocumentRetentionPayload>;
 }
 
 impl DocumentJobStore {
@@ -116,6 +122,7 @@ impl DocumentJobStore {
         token: String,
         checkpoint: DocumentCheckpoint,
         translated_results: HashMap<String, TranslatedSegment>,
+        context: crate::storage::DocumentRecoveryContext,
     ) -> bool {
         self.purge_expired();
         self.discard_retention(id);
@@ -148,6 +155,7 @@ impl DocumentJobStore {
                     job_id: id,
                     retention_token: token.clone(),
                     checkpoint,
+                    context,
                 })
             });
         if !accepted {
@@ -194,7 +202,12 @@ impl DocumentJobStore {
         Some(payload)
     }
 
-    pub fn resolve_resume_record(&self, record_id: &str) -> Option<DocumentRetentionPayload> {
+    pub fn resolve_resume_record(
+        &self,
+        record_id: &str,
+        source_path: &str,
+        option_hash: &str,
+    ) -> Option<DocumentRetentionPayload> {
         self.purge_expired();
         if !valid_opaque_value(record_id, 16, 256) {
             return None;
@@ -203,7 +216,7 @@ impl DocumentJobStore {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()?
-            .resolve_resume_record(record_id)
+            .resolve_resume_record(record_id, source_path, option_hash)
     }
 
     fn discard_retention(&self, id: Uuid) {

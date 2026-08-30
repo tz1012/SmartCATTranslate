@@ -32,3 +32,12 @@ SmartCAT Translate 자동 기록 정책
 - 사용자의 전체 로컬 파일 경로
 - 임시 문서 및 이미지 내용
 
+앱 기록·복구 정책
+- 번역 기록은 기본 사용, 30일 보관이며 SQLite에는 종류·시간·언어 같은 검색용 비민감 메타데이터만 평문으로 둔다. 원문, 번역문, 표시 파일명은 운영체제 자격 증명 저장소의 32바이트 키로 각각 인증 암호화한다.
+- Windows Credential Manager 또는 macOS Keychain을 사용할 수 없으면 기록·복구 저장을 실패 폐쇄한다. 평문 키 파일이나 평문 payload로 대체하지 않는다. ChatGPT/Codex 토큰은 Codex만 관리한다.
+- 시크릿 번역은 텍스트, 빠른 팝업, 화면·이미지, 문서 모두에서 기록 row를 만들지 않는다. 시크릿 문서 체크포인트는 프로세스 메모리에만 존재하며 앱 재시작 뒤 복구하지 않는다.
+- 일반 문서 복구 record는 7일 뒤 삭제하며 source fingerprint와 canonical 전체 옵션 snapshot/hash가 모두 일치할 때만 재개한다. 프로필·모델·품질·용어집·형식 옵션이 바뀌면 이전 결과와 섞지 않고 새 작업만 허용한다.
+- 임시 데이터 삭제는 canonical app temp root의 앱 생성 UUID 직계 자식만 허용하고 symlink는 따라가지 않는다. 완료·취소·만료에서 해당 작업 디렉터리를 제거한다.
+- 진단은 event, outcome, durationMs, jobKind, stage, errorCode, itemCount, byteCount, platform, appVersion 필드만 허용한다. 번역 내용, 전체 경로, 이메일, 인증 정보와 임의 key/value map은 금지한다.
+- `pnpm privacy:check`는 기록 문서와 짧은 test log 집합에서 토큰 형태, 이메일, 사용자 홈 절대 경로와 canary 원문을 검사한다.
+

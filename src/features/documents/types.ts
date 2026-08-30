@@ -6,7 +6,8 @@ export type DocumentWarning = { code: string; location?: string; message: string
 export type DocumentReport = { jobId: string; format: DocumentFormat; outputPath: string; outputName: string; translatedSegments: number; warnings: DocumentWarning[]; publishable: boolean; resumedFromStage?: string };
 export type DocumentProgress = { jobId: string; stage: 'inspect' | 'extract' | 'ocr' | 'translate' | 'reflow' | 'save' | 'validate' | 'completed'; unitId?: string; completed: number; total: number };
 export type DocumentCheckpoint = { sourceFingerprint: string; stage: DocumentProgress['stage']; stableUnitId: string; completed: number; total: number; completedBatchCursor: number; rasterRefs: string[]; translatedResultRefs: string[] };
-export type DocumentResumeRequest = { recordId: string };
+export type DocumentResumeRequest = { recordId: string; optionHash: string };
+export type PreparedDocumentRecovery = { recordId:string;sourcePath:string;options:DocumentOptions;optionHash:string };
 export type DocumentResultPreview =
   | { kind: 'pdfPage'; location: string; label: string; imageDataUrl: string; width: number; height: number }
   | { kind: 'pptxSlide'; location: string; label: string; width: number; height: number; focusTextOrdinal?: number; shapes: Array<{ id: string; name: string; text: string; x: number; y: number; width: number; height: number; textStart: number; textEnd: number }> }

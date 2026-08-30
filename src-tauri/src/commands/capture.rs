@@ -237,6 +237,7 @@ pub async fn translate_image(
     jobs: tauri::State<'_, CaptureJobStore>,
     job_id: Uuid,
     language_hints: Vec<String>,
+    secret: bool,
 ) -> Result<CaptureJobResult, String> {
     let (source, cancelled) = jobs
         .with(job_id, |job| (job.source.clone(), job.cancelled.clone()))
@@ -260,7 +261,8 @@ pub async fn translate_image(
         .cloned()
         .ok_or_else(|| "invalid_default_profile".to_owned())?;
     emit_progress(&app, job_id, "translate", 45);
-    let translated = translate_blocks(&state, &jobs, job_id, &blocks, &settings, &saved).await?;
+    let translated =
+        translate_blocks(&state, &jobs, job_id, &blocks, &settings, &saved, secret).await?;
     if cancelled.load(Ordering::Acquire) {
         return Err("capture_cancelled".to_owned());
     }
@@ -269,6 +271,26 @@ pub async fn translate_image(
         .map_err(|_| "capture_render_failed".to_owned())?;
     let translated_preview = encode_preview(rendered.width, rendered.height, &rendered.rgba)
         .map_err(|_| "capture_preview_failed".to_owned())?;
+    if let Some(history) = app.try_state::<Arc<crate::storage::HistoryStore>>() {
+        let _ = history.save(crate::storage::NewHistoryRecord {
+            kind: "capture".to_owned(),
+            source_language: saved.profile.source_language.clone(),
+            target_language: saved.profile.target_language.clone(),
+            source: blocks
+                .iter()
+                .map(|value| value.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            result: translated
+                .iter()
+                .map(|value| value.translated_text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            display_name: None,
+            warning_count: rendered.warnings.len() as u32,
+            secret,
+        });
+    }
     let result = CaptureJobResult {
         job_id,
         status: CaptureJobStatus::Rendered,
@@ -286,6 +308,7 @@ pub async fn translate_image(
         job.translation_job = None;
     })
     .ok_or_else(|| "capture_job_not_found".to_owned())?;
+    cleanup_capture_source(&app, &jobs, job_id);
     emit_progress(&app, job_id, "complete", 100);
     Ok(result)
 }
@@ -297,6 +320,7 @@ async fn translate_blocks(
     blocks: &[TextBlock],
     settings: &crate::settings::types::AppSettings,
     saved: &crate::settings::types::SavedProfile,
+    secret: bool,
 ) -> Result<Vec<crate::capture::TranslatedBlock>, String> {
     if blocks.is_empty() {
         return Ok(Vec::new());
@@ -337,7 +361,7 @@ async fn translate_blocks(
         field: saved.field,
         glossary,
         mode: TranslationMode::Translate,
-        secret: false,
+        secret,
         model: TranslationModel::Automatic,
     };
     let manager = state
@@ -377,6 +401,7 @@ impl TranslationEventSink for CaptureTranslationSink {
 
 #[tauri::command]
 pub async fn cancel_image_translation(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     jobs: tauri::State<'_, CaptureJobStore>,
     job_id: Uuid,
@@ -388,6 +413,7 @@ pub async fn cancel_image_translation(
                 .await;
         }
     }
+    cleanup_capture_source(&app, &jobs, job_id);
     Ok(())
 }
 
@@ -497,6 +523,32 @@ fn capture_root<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String
         .app_local_data_dir()
         .map(|path| path.join("capture-inputs"))
         .map_err(|_| "capture_storage_unavailable".to_owned())
+}
+
+fn cleanup_capture_source<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    jobs: &CaptureJobStore,
+    job_id: Uuid,
+) {
+    let Some(candidate) = jobs.with(job_id, |job| job.source.immutable_copy.clone()) else {
+        return;
+    };
+    let Ok(root) = capture_root(app).and_then(|value| {
+        value
+            .canonicalize()
+            .map_err(|_| "capture_storage_unavailable".to_owned())
+    }) else {
+        return;
+    };
+    let Ok(canonical) = candidate.canonicalize() else {
+        return;
+    };
+    if canonical.parent() == Some(root.as_path())
+        && std::fs::symlink_metadata(&canonical)
+            .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+    {
+        let _ = std::fs::remove_file(canonical);
+    }
 }
 
 fn close_overlays<R: Runtime>(app: &tauri::AppHandle<R>) {

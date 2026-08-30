@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { TranslationRequest } from '../../lib/types';
+import { SecretModeSwitch,useSecretMode } from '../history/secretMode';
+import { saveHistoryRecord } from '../history/historyApi';
 import { useTranslationJob } from './useTranslationJob';
 
 type Locale = 'ko' | 'en';
@@ -75,18 +77,22 @@ function PopupRequest({ payload, pinned, onPin }: { payload: PopupPayload; pinne
   const [speaking, setSpeaking] = useState(false);
   const started = useRef(false);
   const text = labels[payload.locale];
+  const [secret,setSecret]=useSecretMode();
+  const savedHistoryJob=useRef<string|undefined>(undefined);
+  const activeSecret=useRef(false);
 
   useEffect(() => {
     if (!payload.request || payload.error || listenerState !== 'ready' || started.current) return;
     started.current = true;
-    void start(payload.request);
-  }, [listenerState, payload, start]);
+    activeSecret.current=secret;
+    void start({...payload.request,secret});
+  }, [listenerState, payload, secret,start]);
 
   const retry = () => {
     if (!payload.request || state.status === 'running') return;
     reset();
     started.current = false;
-    queueMicrotask(() => { started.current = true; void start(payload.request!); });
+    queueMicrotask(() => { started.current = true;activeSecret.current=secret; void start({...payload.request!,secret}); });
   };
   const errorCode = payload.error ?? (state.status === 'failed' ? state.message : '');
   const sourceLanguage = payload.request?.profile.sourceLanguage?.toUpperCase() ?? (payload.locale === 'ko' ? '자동 감지' : 'Auto');
@@ -104,6 +110,7 @@ function PopupRequest({ payload, pinned, onPin }: { payload: PopupPayload; pinne
   };
 
   useEffect(() => () => { if (typeof speechSynthesis !== 'undefined') speechSynthesis.cancel(); }, []);
+  useEffect(()=>{if(state.status!=='completed'||savedHistoryJob.current===state.jobId||!payload.request)return;savedHistoryJob.current=state.jobId;void saveHistoryRecord({kind:'popup',sourceLanguage:payload.request.profile.sourceLanguage,targetLanguage:payload.request.profile.targetLanguage,source:payload.request.text,result:state.text,displayName:null,warningCount:0,secret:activeSecret.current}).catch(()=>undefined);},[payload.request,state]);
 
   return <section className="quick-popup" aria-label="SmartCAT quick translation">
     <header className="quick-popup-header">
@@ -113,6 +120,7 @@ function PopupRequest({ payload, pinned, onPin }: { payload: PopupPayload; pinne
         <button data-popup-action type="button" aria-label={text.close} title={text.close} onClick={() => void invoke('close_quick_popup')}>×</button>
       </div>
     </header>
+    <SecretModeSwitch locale={payload.locale} value={secret} onChange={setSecret}/>
     <div className="quick-popup-content">
       {payload.request && <article><h2>{text.source}</h2><p>{payload.request.text}</p></article>}
       <article aria-live="polite" aria-busy={state.status === 'running'}>

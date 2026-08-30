@@ -297,3 +297,19 @@ retention: retryable failure는 one-time nonce와 content/path 없는 전체 che
 XLSX 위치: workbook relationship으로 worksheet part와 실제 sheet name을 연결하고 shared-string index가 소비되는 모든 cell을 수집한다. 번역 segment/report에는 첫 소비 cell의 `sheet:<name>/cell:<A1>`과 총 사용 수를 기록하며 inline string도 소유 cell을 기록한다. 소비되지 않는 shared string은 실제 결과 위치가 없으므로 번역·경고 대상에서 제외한다.
 재개 보안: 이 항목은 D-046의 공개 retention event/ACK 구상을 대체한다. WebView IPC는 plaintext `translatedResults`, retention token, persistence ACK를 받거나 반환하지 않는다. 공개 resume 입력은 제한된 opaque encrypted-record ID뿐이고 선택한 source는 기존 source path 인자로 다시 fingerprint 검증한다. retryable payload는 backend-only listener가 metadata를 받고 동기적으로 one-shot payload를 가져가는 경우에만 메모리에 남긴다. listener가 없거나 거부하면 즉시, 그 밖에는 60초 TTL과 begin/finish/cancel/global purge에서 번역문과 key를 zeroize해 제거한다. 내구 재개는 암호화 JobStore consumer가 설치될 때만 가능하다.
 미리보기 ZIP: Office 결과 미리보기는 파일 전체를 메모리에 읽거나 전체 entry를 해제하지 않는다. 중앙 디렉터리에서 entry 수, 안전 경로, 중복, 암호화, 선언 크기와 압축비를 검사하고 DOCX target part, PPTX target slide/presentation, XLSX workbook/rels/target sheet/optional shared strings만 스트리밍한다. 실제 해제는 entry 16MiB, 요청 합계 64MiB를 넘으면 typed preview limit 오류로 중단하며 화면 grid/shape/context 수 제한은 계속 적용한다.
+
+[D-048] 운영체제 키 기반 단일 암호화 저장소와 실패 폐쇄
+상태: 확정
+결정: history/recovery는 OS credential store의 `com.smartcat.translate`/`local-data-key` 32바이트 키와 AES-256-GCM v1을 공유한다. write마다 fresh nonce와 `table:row:column` AAD를 사용한다. 키링이 없거나 잠겼으면 평문 fallback하지 않고 Codex token은 저장하지 않는다.
+
+[D-049] canonical 옵션 snapshot이 문서 재개의 load-bearing 경계
+상태: 확정
+결정: durable job은 source/target, 실제 profile, model, quality, 적용 glossary와 전체 format/output option을 canonical JSON으로 암호화하고 SHA-256 hash를 보유한다. resume는 source fingerprint와 snapshot/caller option hash가 모두 일치할 때만 허용하며 설정이 달라지면 새 작업만 허용한다.
+
+[D-050] 시크릿·보존·정리 공통 lifecycle
+상태: 확정
+결정: text/popup/capture/document가 persistent 시크릿 선택을 공유한다. 시크릿 history row는 만들지 않고 document checkpoint는 프로세스 메모리 밖으로 내보내지 않는다. 일반 history 30일, incomplete recovery 7일이며 임시 삭제는 canonical root의 UUID 직계 자식만 대상으로 symlink를 거부한다.
+
+[D-051] Tasks 1–4 속도 우선 검증 범위
+상태: 사용자 결정 반영
+결정: 새 failing test/failure injection/장시간 전체 회귀 대신 direct implementation, rustfmt, frontend build, D shared library check와 짧은 records/privacy scanner를 사용한다. 기존 테스트는 보존하며 실제 restart/keyring/공격성 cleanup은 후속 acceptance가 필요하다.

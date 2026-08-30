@@ -1,0 +1,6 @@
+import { useEffect,useState } from 'react';
+const KEY='smartcat.secretMode'; const EVENT='smartcat-secret-mode';
+export function readSecretMode(){try{return localStorage.getItem(KEY)==='true';}catch{return false;}}
+export function setSecretMode(value:boolean){try{localStorage.setItem(KEY,String(value));}catch{/* persistence unavailable */}window.dispatchEvent(new CustomEvent(EVENT,{detail:value}));}
+export function useSecretMode(){const[value,setValue]=useState(readSecretMode);useEffect(()=>{const sync=(event:Event)=>setValue(event instanceof CustomEvent?Boolean(event.detail):readSecretMode());window.addEventListener(EVENT,sync);window.addEventListener('storage',sync);return()=>{window.removeEventListener(EVENT,sync);window.removeEventListener('storage',sync);};},[]);return[value,(next:boolean)=>setSecretMode(next)] as const;}
+export function SecretModeSwitch({locale,value,onChange}:{locale:'ko'|'en';value:boolean;onChange:(value:boolean)=>void}){return <label className="secret-mode-switch"><input type="checkbox" checked={value} onChange={(event)=>onChange(event.target.checked)}/><strong>{locale==='ko'?'시크릿 번역':'Secret translation'}</strong><span>{value?(locale==='ko'?'기록·복구에 저장하지 않음':'Not saved to history or recovery'):(locale==='ko'?'로컬 암호화 기록 사용':'Encrypted local history enabled')}</span></label>}

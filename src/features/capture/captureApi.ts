@@ -13,7 +13,7 @@ export const completeScreenCapture = (sessionId: string, selection: CaptureSelec
 export const cancelScreenCapture = (sessionId: string) =>
   invoke<void>('cancel_screen_capture', { sessionId });
 export const chooseImage = () => invoke<CaptureJobResult | null>('choose_image');
-export const translateImage = (jobId: string, languageHints: string[]) => invoke<CaptureJobResult>('translate_image', { jobId, languageHints });
+export const translateImage = (jobId: string, languageHints: string[], secret: boolean) => invoke<CaptureJobResult>('translate_image', { jobId, languageHints, secret });
 export const cancelImageTranslation = (jobId: string) => invoke<void>('cancel_image_translation', { jobId });
 export const updateCaptureBlock = (jobId: string, blockId: string, translatedText: string, visible: boolean) =>
   invoke<CaptureJobResult>('update_capture_block', { jobId, blockId, translatedText, visible });

@@ -19,6 +19,7 @@ use crate::{
         DocumentResumeRequest, DocumentRetentionPayload, DocumentStage, PdfRasterSpool,
         TranslatedSegment,
     },
+    storage::{CanonicalTranslationOptions, DocumentRecoveryContext},
 };
 use zeroize::Zeroizing;
 
@@ -97,16 +98,21 @@ pub fn inspect_document_path(
 pub async fn translate_document(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
-    jobs: tauri::State<'_, DocumentJobStore>,
+    jobs: tauri::State<'_, Arc<DocumentJobStore>>,
     job_id: Uuid,
     source_path: String,
     options: DocumentOptions,
     resume: Option<DocumentResumeRequest>,
 ) -> Result<DocumentReport, String> {
     let secret = options.secret;
+    let target_language = options.target_language.clone();
+    let recovery_context = document_recovery_context(&app, &source_path, &options).await?;
     let resume = resume
         .map(|request| {
-            jobs.resolve_resume_record(&request.record_id)
+            if request.option_hash != recovery_context.option_hash {
+                return Err("document_resume_options_changed".to_owned());
+            }
+            jobs.resolve_resume_record(&request.record_id, &source_path, &request.option_hash)
                 .ok_or_else(|| "document_resume_record_unavailable".to_owned())
         })
         .transpose()?;
@@ -137,6 +143,18 @@ pub async fn translate_document(
     jobs.finish(job_id);
     match &outcome {
         Ok(report) => {
+            if let Some(history) = app.try_state::<Arc<crate::storage::HistoryStore>>() {
+                let _ = history.save(crate::storage::NewHistoryRecord {
+                    kind: "document".to_owned(),
+                    source_language: recovery_context.option_snapshot.source_language.clone(),
+                    target_language: target_language.clone(),
+                    source: String::new(),
+                    result: String::new(),
+                    display_name: Some(recovery_context.display_name.clone()),
+                    warning_count: report.warnings.len() as u32,
+                    secret,
+                });
+            }
             for warning in &report.warnings {
                 let _ = app.emit(
                     "document-job",
@@ -181,7 +199,13 @@ pub async fn translate_document(
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .clone();
-            jobs.request_retention(job_id, token, checkpoint, retained_copy);
+            jobs.request_retention(
+                job_id,
+                token,
+                checkpoint,
+                retained_copy,
+                recovery_context.clone(),
+            );
         }
     }
     documents::wipe_translated_results(
@@ -508,8 +532,73 @@ impl TranslationEventSink for DocumentSink {
 }
 
 #[tauri::command]
-pub fn cancel_document_translation(jobs: tauri::State<'_, DocumentJobStore>, job_id: Uuid) -> bool {
+pub fn cancel_document_translation(
+    jobs: tauri::State<'_, Arc<DocumentJobStore>>,
+    job_id: Uuid,
+) -> bool {
     jobs.cancel(job_id)
+}
+
+async fn document_recovery_context(
+    app: &tauri::AppHandle,
+    source_path: &str,
+    options: &DocumentOptions,
+) -> Result<DocumentRecoveryContext, String> {
+    let settings = open_store(app)?
+        .load()
+        .await
+        .map_err(|error| error.code().to_owned())?;
+    let profile = options
+        .profile_id
+        .and_then(|id| settings.profile(id))
+        .or_else(|| settings.default_profile())
+        .ok_or_else(|| "invalid_default_profile".to_owned())?;
+    let source_language = options
+        .source_language
+        .clone()
+        .or_else(|| profile.profile.source_language.clone());
+    let glossary = settings
+        .glossary
+        .iter()
+        .filter(|entry| {
+            source_language
+                .as_deref()
+                .is_none_or(|source| entry.source_language.eq_ignore_ascii_case(source))
+                && entry
+                    .target_language
+                    .eq_ignore_ascii_case(&options.target_language)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let snapshot = CanonicalTranslationOptions {
+        source_language,
+        target_language: options.target_language.clone(),
+        profile: serde_json::to_value(profile).map_err(|_| "document_options_invalid")?,
+        model: serde_json::to_value(options.model.as_ref().map_or_else(
+            || serde_json::to_value(&settings.selected_model).unwrap_or(serde_json::Value::Null),
+            |value| serde_json::Value::String(value.clone()),
+        ))
+        .map_err(|_| "document_options_invalid")?,
+        quality: serde_json::to_value(options.quality.as_ref().unwrap_or(&profile.profile.quality))
+            .map_err(|_| "document_options_invalid")?,
+        glossary: serde_json::to_value(glossary).map_err(|_| "document_options_invalid")?,
+        format_options: serde_json::to_value(options).map_err(|_| "document_options_invalid")?,
+    };
+    let option_hash = snapshot
+        .hash()
+        .map_err(|_| "document_options_invalid".to_owned())?;
+    let display_name = std::path::Path::new(source_path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("document")
+        .to_owned();
+    Ok(DocumentRecoveryContext {
+        source_path: source_path.to_owned(),
+        display_name,
+        options: options.clone(),
+        option_snapshot: snapshot,
+        option_hash,
+    })
 }
 
 #[tauri::command]

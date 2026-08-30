@@ -5,6 +5,7 @@ use tauri::Manager;
 use crate::codex::auth::{AccountChangeReason, AccountEventSink, AccountState};
 use crate::codex::bootstrap::bootstrap_account_service;
 use crate::commands::account::TauriAccountEventSink;
+use crate::storage::KeyStore;
 
 pub mod app_state;
 pub mod capture;
@@ -16,9 +17,12 @@ pub mod hotkeys;
 pub mod lifecycle;
 pub mod platform;
 pub mod settings;
+pub mod storage;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let document_jobs = Arc::new(documents::DocumentJobStore::default());
+    let document_jobs_for_setup = document_jobs.clone();
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -26,10 +30,31 @@ pub fn run() {
         .manage(app_state::AppState::default())
         .manage(capture::CaptureCoordinator::default())
         .manage(capture::CaptureJobStore::default())
-        .manage(documents::DocumentJobStore::default())
-        .setup(|app| {
+        .manage(document_jobs)
+        .setup(move |app| {
             lifecycle::setup(app)?;
             let app_data_root = app.path().app_local_data_dir()?;
+            let key = storage::OsKeyStore.load_or_create()?;
+            let crypto = Arc::new(storage::CryptoBox::from_key(*key));
+            let database = storage::StorageDatabase::open(
+                &app_data_root
+                    .join("storage")
+                    .join("smartcat-private.sqlite3"),
+            )?;
+            let history_store =
+                Arc::new(storage::HistoryStore::new(database.clone(), crypto.clone()));
+            let job_store = Arc::new(storage::JobStore::new(database, crypto));
+            document_jobs_for_setup.install_resume_backend(Arc::new(
+                storage::EncryptedDocumentResumeBackend::new(
+                    job_store.clone(),
+                    document_jobs_for_setup.clone(),
+                ),
+            ));
+            let cleanup = storage::CleanupService::new(app_data_root.join("private-temp"))?;
+            let _ = cleanup.on_start();
+            app.manage(history_store);
+            app.manage(job_store);
+            app.manage(cleanup);
             let resource_root = app.path().resource_dir()?;
             let executable_path = std::env::current_exe()?;
             let app_handle = app.handle().clone();
@@ -91,6 +116,16 @@ pub fn run() {
             commands::settings::get_settings,
             commands::settings::save_settings,
             commands::settings::list_available_models,
+            commands::history::save_history_record,
+            commands::history::list_history,
+            commands::history::read_history,
+            commands::history::delete_history,
+            commands::history::delete_all_history,
+            commands::history::get_history_policy,
+            commands::history::purge_history,
+            commands::history::list_recoverable_jobs,
+            commands::history::prepare_document_recovery,
+            commands::history::delete_recovery_job,
             commands::windows::show_quick_popup,
             commands::windows::close_quick_popup,
             commands::windows::open_main_window,

@@ -7,6 +7,8 @@ import { resolveDefaultProfile } from '../settings/defaultProfile';
 import { languageLabel, SUPPORTED_LANGUAGES } from '../settings/languages';
 import { useTranslationJob } from './useTranslationJob';
 import { saveTranslationText } from './translationApi';
+import { saveHistoryRecord } from '../history/historyApi';
+import { SecretModeSwitch, useSecretMode } from '../history/secretMode';
 
 const MAX_SOURCE_CHARS = 200_000;
 const MAX_SOURCE_BYTES = 1_000_000;
@@ -67,6 +69,9 @@ export function TextWorkspace({
   const [notice, setNotice] = useState('');
   const [validationError, setValidationError] = useState('');
   const [loadError, setLoadError] = useState(false);
+  const [secret,setSecret]=useSecretMode();
+  const savedHistoryJob=useRef<string|undefined>(undefined);
+  const activeSecret=useRef(false);
   const accountGeneration = useRef(0);
   const mounted = useRef(false);
   const { state, detectedLanguage, listenerState, start, cancel, reset } = useTranslationJob();
@@ -156,7 +161,8 @@ export function TextWorkspace({
     if (!effectiveProfile || accountPhase !== 'signedIn') return;
     if (mode === 'translate' && sameLanguage) return;
     setValidationError('');
-    void start({ text: source, profile: effectiveProfile, field, glossary, mode, secret: false });
+    activeSecret.current=secret;
+    void start({ text: source, profile: effectiveProfile, field, glossary, mode, secret });
   };
 
   const clearBoundResult = () => {
@@ -221,6 +227,8 @@ export function TextWorkspace({
 
   useEffect(() => () => onActivityChange?.(false), [onActivityChange]);
 
+  useEffect(()=>{if(state.status!=='completed'||savedHistoryJob.current===state.jobId||!effectiveProfile)return;savedHistoryJob.current=state.jobId;void saveHistoryRecord({kind:'text',sourceLanguage:effectiveProfile.sourceLanguage,targetLanguage:effectiveProfile.targetLanguage,source,result:state.text,displayName:null,warningCount:0,secret:activeSecret.current}).catch(()=>undefined);},[effectiveProfile,source,state]);
+
   return (
     <section className="text-workspace" aria-label={labels.workspace} onKeyDownCapture={(event) => {
       if (event.key === 'Escape' && activityActive) {
@@ -249,6 +257,7 @@ export function TextWorkspace({
       </div>
 
       {loadError && <p role="alert">{labels.loadError}</p>}
+      <SecretModeSwitch locale={locale} value={secret} onChange={setSecret}/>
       <div className="language-bar">
         <label>{labels.sourceLanguage}
           <select
