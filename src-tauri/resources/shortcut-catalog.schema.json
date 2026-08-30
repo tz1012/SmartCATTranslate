@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "catalogVersion", "entries"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "catalogVersion": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9.-]+$"
+    },
+    "entries": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1024,
+      "items": { "$ref": "#/$defs/entry" }
+    }
+  },
+  "$defs": {
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "platform",
+        "kind",
+        "application",
+        "processNames",
+        "trigger",
+        "feature",
+        "sourceUrl",
+        "verifiedAt"
+      ],
+      "properties": {
+        "platform": { "enum": ["windows", "macos"] },
+        "kind": { "enum": ["application", "osReserved"] },
+        "application": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "processNames": {
+          "type": "array",
+          "maxItems": 16,
+          "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+        },
+        "trigger": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "feature": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "sourceUrl": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024,
+          "pattern": "^https://"
+        },
+        "verifiedAt": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        }
+      }
+    }
+  }
+}

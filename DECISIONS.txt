@@ -149,3 +149,12 @@ SmartCAT Translate 설계 결정 기록
 저장 경계: 번역문 저장은 브라우저 다운로드가 아니라 Tauri Rust가 여는 운영체제 저장 대화상자와 사용자가 고른 경로만 사용한다. 대화상자 제목과 파일 유형은 Rust의 한국어·영어 허용 목록에서만 선택하며 임의 문자열은 대화상자를 열기 전에 거부한다. 대화상자 취소는 정상 결과이고, 선택·쓰기 실패는 번역 내용과 경로를 포함하지 않는 단일 고정 오류로 닫힌다. 번역 내용과 임의 언어 값은 기록·진단·앱 기록 저장소에 남기지 않는다.
 화면 구성: 번역과 설정을 한국어·영어 접근 가능한 탭으로 제공하고 저장된 테마를 앱 루트에 적용한다. 비활성 후속 작업 탭도 탭과 패널 관계를 명시한다. Tauri 콘텐츠 보안 정책은 자체 자산, IPC, 개발 서버에 필요한 연결만 허용하고 객체·프레임·폼 전송을 금지한다.
 검증 경계: Playwright 1.62.1 exact 버전으로 실제 프런트엔드 요청 인자, 스트림, 복사와 데스크톱·모바일 재배치를 검사한다. CI 브라우저 캐시는 운영체제·Playwright exact 버전·잠금 파일에 묶고 프로젝트의 드라이브 위치에 의존하지 않는다.
+
+[D-027] 전역 단축키 충돌 판정과 근거 카탈로그
+상태: 확정
+결정: 단축키 충돌은 (1) 실제 운영체제 등록 시험, (2) 등록할 수 없는 운영체제 예약 조합, (3) 실행 중인 프로그램의 프로세스 이름과 공식 단축키 카탈로그 일치 결과를 합성한다. 등록 시험 실패와 운영체제 예약 조합은 `확정`, 실행 중 앱의 알려진 기능과 일치하는 경우는 `가능성`으로 구분한다. 등록 시험이 실패했지만 소유자를 확인할 수 없으면 프로그램명을 추측하지 않고 `다른 프로그램이 사용 중일 수 있습니다.`라고만 표시한다. 카탈로그에 없다는 사실은 충돌이 없다는 완전한 증명이 아니며 실제 등록 시험이 우선한다.
+강제 규칙: 충돌이 없을 때만 기본 등록을 허용한다. 앱 카탈로그 가능성 또는 소유자 미상 점유는 사용자가 경고를 확인한 경우에만 강제할 수 있으나, 운영체제 예약 조합은 강제할 수 없다. 강제는 후속 플랫폼 관찰기의 의도적 대체 경로를 허용한다는 뜻이며 다른 앱 동작이 사라지거나 모든 환경에서 감지된다고 보장하지 않는다.
+추천 규칙: 같은 키에 수정 키를 더한 후보를 먼저, 기능 키 후보를 다음으로 만들고 원래 분석기의 운영체제 예약, 실제 등록 시험과 실행 중 앱 검사를 모두 다시 통과한 앞의 3개만 고정 순서로 제시한다.
+카탈로그 경계: 스키마 버전 1, 카탈로그 버전, 256KiB, 최대 1,024행, 필드·프로세스 이름 제한, 중복 금지, HTTPS 공식 1차 출처 허용 목록, 검증일 18개월 제한과 SHA-256을 적용한다. 운영 빌드는 검토된 JSON 바이트를 컴파일 시 실행 파일에 포함하므로 런타임 경로, 심볼릭 링크, 정션이나 외부 파일 교체를 따라가지 않는다. 해시·스키마·버전·출처·검증일이 맞지 않으면 카탈로그를 사용하지 않는다.
+개인정보 경계: 실행 중 프로그램에서는 제한된 실행 파일/프로세스 이름만 받으며 전체 경로, 창 제목과 키 입력은 수집·일치·보고하지 않는다. 보고서의 프로그램명·기능·URL은 해시로 고정된 카탈로그 값만 사용한다.
+공식 출처(2026-08-30 확인): Windows `RegisterHotKey` https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerhotkey, macOS 단축키 https://support.apple.com/en-us/102650, Chrome https://support.google.com/chrome/answer/157179, Edge https://support.microsoft.com/en-us/edge/keyboard-shortcuts-in-microsoft-edge, VS Code https://code.visualstudio.com/docs/reference/default-keybindings, DeepL https://support.deepl.com/hc/en-us/articles/360020613059-Use-DeepL-shortcuts-for-desktop-apps, Word https://support.microsoft.com/en-us/accessibility/word/keyboard-shortcuts-in-word, PowerPoint https://support.microsoft.com/en-us/office/keyboard-shortcuts-for-working-with-shapes-text-boxes-and-wordart, Excel https://support.microsoft.com/en-us/accessibility/excel/use-a-screen-reader-to-sort-or-filter-a-table-in-excel.

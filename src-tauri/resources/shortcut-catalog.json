@@ -1,0 +1,166 @@
+{
+  "schemaVersion": 1,
+  "catalogVersion": "2026.08.30.1",
+  "entries": [
+    {
+      "platform": "windows",
+      "kind": "osReserved",
+      "application": "Windows",
+      "processNames": [],
+      "trigger": "F12",
+      "feature": "디버거 예약 키",
+      "sourceUrl": "https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerhotkey",
+      "verifiedAt": "2026-08-30"
+    },
+    {
+      "platform": "windows",
+      "kind": "osReserved",
+      "application": "Windows",
+      "processNames": [],
+      "trigger": "Meta+L",
+      "feature": "운영체제 예약 조합",
+      "sourceUrl": "https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerhotkey",
+      "verifiedAt": "2026-08-30"
+    },
+    {
+      "platform": "macos",
+      "kind": "osReserved",
+      "application": "macOS",
+      "processNames": [],
+      "trigger": "Meta+Space",
+      "feature": "Spotlight 열기",
+      "sourceUrl": "https://support.apple.com/en-us/102650",
+      "verifiedAt": "2026-08-30"
+    },
+    {
+      "platform": "macos",
+      "kind": "osReserved",
+      "application": "macOS",
+      "processNames": [],
+      "trigger": "Ctrl+Meta+Q",
+      "feature": "화면 잠금",
+      "sourceUrl": "https://support.apple.com/en-us/102650",
+      "verifiedAt": "2026-08-30"
+    },
+    {
+      "platform": "windows",
+      "kind": "application",
+      "application": "Google Chrome",
+      "processNames": ["chrome.exe"],
+      "trigger": "Ctrl+L",
+      "feature": "주소 표시줄로 이동",
+      "sourceUrl": "https://support.google.com/chrome/answer/157179",
+      "verifiedAt": "2026-08-30"
+    },
+    {
+      "platform": "macos",
+      "kind": "application",
+      "application": "Google Chrome",
+      "processNames": ["Google Chrome"],
+      "trigger": "Meta+L",
+      "feature": "주소 표시줄로 이동",
+      "sourceUrl": "https://support.google.com/chrome/answer/157179",
+      "verifiedAt": "2026-08-30"
+    },
+    {
+      "platform": "windows",
+      "kind": "application",
+      "application": "Microsoft Edge",
+      "processNames": ["msedge.exe"],
+      "trigger": "Ctrl+L",
+      "feature": "주소 표시줄 URL 선택",
+      "sourceUrl": "https://support.microsoft.com/en-us/edge/keyboard-shortcuts-in-microsoft-edge",
+      "verifiedAt": "2026-08-30"
+    },
+    {
+      "platform": "macos",
+      "kind": "application",
+      "application": "Microsoft Edge",
+      "processNames": ["Microsoft Edge"],
+      "trigger": "Meta+L",
+      "feature": "주소 표시줄 URL 선택",
+      "sourceUrl": "https://support.microsoft.com/en-us/edge/keyboard-shortcuts-in-microsoft-edge",
+      "verifiedAt": "2026-08-30"
+    },
+    {
+      "platform": "windows",
+      "kind": "application",
+      "application": "Visual Studio Code",
+      "processNames": ["Code.exe"],
+      "trigger": "Ctrl+Shift+P",
+      "feature": "명령 팔레트 표시",
+      "sourceUrl": "https://code.visualstudio.com/docs/reference/default-keybindings",
+      "verifiedAt": "2026-08-30"
+    },
+    {
+      "platform": "macos",
+      "kind": "application",
+      "application": "Visual Studio Code",
+      "processNames": ["Visual Studio Code"],
+      "trigger": "Shift+Meta+P",
+      "feature": "명령 팔레트 표시",
+      "sourceUrl": "https://code.visualstudio.com/docs/reference/default-keybindings",
+      "verifiedAt": "2026-08-30"
+    },
+    {
+      "platform": "windows",
+      "kind": "application",
+      "application": "DeepL",
+      "processNames": ["DeepL.exe"],
+      "trigger": "Ctrl+C, C",
+      "feature": "선택한 텍스트 번역",
+      "sourceUrl": "https://support.deepl.com/hc/en-us/articles/360020613059-Use-DeepL-shortcuts-for-desktop-apps",
+      "verifiedAt": "2026-08-30"
+    },
+    {
+      "platform": "macos",
+      "kind": "application",
+      "application": "DeepL",
+      "processNames": ["DeepL"],
+      "trigger": "Meta+C, C",
+      "feature": "선택한 텍스트 번역",
+      "sourceUrl": "https://support.deepl.com/hc/en-us/articles/360020613059-Use-DeepL-shortcuts-for-desktop-apps",
+      "verifiedAt": "2026-08-30"
+    },
+    {
+      "platform": "windows",
+      "kind": "application",
+      "application": "DeepL",
+      "processNames": ["DeepL.exe"],
+      "trigger": "Ctrl+Meta+C",
+      "feature": "선택한 텍스트 개선",
+      "sourceUrl": "https://support.deepl.com/hc/en-us/articles/360020613059-Use-DeepL-shortcuts-for-desktop-apps",
+      "verifiedAt": "2026-08-30"
+    },
+    {
+      "platform": "windows",
+      "kind": "application",
+      "application": "Microsoft Word",
+      "processNames": ["WINWORD.EXE"],
+      "trigger": "Ctrl+L",
+      "feature": "문단 왼쪽 맞춤",
+      "sourceUrl": "https://support.microsoft.com/en-us/accessibility/word/keyboard-shortcuts-in-word",
+      "verifiedAt": "2026-08-30"
+    },
+    {
+      "platform": "windows",
+      "kind": "application",
+      "application": "Microsoft PowerPoint",
+      "processNames": ["POWERPNT.EXE"],
+      "trigger": "Ctrl+Shift+C",
+      "feature": "서식만 복사",
+      "sourceUrl": "https://support.microsoft.com/en-us/office/keyboard-shortcuts-for-working-with-shapes-text-boxes-and-wordart",
+      "verifiedAt": "2026-08-30"
+    },
+    {
+      "platform": "windows",
+      "kind": "application",
+      "application": "Microsoft Excel",
+      "processNames": ["EXCEL.EXE"],
+      "trigger": "Ctrl+Shift+L",
+      "feature": "자동 필터 전환",
+      "sourceUrl": "https://support.microsoft.com/en-us/accessibility/excel/use-a-screen-reader-to-sort-or-filter-a-table-in-excel",
+      "verifiedAt": "2026-08-30"
+    }
+  ]
+}
