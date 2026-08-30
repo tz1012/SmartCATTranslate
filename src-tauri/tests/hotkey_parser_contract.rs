@@ -106,34 +106,46 @@ fn supports_common_punctuation_and_numpad_physical_keys() {
 }
 
 #[test]
-fn rejects_dangerous_system_combinations() {
-    #[cfg(target_os = "windows")]
-    {
-        assert_eq!(
-            parse_trigger("Ctrl+Alt+Delete"),
-            Err(HotkeyError::ForbiddenSystemShortcut)
-        );
-        assert_eq!(
-            parse_trigger("Alt+F4"),
-            Err(HotkeyError::ForbiddenSystemShortcut)
-        );
-        assert_eq!(
-            parse_trigger("Meta+L"),
-            Err(HotkeyError::ForbiddenSystemShortcut)
-        );
+fn preserves_reserved_combinations_for_the_conflict_analyzer() {
+    for input in [
+        "Ctrl+Alt+Delete",
+        "Alt+F4",
+        "Meta+L",
+        "Command+Control+Q",
+        "Command+Option+Escape",
+    ] {
+        let trigger = parse_trigger(input).unwrap();
+        let wire = serde_json::to_vec(&trigger).unwrap();
+        assert_eq!(serde_json::from_slice::<Trigger>(&wire).unwrap(), trigger);
     }
-    #[cfg(target_os = "macos")]
-    {
-        assert_eq!(
-            parse_trigger("Command+Control+Q"),
-            Err(HotkeyError::ForbiddenSystemShortcut)
-        );
-        assert_eq!(
-            parse_trigger("Command+Option+Escape"),
-            Err(HotkeyError::ForbiddenSystemShortcut)
-        );
-        assert!(parse_trigger("Command+L").is_ok());
+}
+
+#[test]
+fn supports_platform_contract_keys_without_losing_physical_identity() {
+    for (input, display) in [
+        ("PrintScreen", "PrintScreen"),
+        ("Pause", "Pause"),
+        ("CapsLock", "CapsLock"),
+        ("NumLock", "NumLock"),
+        ("ScrollLock", "ScrollLock"),
+        ("ContextMenu", "ContextMenu"),
+        ("NumpadEnter", "NumpadEnter"),
+        ("Ctrl+NumpadEqual", "Ctrl+NumpadEqual"),
+        ("Ctrl+IntlBackslash", "Ctrl+IntlBackslash"),
+        ("Ctrl+IntlRo", "Ctrl+IntlRo"),
+        ("Ctrl+IntlYen", "Ctrl+IntlYen"),
+    ] {
+        assert_eq!(parse_trigger(input).unwrap().to_string(), display);
     }
+}
+
+#[test]
+fn plus_requires_the_explicit_shift_equal_chord() {
+    assert_eq!(parse_trigger("Ctrl+Plus"), Err(HotkeyError::UnknownKey));
+    assert_eq!(
+        parse_trigger("Ctrl+Shift+Equal").unwrap().to_string(),
+        "Ctrl+Shift+Equal"
+    );
 }
 
 #[test]
@@ -194,4 +206,24 @@ fn deserialization_rejects_bypassing_trigger_validation() {
         "timeoutMs": 650
     });
     assert!(serde_json::from_value::<Trigger>(too_many).is_err());
+
+    let huge = serde_json::json!({
+        "type": "sequence",
+        "steps": (0..10_000).map(|_| serde_json::json!({
+            "modifiers": { "ctrl": true, "alt": false, "shift": false, "meta": false },
+            "key": { "kind": "physical", "value": "keyA" }
+        })).collect::<Vec<_>>(),
+        "timeoutMs": 650
+    });
+    assert!(serde_json::from_value::<Trigger>(huge).is_err());
+
+    let unknown_top_level = serde_json::json!({
+        "type": "chord",
+        "chord": {
+            "modifiers": { "ctrl": true, "alt": false, "shift": false, "meta": false },
+            "key": { "kind": "physical", "value": "keyA" }
+        },
+        "extra": true
+    });
+    assert!(serde_json::from_value::<Trigger>(unknown_top_level).is_err());
 }

@@ -1,5 +1,6 @@
 use std::fmt;
 
+use serde::de::{IgnoredAny, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use uuid::Uuid;
 
@@ -86,6 +87,17 @@ pub enum PhysicalKey {
     NumpadDivide,
     NumpadMultiply,
     NumpadSubtract,
+    NumpadEnter,
+    NumpadEqual,
+    IntlBackslash,
+    IntlRo,
+    IntlYen,
+    PrintScreen,
+    Pause,
+    CapsLock,
+    NumLock,
+    ScrollLock,
+    ContextMenu,
     F1,
     F2,
     F3,
@@ -156,7 +168,7 @@ impl PhysicalKey {
             "BRACKETLEFT" | "LEFTBRACKET" => Self::BracketLeft,
             "BRACKETRIGHT" | "RIGHTBRACKET" => Self::BracketRight,
             "COMMA" => Self::Comma,
-            "EQUAL" | "EQUALS" | "PLUS" => Self::Equal,
+            "EQUAL" | "EQUALS" => Self::Equal,
             "MINUS" | "HYPHEN" => Self::Minus,
             "PERIOD" | "DOT" => Self::Period,
             "QUOTE" | "APOSTROPHE" => Self::Quote,
@@ -177,6 +189,17 @@ impl PhysicalKey {
             "NUMPADDIVIDE" => Self::NumpadDivide,
             "NUMPADMULTIPLY" => Self::NumpadMultiply,
             "NUMPADSUBTRACT" => Self::NumpadSubtract,
+            "NUMPADENTER" => Self::NumpadEnter,
+            "NUMPADEQUAL" | "NUMPADEQUALS" => Self::NumpadEqual,
+            "INTLBACKSLASH" => Self::IntlBackslash,
+            "INTLRO" => Self::IntlRo,
+            "INTLYEN" => Self::IntlYen,
+            "PRINTSCREEN" | "PRTSC" => Self::PrintScreen,
+            "PAUSE" => Self::Pause,
+            "CAPSLOCK" => Self::CapsLock,
+            "NUMLOCK" => Self::NumLock,
+            "SCROLLLOCK" => Self::ScrollLock,
+            "CONTEXTMENU" | "MENU" => Self::ContextMenu,
             "F1" => Self::F1,
             "F2" => Self::F2,
             "F3" => Self::F3,
@@ -232,6 +255,43 @@ impl PhysicalKey {
                 | Self::F22
                 | Self::F23
                 | Self::F24
+        )
+    }
+
+    fn is_plain_typing(self) -> bool {
+        !matches!(
+            self,
+            Self::F1
+                | Self::F2
+                | Self::F3
+                | Self::F4
+                | Self::F5
+                | Self::F6
+                | Self::F7
+                | Self::F8
+                | Self::F9
+                | Self::F10
+                | Self::F11
+                | Self::F12
+                | Self::F13
+                | Self::F14
+                | Self::F15
+                | Self::F16
+                | Self::F17
+                | Self::F18
+                | Self::F19
+                | Self::F20
+                | Self::F21
+                | Self::F22
+                | Self::F23
+                | Self::F24
+                | Self::NumpadEnter
+                | Self::PrintScreen
+                | Self::Pause
+                | Self::CapsLock
+                | Self::NumLock
+                | Self::ScrollLock
+                | Self::ContextMenu
         )
     }
 }
@@ -336,7 +396,7 @@ impl KeyCode {
 
     fn is_plain_typing(self) -> bool {
         match self {
-            Self::Physical(key) => !key.is_function(),
+            Self::Physical(key) => key.is_plain_typing(),
             Self::Logical(key) => key == LogicalKey::Space,
         }
     }
@@ -391,6 +451,47 @@ pub enum Trigger {
     },
 }
 
+struct BoundedSteps(Vec<Chord>);
+
+impl<'de> Deserialize<'de> for BoundedSteps {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct BoundedStepsVisitor;
+
+        impl<'de> Visitor<'de> for BoundedStepsVisitor {
+            type Value = BoundedSteps;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(formatter, "at most {MAX_SEQUENCE_STEPS} hotkey chords")
+            }
+
+            fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let mut steps = Vec::with_capacity(MAX_SEQUENCE_STEPS);
+                while steps.len() < MAX_SEQUENCE_STEPS {
+                    match sequence.next_element::<Chord>()? {
+                        Some(chord) => steps.push(chord),
+                        None => return Ok(BoundedSteps(steps)),
+                    }
+                }
+                if sequence.next_element::<IgnoredAny>()?.is_some() {
+                    return Err(serde::de::Error::invalid_length(
+                        MAX_SEQUENCE_STEPS + 1,
+                        &self,
+                    ));
+                }
+                Ok(BoundedSteps(steps))
+            }
+        }
+
+        deserializer.deserialize_seq(BoundedStepsVisitor)
+    }
+}
+
 impl Trigger {
     pub(crate) fn chord(chord: Chord) -> Result<Self, HotkeyError> {
         validate_steps(std::slice::from_ref(&chord))?;
@@ -418,39 +519,7 @@ fn validate_steps(steps: &[Chord]) -> Result<(), HotkeyError> {
     if first.modifiers.is_empty() && first.key.is_plain_typing() {
         return Err(HotkeyError::PlainTyping);
     }
-    if steps.iter().any(is_forbidden_system_shortcut) {
-        return Err(HotkeyError::ForbiddenSystemShortcut);
-    }
     Ok(())
-}
-
-fn is_forbidden_system_shortcut(chord: &Chord) -> bool {
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
-    let only = |ctrl, alt, shift, meta| {
-        chord.modifiers
-            == Modifiers {
-                ctrl,
-                alt,
-                shift,
-                meta,
-            }
-    };
-    #[cfg(target_os = "windows")]
-    {
-        (only(true, true, false, false) && chord.key == KeyCode::Logical(LogicalKey::Delete))
-            || (only(false, true, false, false) && chord.key == KeyCode::Physical(PhysicalKey::F4))
-            || (only(false, false, false, true)
-                && chord.key == KeyCode::Physical(PhysicalKey::KeyL))
-    }
-    #[cfg(target_os = "macos")]
-    {
-        (only(true, false, false, true) && chord.key == KeyCode::Physical(PhysicalKey::KeyQ))
-            || (only(false, true, false, true) && chord.key == KeyCode::Logical(LogicalKey::Escape))
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    {
-        false
-    }
 }
 
 impl<'de> Deserialize<'de> for Trigger {
@@ -465,7 +534,7 @@ impl<'de> Deserialize<'de> for Trigger {
                 chord: Chord,
             },
             Sequence {
-                steps: Vec<Chord>,
+                steps: BoundedSteps,
                 #[serde(rename = "timeoutMs")]
                 timeout_ms: u64,
             },
@@ -473,7 +542,7 @@ impl<'de> Deserialize<'de> for Trigger {
 
         match RawTrigger::deserialize(deserializer)? {
             RawTrigger::Chord { chord } => Self::chord(chord),
-            RawTrigger::Sequence { steps, timeout_ms } => Self::sequence(steps, timeout_ms),
+            RawTrigger::Sequence { steps, timeout_ms } => Self::sequence(steps.0, timeout_ms),
         }
         .map_err(serde::de::Error::custom)
     }
@@ -533,8 +602,50 @@ pub enum HotkeyError {
     UnknownKey,
     #[error("plain typing cannot start a global hotkey")]
     PlainTyping,
-    #[error("system shortcut cannot be registered")]
-    ForbiddenSystemShortcut,
     #[error("sequence timeout is invalid")]
     InvalidTimeout,
+}
+
+#[cfg(test)]
+mod bounded_deserialization_tests {
+    use std::{cell::Cell, rc::Rc};
+
+    use serde::de::value::SeqDeserializer;
+    use serde::Deserialize;
+
+    use super::BoundedSteps;
+
+    #[test]
+    fn bounded_steps_stops_reading_at_the_fifth_item() {
+        struct Counting<I> {
+            inner: I,
+            count: Rc<Cell<usize>>,
+        }
+
+        impl<I: Iterator> Iterator for Counting<I> {
+            type Item = I::Item;
+
+            fn next(&mut self) -> Option<Self::Item> {
+                let item = self.inner.next();
+                if item.is_some() {
+                    self.count.set(self.count.get() + 1);
+                }
+                item
+            }
+        }
+
+        let chord = serde_json::json!({
+            "modifiers": { "ctrl": true, "alt": false, "shift": false, "meta": false },
+            "key": { "kind": "physical", "value": "keyA" }
+        });
+        let count = Rc::new(Cell::new(0));
+        let values = Counting {
+            inner: std::iter::repeat_n(chord, 100),
+            count: count.clone(),
+        };
+        let deserializer = SeqDeserializer::<_, serde_json::Error>::new(values);
+
+        assert!(BoundedSteps::deserialize(deserializer).is_err());
+        assert_eq!(count.get(), 5);
+    }
 }

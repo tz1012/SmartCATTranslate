@@ -17,6 +17,9 @@ export type PhysicalKey =
   | 'numpad0' | 'numpad1' | 'numpad2' | 'numpad3' | 'numpad4'
   | 'numpad5' | 'numpad6' | 'numpad7' | 'numpad8' | 'numpad9'
   | 'numpadAdd' | 'numpadDecimal' | 'numpadDivide' | 'numpadMultiply' | 'numpadSubtract'
+  | 'numpadEnter' | 'numpadEqual'
+  | 'intlBackslash' | 'intlRo' | 'intlYen'
+  | 'printScreen' | 'pause' | 'capsLock' | 'numLock' | 'scrollLock' | 'contextMenu'
   | 'f1' | 'f2' | 'f3' | 'f4' | 'f5' | 'f6' | 'f7' | 'f8'
   | 'f9' | 'f10' | 'f11' | 'f12' | 'f13' | 'f14' | 'f15' | 'f16'
   | 'f17' | 'f18' | 'f19' | 'f20' | 'f21' | 'f22' | 'f23' | 'f24';
