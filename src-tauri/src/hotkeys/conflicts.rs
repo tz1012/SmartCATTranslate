@@ -32,7 +32,7 @@ const SHORTCUT_CATALOG_SHA256: &str =
     "5d14b12e9bb1aeb7bf665aaec1a0868a3173e482ada0089e897b2d5e975b75e4";
 const EMBEDDED_CATALOG: &[u8] = include_bytes!("../../resources/shortcut-catalog.json");
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum Platform {
     Windows,

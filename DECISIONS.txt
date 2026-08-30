@@ -197,3 +197,10 @@ macOS 경계: 접근성 권한이 이미 허용된 경우에만 `CGEventTapCreat
 키 정체성: Windows 저수준 후크는 virtual key뿐 아니라 scan code와 extended flag를 함께 정규화한다. 따라서 주 키보드 Enter/Equal과 NumpadEnter/NumpadEqual을 구분하고, Num Lock이 꺼진 숫자패드 방향·삽입·삭제 키도 전용 탐색 키와 구분하며 반복 상태를 이 결합 정체성으로 추적한다. 직접 등록 표현과 관찰 결과가 같은 키로 왕복되지 않는 조합은 현재 건강한 비소비 관찰기 경로로만 제공한다.
 관찰기 건강: macOS 이벤트 탭이 시간 초과 또는 사용자 입력으로 비활성화되면 callback에서 제한된 세 번만 재활성화를 시도하고 실제 활성 상태를 다시 확인한다. 회복하지 못하면 생산 채널을 끊고 run loop를 종료하며 `ObserverDisabled`를 반환한다. 살아 있는 것으로 표시한 채 조용히 입력을 잃는 상태를 허용하지 않는다.
 시작 원자성: Windows와 macOS 모두 process-wide active flag를 rollback guard로 획득한다. sender/키 상태 mutex, native handle, worker 시작 또는 준비 확인 중 어느 단계가 실패해도 guard가 active flag를 되돌려 다음 정상 시작을 막지 않는다. worker 종료와 제한시간 경합은 3상태 원자 handshake로 소유권을 넘겨, 이전 관찰기의 늦은 정리가 새 관찰기의 전역 상태를 지우지 못하게 한다.
+
+[D-033] 선택 텍스트 획득의 클립보드 소유권과 속도 우선 검증 범위
+상태: 임시 확정 — 사용자의 2026-08-30 속도 우선 지시에 따른 Task 5 중간 경계
+보안 경계: 포그라운드 앱의 정제된 실행 파일 basename 또는 bundle identifier가 사용자 차단 목록과 일치하면 클립보드를 열거나 복사 입력을 보내기 전에 실패 폐쇄한다. 기존 클립보드는 포맷 수 128개, 합계 32MiB 안에서 스냅샷하고 선택 텍스트는 4MiB, 대기는 최대 1초로 제한한다. 합성 복사 뒤 운영체제 clipboard generation/sequence를 소유 세대로 기록하고 복원 직전에도 같은 세대일 때만 복원한다. 사용자나 다른 앱이 중간에 클립보드를 바꿨으면 절대 덮어쓰지 않는다. 경로, 창 제목, 선택 텍스트, 클립보드 데이터는 로그·오류·Debug 출력에 넣지 않는다.
+Windows 경계: HGLOBAL로 안전하게 복제 가능한 모든 열거 포맷을 복사하고, bitmap/metafile/palette처럼 다른 소유 규칙을 가진 포맷이 있으면 복사를 시작하기 전에 실패 폐쇄한다. 복원용 메모리는 클립보드를 비우기 전에 전부 할당한다. Ctrl+C 입력은 SendInput으로 제한된 네 이벤트만 보낸다.
+macOS 경계: 속도 우선 중간 구현에서는 텍스트 전용 폴백으로 rich clipboard를 손상시키지 않도록 adapter를 명시적 BackendUnavailable로 실패 폐쇄한다. AppKit 다중 pasteboard item 복원은 후속 macOS 실기/CI 검증과 함께 완성해야 하며 지원 완료를 주장하지 않는다.
+검증 범위 변경: 원래 RED 테스트 8개를 작성했으나 사용자가 실패 상황 중심 장시간 TDD gate를 즉시 중단하고 happy-path 구현을 우선하도록 지시했다. 테스트 소스는 보존하되 이번 커밋에서는 실행 근거로 사용하지 않는다. Rust 포맷, Windows `cargo check --lib`, diff/기록 검사만 수행하며 전체 회귀와 macOS 실행 통과를 주장하지 않는다.

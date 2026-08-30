@@ -1,9 +1,17 @@
+mod blocklist;
+mod clipboard;
 mod conflicts;
 mod native;
 mod parser;
 mod sequence;
 mod types;
 
+pub use blocklist::{BlockedApp, Blocklist, BlocklistError, MAX_BLOCKED_APPS};
+pub use clipboard::{
+    CaptureError, CapturedSelection, ClipboardFormat, ClipboardFormatId, ClipboardGuard,
+    ClipboardLimits, ClipboardPort, ClipboardSnapshot, CopySynthesizer, RestoreStatus,
+    SelectedTextAcquirer, MAX_CLIPBOARD_FORMATS, MAX_CLIPBOARD_SNAPSHOT_BYTES, MAX_SELECTION_BYTES,
+};
 pub use conflicts::{
     AppIdentity, AppInspector, CatalogEntry, CatalogError, CatalogKind, ConflictAnalyzer,
     ConflictCause, ConflictLevel, ConflictReport, ConflictSeverity, Platform, RegistrationProbe,

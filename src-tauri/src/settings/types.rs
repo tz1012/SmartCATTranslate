@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 pub use crate::core::types::Field;
 use crate::core::types::{Quality, Tone, TranslationModel, TranslationProfile};
+use crate::hotkeys::{BlockedApp, Blocklist};
 
 pub const SETTINGS_SCHEMA_VERSION: u32 = 1;
 pub const DEFAULT_HISTORY_RETENTION_DAYS: u16 = 30;
@@ -117,6 +118,7 @@ pub struct AppSettings {
     pub close_behavior: CloseBehavior,
     pub quick_access_position: QuickAccessPosition,
     pub history_retention_days: u16,
+    pub blocked_apps: Vec<BlockedApp>,
 }
 
 impl Default for AppSettings {
@@ -145,6 +147,7 @@ impl Default for AppSettings {
             close_behavior: CloseBehavior::KeepInTray,
             quick_access_position: QuickAccessPosition::Popup,
             history_retention_days: DEFAULT_HISTORY_RETENTION_DAYS,
+            blocked_apps: Vec::new(),
         }
     }
 }
@@ -263,6 +266,14 @@ impl AppSettings {
         }
         if self.glossary.len() > MAX_GLOSSARY_ENTRIES {
             return Err(SettingsError::SizeLimit);
+        }
+        if self
+            .blocked_apps
+            .iter()
+            .any(|entry| entry.validate().is_err())
+            || Blocklist::new(self.blocked_apps.clone()).is_err()
+        {
+            return Err(SettingsError::InvalidBlockedApps);
         }
         let mut profile_ids = HashSet::new();
         let mut aggregate_term_count = 0_usize;
@@ -528,6 +539,8 @@ pub enum SettingsError {
     SizeLimit,
     #[error("invalid model selection")]
     InvalidModel,
+    #[error("invalid blocked applications")]
+    InvalidBlockedApps,
     #[error("settings persistence failed")]
     Persistence,
     #[error("settings document is invalid")]
@@ -553,6 +566,7 @@ impl SettingsError {
             Self::DuplicateGlossaryId => "duplicate_glossary_id",
             Self::SizeLimit => "settings_size_limit",
             Self::InvalidModel => "invalid_model",
+            Self::InvalidBlockedApps => "invalid_blocked_apps",
             Self::Persistence => "settings_persistence_failed",
             Self::InvalidDocument => "invalid_settings_document",
         }
