@@ -26,12 +26,24 @@ pub enum KeyEventPhase {
     Up,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct KeyEvent {
     pub chord: Chord,
     pub phase: KeyEventPhase,
     pub repeat: bool,
     pub device: KeyDevice,
+}
+
+impl fmt::Debug for KeyEvent {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("KeyEvent")
+            .field("chord", &"<redacted>")
+            .field("phase", &self.phase)
+            .field("repeat", &self.repeat)
+            .field("device", &"<redacted>")
+            .finish()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,32 +98,35 @@ impl Pattern {
 struct Cursor {
     next_step: usize,
     last_at: Option<Duration>,
+    started_at: Option<Duration>,
 }
 
 #[derive(Clone, Debug)]
 struct PendingMatch {
     pattern: usize,
-    completed_at: Duration,
-    timeout: Duration,
+    attempt_started_at: Duration,
+    deadline: Duration,
 }
 
 impl Cursor {
     fn reset(&mut self) {
         self.next_step = 0;
         self.last_at = None;
+        self.started_at = None;
     }
 
     fn start_if_first(&mut self, pattern: &Pattern, chord: Chord, at: Duration) {
         if pattern.steps.first() == Some(&chord) {
             self.next_step = 1;
             self.last_at = Some(at);
+            self.started_at = Some(at);
         }
     }
 
-    fn advance(&mut self, pattern: &Pattern, chord: Chord, at: Duration) -> bool {
+    fn advance(&mut self, pattern: &Pattern, chord: Chord, at: Duration) -> Option<Duration> {
         if self.next_step == 0 {
             self.start_if_first(pattern, chord, at);
-            return false;
+            return None;
         }
 
         let expired = self
@@ -120,24 +135,27 @@ impl Cursor {
         if expired {
             self.reset();
             self.start_if_first(pattern, chord, at);
-            return false;
+            return None;
         }
 
         if pattern.steps.get(self.next_step) != Some(&chord) {
             self.reset();
             self.start_if_first(pattern, chord, at);
-            return false;
+            return None;
         }
 
         self.next_step += 1;
         self.last_at = Some(at);
         if self.next_step != pattern.steps.len() {
-            return false;
+            return None;
         }
 
+        let started_at = self
+            .started_at
+            .expect("a completed cursor always has a start timestamp");
         self.reset();
         self.start_if_first(pattern, chord, at);
-        true
+        Some(started_at)
     }
 
     fn expire(&mut self, pattern: &Pattern, at: Duration) {
@@ -336,45 +354,45 @@ fn process_device(
 
     let mut completed = Vec::new();
     for (index, (cursor, pattern)) in state.cursors.iter_mut().zip(patterns).enumerate() {
-        if cursor.advance(pattern, chord, at) {
-            completed.push(index);
+        if let Some(attempt_started_at) = cursor.advance(pattern, chord, at) {
+            completed.push((index, attempt_started_at));
         }
     }
 
     let previous_pending = std::mem::take(&mut state.pending);
-    for pending in previous_pending {
-        let extended_by_completion = completed
-            .iter()
-            .any(|&matched| is_strict_prefix(&patterns[pending.pattern], &patterns[matched]));
+    for mut pending in previous_pending {
+        let extended_by_completion = completed.iter().any(|&(matched, attempt_started_at)| {
+            attempt_started_at == pending.attempt_started_at
+                && is_strict_prefix(&patterns[pending.pattern], &patterns[matched])
+        });
         if extended_by_completion {
             continue;
         }
-        if has_active_extension(patterns, state, pending.pattern) {
+        if let Some(deadline) =
+            active_extension_deadline(patterns, state, pending.pattern, pending.attempt_started_at)
+        {
+            pending.deadline = deadline;
             state.pending.push(pending);
         } else {
             push_unique(&mut binding_ids, patterns[pending.pattern].id);
         }
     }
 
-    for &matched in &completed {
-        let shadowed_by_longer = completed
-            .iter()
-            .any(|&other| is_strict_prefix(&patterns[matched], &patterns[other]));
+    for &(matched, attempt_started_at) in &completed {
+        let shadowed_by_longer = completed.iter().any(|&(other, other_started_at)| {
+            other_started_at == attempt_started_at
+                && is_strict_prefix(&patterns[matched], &patterns[other])
+        });
         if shadowed_by_longer {
             continue;
         }
-        if has_active_extension(patterns, state, matched) {
-            let timeout = patterns
-                .iter()
-                .enumerate()
-                .filter(|(index, _)| is_strict_prefix(&patterns[matched], &patterns[*index]))
-                .map(|(_, pattern)| pattern.timeout)
-                .max()
-                .unwrap_or_default();
+        if let Some(deadline) =
+            active_extension_deadline(patterns, state, matched, attempt_started_at)
+        {
             state.pending.push(PendingMatch {
                 pattern: matched,
-                completed_at: at,
-                timeout,
+                attempt_started_at,
+                deadline,
             });
         } else {
             push_unique(&mut binding_ids, patterns[matched].id);
@@ -383,15 +401,31 @@ fn process_device(
     binding_ids
 }
 
-fn has_active_extension(patterns: &[Pattern], state: &DeviceState, matched: usize) -> bool {
+fn active_extension_deadline(
+    patterns: &[Pattern],
+    state: &DeviceState,
+    matched: usize,
+    attempt_started_at: Duration,
+) -> Option<Duration> {
     state
         .cursors
         .iter()
         .zip(patterns)
-        .any(|(cursor, candidate)| {
-            is_strict_prefix(&patterns[matched], candidate)
-                && cursor.next_step == patterns[matched].steps.len()
+        .filter_map(|(cursor, candidate)| {
+            if !is_strict_prefix(&patterns[matched], candidate)
+                || cursor.started_at != Some(attempt_started_at)
+                || cursor.next_step < patterns[matched].steps.len()
+            {
+                return None;
+            }
+            let last_at = cursor.last_at?;
+            Some(
+                last_at
+                    .checked_add(candidate.timeout)
+                    .unwrap_or(Duration::MAX),
+            )
         })
+        .max()
 }
 
 fn is_strict_prefix(prefix: &Pattern, candidate: &Pattern) -> bool {
@@ -401,7 +435,7 @@ fn is_strict_prefix(prefix: &Pattern, candidate: &Pattern) -> bool {
 fn take_expired_pending(patterns: &[Pattern], state: &mut DeviceState, at: Duration) -> Vec<Uuid> {
     let mut expired = Vec::new();
     state.pending.retain(|pending| {
-        if at.saturating_sub(pending.completed_at) > pending.timeout {
+        if at > pending.deadline {
             push_unique(&mut expired, patterns[pending.pattern].id);
             false
         } else {
@@ -616,6 +650,54 @@ mod tests {
 
         assert!(engine.on_key(chord("Ctrl+A"), ms(0)).is_empty());
         assert!(engine.on_key(chord("Ctrl+A"), ms(100)).is_empty());
+        assert_eq!(engine.on_key(chord("Ctrl+A"), ms(200)), vec![short]);
+    }
+
+    #[test]
+    fn progressed_long_extension_keeps_short_pending_until_only_long_completes() {
+        let short = Uuid::from_u128(25);
+        let long = Uuid::from_u128(26);
+        let mut engine = SequenceEngine::new(vec![
+            binding(short, "Ctrl+A, Ctrl+A"),
+            binding(long, "Ctrl+A, Ctrl+A, Ctrl+B, Ctrl+C"),
+        ])
+        .unwrap();
+
+        assert!(engine.on_key(chord("Ctrl+A"), ms(0)).is_empty());
+        assert!(engine.on_key(chord("Ctrl+A"), ms(100)).is_empty());
+        assert!(engine.on_key(chord("Ctrl+B"), ms(200)).is_empty());
+        assert_eq!(engine.on_key(chord("Ctrl+C"), ms(300)), vec![long]);
+    }
+
+    #[test]
+    fn progressed_long_extension_renews_the_pending_fallback_deadline() {
+        let short = Uuid::from_u128(27);
+        let long = Uuid::from_u128(28);
+        let mut engine = SequenceEngine::new(vec![
+            binding(short, "Ctrl+A, Ctrl+A"),
+            binding(long, "Ctrl+A, Ctrl+A, Ctrl+B, Ctrl+C"),
+        ])
+        .unwrap();
+
+        engine.on_key(chord("Ctrl+A"), ms(0));
+        engine.on_key(chord("Ctrl+A"), ms(100));
+        assert!(engine.on_key(chord("Ctrl+B"), ms(200)).is_empty());
+        assert!(engine.on_time(ms(850)).unwrap().is_empty());
+        assert_eq!(engine.on_time(ms(851)).unwrap(), vec![short]);
+    }
+
+    #[test]
+    fn restarted_long_attempt_does_not_keep_an_older_pending_prefix_alive() {
+        let short = Uuid::from_u128(29);
+        let long = Uuid::from_u128(30);
+        let mut engine = SequenceEngine::new(vec![
+            binding(short, "Ctrl+A, Ctrl+A"),
+            binding(long, "Ctrl+A, Ctrl+A, Ctrl+B, Ctrl+C"),
+        ])
+        .unwrap();
+
+        engine.on_key(chord("Ctrl+A"), ms(0));
+        engine.on_key(chord("Ctrl+A"), ms(100));
         assert_eq!(engine.on_key(chord("Ctrl+A"), ms(200)), vec![short]);
     }
 
@@ -849,7 +931,11 @@ mod tests {
         let observed = event("Ctrl+C", KeyEventPhase::Down, false, secret_device);
         engine.on_event(observed, ms(0)).unwrap();
 
-        assert!(!format!("{observed:?}").contains(&secret_device.to_string()));
+        let event_debug = format!("{observed:?}");
+        assert!(!event_debug.contains(&secret_device.to_string()));
+        assert!(!event_debug.contains("KeyC"));
+        assert!(!event_debug.contains("ctrl: true"));
+        assert!(!event_debug.contains("Ctrl"));
         assert!(!format!("{engine:?}").contains(&secret_device.to_string()));
     }
 }
