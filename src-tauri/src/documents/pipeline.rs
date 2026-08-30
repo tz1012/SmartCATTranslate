@@ -4,7 +4,7 @@ use super::{
         xml::{extract_text_nodes, replace_text_nodes},
         OoxmlPackage,
     },
-    output::{next_output_path_in, publish_atomic},
+    output::{next_output_path_in, publish_atomic, publish_existing_partial},
     pdf, pptx,
     types::*,
     xlsx,
@@ -89,6 +89,8 @@ pub fn inspect_document(
         format,
         manifest,
         segments,
+        pdf_rasters: std::collections::HashMap::new(),
+        resumed_from_stage: None,
     })
 }
 
@@ -98,6 +100,22 @@ pub fn rebuild_document(
     options: &DocumentOptions,
     job_id: uuid::Uuid,
 ) -> Result<DocumentReport, DocumentError> {
+    let cancelled = std::sync::atomic::AtomicBool::new(false);
+    rebuild_document_checked(plan, translated, options, job_id, &cancelled, &|_, _, _| {})
+}
+
+pub fn rebuild_document_checked(
+    plan: &DocumentPlan,
+    translated: &[TranslatedSegment],
+    options: &DocumentOptions,
+    job_id: uuid::Uuid,
+    cancelled: &std::sync::atomic::AtomicBool,
+    checkpoint: &(dyn Fn(DocumentStage, usize, usize) + Sync),
+) -> Result<DocumentReport, DocumentError> {
+    use std::sync::atomic::Ordering;
+    if cancelled.load(Ordering::Acquire) {
+        return Err(DocumentError::Cancelled);
+    }
     let source_bytes = fs::read(&plan.source).map_err(|_| DocumentError::Io)?;
     if hash_bytes(&source_bytes) != plan.manifest.source_hash {
         return Err(DocumentError::SourceChanged);
@@ -115,14 +133,27 @@ pub fn rebuild_document(
                 &plan.segments,
                 translated,
                 &partial,
+                options,
+                &plan.pdf_rasters,
+                cancelled,
+                checkpoint,
             )?;
             if hash_bytes(&fs::read(&plan.source).map_err(|_| DocumentError::Io)?)
                 != plan.manifest.source_hash
             {
                 return Err(DocumentError::SourceChanged);
             }
-            fs::rename(&partial, &output).map_err(|_| DocumentError::Io)?;
-            let output_bytes = fs::read(&output).map_err(|_| DocumentError::Io)?;
+            if cancelled.load(Ordering::Acquire) {
+                return Err(DocumentError::Cancelled);
+            }
+            publish_existing_partial(&partial, &output)?;
+            let output_bytes = match fs::read(&output) {
+                Ok(v) => v,
+                Err(_) => {
+                    let _ = fs::remove_file(&output);
+                    return Err(DocumentError::Io);
+                }
+            };
             Ok(DocumentReport {
                 job_id,
                 format: plan.format,
@@ -137,7 +168,7 @@ pub fn rebuild_document(
                 publishable: true,
                 source_hash: plan.manifest.source_hash.clone(),
                 output_hash: hash_bytes(&output_bytes),
-                resumed_from_stage: None,
+                resumed_from_stage: plan.resumed_from_stage.clone(),
             })
         })();
         if result.is_err() {
@@ -192,7 +223,7 @@ pub fn rebuild_document(
         publishable: true,
         source_hash: plan.manifest.source_hash.clone(),
         output_hash: hash_bytes(&output_bytes),
-        resumed_from_stage: None,
+        resumed_from_stage: plan.resumed_from_stage.clone(),
     })
 }
 

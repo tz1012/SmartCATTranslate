@@ -760,3 +760,16 @@ TDD 및 검증
 속도 우선 검증과 라이선스
 - 사용자 지시에 따라 새 실패 테스트·실패 주입·전체 회귀·장시간 패키지 빌드는 수행하지 않았다. 프런트엔드 `pnpm build`가 통과했고 D 드라이브 공유 target의 Windows `cargo check --lib`가 통과했다.
 - PDF parser/writer는 lopdf 0.38.0(MIT), Windows renderer는 운영체제 Windows.Data.Pdf, macOS renderer는 운영체제 PDFKit/CoreGraphics를 사용한다. PDFium 바이너리는 포함하지 않는다. 래스터 글자 shaping에 포함하는 Noto Sans variable font와 SIL OFL 1.1 라이선스는 번들 resource로 함께 보존한다. Windows/macOS PDF 실제 시각 smoke와 서명·양식 상호작용 실기는 후속 acceptance 전까지 통과를 주장하지 않는다.
+
+[2026-08-31] 문서 번역 Tasks 7–8 검토 보강 — PDF 좌표·OCR·저장·진행 경계
+
+구현
+- lopdf의 font encoding/ToUnicode 해석과 text/graphics matrix 누적을 사용해 Tj/TJ/작은따옴표/큰따옴표 연산자의 advance와 CropBox 원점·회전을 반영했다. vertical font, clipping, Form XObject와 해석할 수 없는 encoding은 추측 번역하지 않고 페이지 래스터 OCR로 전환하며 사유를 경고한다.
+- 큰 이미지 여부를 페이지 면적 비율로 판정하고 native/OCR 좌표의 교차 비율로 중복 block을 제거한다. OCR 좌표는 CropBox와 회전을 역변환하며 복잡·스캔 페이지는 300DPI 한도 안의 전체 페이지 래스터 재조립을 사용한다. 낮은 OCR 신뢰도, 글꼴 대체, background 근사와 text overflow를 페이지·block 경고로 보고한다.
+- PDF partial은 create-new로 열어 flush/sync한 뒤 hard-link 기반 비덮어쓰기 발행을 수행한다. 검증·발행 실패 시 partial을 제거하고, 발행 뒤 검증 실패 시 새 결과만 제거한다. 원본은 hash 재확인과 read-only 계약을 유지한다.
+- sourceLanguage와 품질 선택을 실제 번역 profile에 반영하고, 아직 구현하지 않은 hidden/wrap 옵션은 화면에서 비활성화해 계획 기능임을 명시했다. native drag/drop, 경고 필터·200개 제한, 한국어 경고 설명과 결과/보고 위치 열기를 공통 문서 화면에 연결했다.
+- OCR·reflow·save에도 취소 확인을 추가하고 inspect/extract/ocr/translate/reflow/save/validate/completed의 typed progress와 warning/completed/failed job event를 제공한다. job·단계별 결정적 unit ID와 `resumed_from_stage` 연결점은 구현했으며 암호화 JobStore 기반 내구 resume는 다음 history/recovery milestone 의존성으로 남겼다.
+
+속도 우선 검증과 제한
+- 새 실패 시험, 실패 주입, 전체 회귀와 실제 PDF 장시간 smoke는 실행하지 않았다. 변경 Rust 파일 rustfmt와 프런트엔드 production build가 통과했고, 보강 중 D 드라이브 공유 target의 Windows `cargo check --lib`가 10.56초에 통과했다. 마지막 소규모 좌표·경고 보강 뒤에는 사용자 지시에 따라 같은 장시간 관문을 반복하지 않았다.
+- Windows/macOS 실제 시각 비교, macOS bridge 실기, page anchor 직접 이동과 시스템에 없는 CJK glyph는 후속 packaged acceptance 대상으로 남긴다.

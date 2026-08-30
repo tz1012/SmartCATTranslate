@@ -15,7 +15,7 @@ use crate::{
     documents::{
         self,
         translate::{batches, finish_batch, prepare_batch},
-        DocumentJobStore, DocumentManifest, DocumentOptions, DocumentReport,
+        DocumentJobStore, DocumentManifest, DocumentOptions, DocumentReport, DocumentStage,
     },
 };
 
@@ -29,9 +29,25 @@ pub struct ChosenDocument {
 #[serde(rename_all = "camelCase")]
 struct DocumentProgress {
     job_id: Uuid,
-    stage: &'static str,
+    stage: DocumentStage,
+    unit_id: String,
     completed: usize,
     total: usize,
+}
+#[derive(Clone, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+enum DocumentJobEvent {
+    Warning {
+        job_id: Uuid,
+        warning: crate::documents::DocumentWarning,
+    },
+    Completed {
+        job_id: Uuid,
+    },
+    Failed {
+        job_id: Uuid,
+        code: String,
+    },
 }
 
 #[tauri::command]
@@ -58,6 +74,22 @@ pub async fn choose_document(
 }
 
 #[tauri::command]
+pub fn inspect_document_path(
+    source_path: String,
+    options: DocumentOptions,
+) -> Result<ChosenDocument, String> {
+    let path = std::path::Path::new(&source_path);
+    if !path.is_file() {
+        return Err("document_path_unsupported".into());
+    }
+    let plan = documents::inspect_document(path, &options).map_err(error_code)?;
+    Ok(ChosenDocument {
+        source_path,
+        manifest: plan.manifest,
+    })
+}
+
+#[tauri::command]
 pub async fn translate_document(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
@@ -70,6 +102,29 @@ pub async fn translate_document(
     let outcome =
         translate_document_inner(&app, &state, &cancelled, job_id, source_path, options).await;
     jobs.finish(job_id);
+    match &outcome {
+        Ok(report) => {
+            for warning in &report.warnings {
+                let _ = app.emit(
+                    "document-job",
+                    DocumentJobEvent::Warning {
+                        job_id,
+                        warning: warning.clone(),
+                    },
+                );
+            }
+            let _ = app.emit("document-job", DocumentJobEvent::Completed { job_id });
+        }
+        Err(code) => {
+            let _ = app.emit(
+                "document-job",
+                DocumentJobEvent::Failed {
+                    job_id,
+                    code: code.clone(),
+                },
+            );
+        }
+    }
     outcome
 }
 
@@ -81,12 +136,13 @@ async fn translate_document_inner(
     source_path: String,
     options: DocumentOptions,
 ) -> Result<DocumentReport, String> {
-    emit(app, job_id, "inspect", 0, 1);
+    emit(app, job_id, DocumentStage::Inspect, 0, 1);
     let mut plan = documents::inspect_document(std::path::Path::new(&source_path), &options)
         .map_err(error_code)?;
     if cancelled.load(Ordering::Acquire) {
         return Err("document_cancelled".into());
     }
+    emit(app, job_id, DocumentStage::Extract, 1, 1);
     let settings = open_store(app)?
         .load()
         .await
@@ -104,9 +160,16 @@ async fn translate_document_inner(
             .clone()
             .into_iter()
             .collect::<Vec<_>>();
-        crate::documents::pdf::append_native_ocr(&mut plan, &hints, options.pdf_force_ocr)
-            .await
-            .map_err(error_code)?;
+        crate::documents::pdf::append_native_ocr(
+            &mut plan,
+            &hints,
+            options.pdf_force_ocr,
+            job_id,
+            cancelled,
+            &|stage, completed, total| emit(app, job_id, stage, completed, total),
+        )
+        .await
+        .map_err(error_code)?;
     }
     let glossary = settings
         .glossary
@@ -140,11 +203,15 @@ async fn translate_document_inner(
         if cancelled.load(Ordering::Acquire) {
             return Err("document_cancelled".into());
         }
-        emit(app, job_id, "translate", index, total);
+        emit(app, job_id, DocumentStage::Translate, index, total);
         let prepared_batch =
             prepare_batch(segment_batch, &protected, job_id).map_err(error_code)?;
         let mut profile = saved.profile.clone();
         profile.target_language = options.target_language.clone();
+        profile.source_language = options.source_language.clone().or(profile.source_language);
+        if let Some(quality) = &options.quality {
+            profile.quality = quality.clone();
+        }
         profile.protected_terms = protected.clone();
         let request = TranslationRequest {
             text: prepared_batch.source.clone(),
@@ -191,8 +258,25 @@ async fn translate_document_inner(
         };
         translated.extend(finish_batch(&prepared_batch, &output).map_err(error_code)?);
     }
-    emit(app, job_id, "validate", total, total);
-    documents::rebuild_document(&plan, &translated, &options, job_id).map_err(error_code)
+    emit(
+        app,
+        job_id,
+        DocumentStage::Reflow,
+        0,
+        plan.manifest.part_count.max(1),
+    );
+    let report = documents::pipeline::rebuild_document_checked(
+        &plan,
+        &translated,
+        &options,
+        job_id,
+        cancelled,
+        &|stage, completed, total| emit(app, job_id, stage, completed, total),
+    )
+    .map_err(error_code)?;
+    emit(app, job_id, DocumentStage::Validate, 1, 1);
+    emit(app, job_id, DocumentStage::Completed, 1, 1);
+    Ok(report)
 }
 
 struct DocumentSink(Mutex<Option<tokio::sync::oneshot::Sender<Result<String, String>>>>);
@@ -253,12 +337,32 @@ pub fn choose_document_output_directory(app: tauri::AppHandle) -> Option<String>
         .and_then(|folder| folder.into_path().ok())
         .map(|path| path.to_string_lossy().into_owned())
 }
-fn emit(app: &tauri::AppHandle, job_id: Uuid, stage: &'static str, completed: usize, total: usize) {
+fn emit(
+    app: &tauri::AppHandle,
+    job_id: Uuid,
+    stage: DocumentStage,
+    completed: usize,
+    total: usize,
+) {
+    let unit_id = format!(
+        "{}:{completed}",
+        match stage {
+            DocumentStage::Inspect => "inspect",
+            DocumentStage::Extract => "extract",
+            DocumentStage::Ocr => "ocr",
+            DocumentStage::Translate => "translate",
+            DocumentStage::Reflow => "reflow",
+            DocumentStage::Save => "save",
+            DocumentStage::Validate => "validate",
+            DocumentStage::Completed => "completed",
+        }
+    );
     let _ = app.emit(
         "document-progress",
         DocumentProgress {
             job_id,
             stage,
+            unit_id,
             completed,
             total,
         },

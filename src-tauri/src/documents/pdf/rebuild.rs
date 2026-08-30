@@ -1,4 +1,10 @@
-use std::{collections::HashMap, fs, path::Path};
+use std::{
+    collections::HashMap,
+    fs::{self, OpenOptions},
+    io::{BufWriter, Write},
+    path::Path,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache};
 use image::RgbImage;
@@ -7,7 +13,12 @@ use lopdf::{
     dictionary, Dictionary, Document, Object, Stream,
 };
 
-use crate::documents::{DocumentError, DocumentWarning, Segment, TranslatedSegment};
+use crate::{
+    capture::{render::RenderEngine, DecodedImage, TranslatedBlock},
+    documents::{
+        DocumentError, DocumentOptions, DocumentStage, DocumentWarning, Segment, TranslatedSegment,
+    },
+};
 
 use super::{inspect, PdfInspection};
 
@@ -20,6 +31,10 @@ pub fn rebuild(
     segments: &[Segment],
     translated: &[TranslatedSegment],
     output: &Path,
+    options: &DocumentOptions,
+    rasters: &HashMap<u32, DecodedImage>,
+    cancelled: &AtomicBool,
+    checkpoint: &(dyn Fn(DocumentStage, usize, usize) + Sync),
 ) -> Result<Vec<DocumentWarning>, DocumentError> {
     let bytes = fs::read(source).map_err(|_| DocumentError::Io)?;
     let mut doc = Document::load_mem(&bytes).map_err(|_| DocumentError::InvalidPackage)?;
@@ -37,7 +52,11 @@ pub fn rebuild(
         })
         .collect::<HashMap<_, _>>();
     let mut warnings = Vec::new();
-    for page in &inspection.pages {
+    for (page_index, page) in inspection.pages.iter().enumerate() {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(DocumentError::Cancelled);
+        }
+        checkpoint(DocumentStage::Reflow, page_index, inspection.pages.len());
         let page_part = format!("page:{}", page.number);
         let mut effective_blocks = page.blocks.clone();
         if matches!(page.kind, super::PdfPageKind::Scanned) {
@@ -65,43 +84,136 @@ pub fn rebuild(
             .cloned()
             .unwrap_or_default();
         let mut operations = Vec::new();
-        for block in &effective_blocks {
-            let part = format!("page:{}", page.number);
-            let Some(text) = by_location.get(&(&*part, block.ordinal)).copied() else {
-                continue;
-            };
-            if text.is_empty() {
-                continue;
-            }
-            let pixel_w = (block.bounds[2] * page.width * 2.0)
-                .round()
-                .clamp(8.0, 4096.0) as u32;
-            let pixel_h = (block.bounds[3] * page.height * 2.0)
-                .round()
-                .clamp(8.0, 2048.0) as u32;
-            let rgb = render_text(text, pixel_w, pixel_h);
+        let rasterize = page.has_large_image || matches!(page.kind, super::PdfPageKind::Scanned);
+        if rasterize {
+            let source = rasters
+                .get(&page.number)
+                .ok_or(DocumentError::OcrUnavailable)?;
+            let translated_blocks = effective_blocks
+                .iter()
+                .filter_map(|block| {
+                    let text = by_location.get(&(&*page_part, block.ordinal)).copied()?;
+                    let display = super::page_bounds_to_display(block.bounds, page.rotation);
+                    Some(TranslatedBlock {
+                        id: uuid::Uuid::new_v5(
+                            &uuid::Uuid::NAMESPACE_OID,
+                            format!("{}:{}", page.number, block.ordinal).as_bytes(),
+                        ),
+                        source_ids: Vec::new(),
+                        source_text: String::new(),
+                        translated_text: text.to_owned(),
+                        bounds: crate::capture::NormalizedRect::new(
+                            display[0], display[1], display[2], display[3],
+                        )
+                        .ok()?,
+                        confidence: 1.0,
+                        direction: None,
+                        visible: true,
+                    })
+                })
+                .collect::<Vec<_>>();
+            let rendered = RenderEngine::render(source, &translated_blocks)
+                .map_err(|_| DocumentError::ValidationFailed)?;
+            let rgb = rendered
+                .rgba
+                .chunks_exact(4)
+                .flat_map(|p| [p[0], p[1], p[2]])
+                .collect::<Vec<_>>();
             let mut image = Stream::new(
-                dictionary! {"Type"=>"XObject","Subtype"=>"Image","Width"=>pixel_w as i64,"Height"=>pixel_h as i64,"ColorSpace"=>"DeviceRGB","BitsPerComponent"=>8},
+                dictionary! {"Type"=>"XObject","Subtype"=>"Image","Width"=>rendered.width as i64,"Height"=>rendered.height as i64,"ColorSpace"=>"DeviceRGB","BitsPerComponent"=>8},
                 rgb,
             );
             image.compress().map_err(|_| DocumentError::Io)?;
             let image_id = doc.add_object(image);
-            let name = format!("SC{}", block.ordinal);
-            xobjects.set(name.as_bytes().to_vec(), Object::Reference(image_id));
-            let x = block.bounds[0] * page.width;
-            let h = block.bounds[3] * page.height;
-            let w = block.bounds[2] * page.width;
-            let y = page.height - block.bounds[1] * page.height - h;
+            xobjects.set("SCPage", Object::Reference(image_id));
             operations.extend([
                 Operation::new("q", vec![]),
                 Operation::new(
                     "cm",
-                    vec![w.into(), 0.into(), 0.into(), h.into(), x.into(), y.into()],
+                    vec![
+                        page.width.into(),
+                        0.into(),
+                        0.into(),
+                        page.height.into(),
+                        page.crop_x.into(),
+                        page.crop_y.into(),
+                    ],
                 ),
-                Operation::new("Do", vec![Object::Name(name.into_bytes())]),
+                Operation::new("Do", vec![Object::Name(b"SCPage".to_vec())]),
                 Operation::new("Q", vec![]),
             ]);
-            warnings.push(DocumentWarning{code:"backgroundApproximation".into(),location:Some(format!("page:{}/block:{}",page.number,block.ordinal+1)),message:"Translation is rendered as a non-destructive raster overlay; review complex backgrounds.".into()});
+            warnings.push(DocumentWarning{code:"rasterizedPage".into(),location:Some(format!("page:{}",page.number)),message:"Complex or scanned page was rebuilt as a bounded raster while links and annotations were preserved.".into()});
+            for block in &effective_blocks {
+                if confidence_for(segments, page.number, block.ordinal).is_some_and(|v| v < 0.70) {
+                    warnings.push(DocumentWarning {
+                        code: "lowConfidenceOcr".into(),
+                        location: Some(format!("page:{}/ocr:{}", page.number, block.ordinal + 1)),
+                        message: "OCR confidence is low; review this translated block.".into(),
+                    });
+                }
+            }
+        } else {
+            for block in &effective_blocks {
+                let part = format!("page:{}", page.number);
+                let Some(text) = by_location.get(&(&*part, block.ordinal)).copied() else {
+                    continue;
+                };
+                if text.is_empty() {
+                    continue;
+                }
+                let pixel_w = (block.bounds[2] * page.width * 2.0)
+                    .round()
+                    .clamp(8.0, 4096.0) as u32;
+                let pixel_h = (block.bounds[3] * page.height * 2.0)
+                    .round()
+                    .clamp(8.0, 2048.0) as u32;
+                let rendered = render_text(text, pixel_w, pixel_h, options.pdf_fit);
+                let mut image = Stream::new(
+                    dictionary! {"Type"=>"XObject","Subtype"=>"Image","Width"=>pixel_w as i64,"Height"=>pixel_h as i64,"ColorSpace"=>"DeviceRGB","BitsPerComponent"=>8},
+                    rendered.rgb,
+                );
+                image.compress().map_err(|_| DocumentError::Io)?;
+                let image_id = doc.add_object(image);
+                let name = format!("SC{}", block.ordinal);
+                xobjects.set(name.as_bytes().to_vec(), Object::Reference(image_id));
+                let x = page.crop_x + block.bounds[0] * page.width;
+                let h = block.bounds[3] * page.height;
+                let w = block.bounds[2] * page.width;
+                let y = page.crop_y + page.height - block.bounds[1] * page.height - h;
+                operations.extend([
+                    Operation::new("q", vec![]),
+                    Operation::new(
+                        "cm",
+                        vec![w.into(), 0.into(), 0.into(), h.into(), x.into(), y.into()],
+                    ),
+                    Operation::new("Do", vec![Object::Name(name.into_bytes())]),
+                    Operation::new("Q", vec![]),
+                ]);
+                warnings.push(DocumentWarning{code:"backgroundApproximation".into(),location:Some(format!("page:{}/block:{}",page.number,block.ordinal+1)),message:"Translation is rendered as a non-destructive raster overlay; review complex backgrounds.".into()});
+                if rendered.overflow {
+                    warnings.push(DocumentWarning {
+                        code: "textOverflow".into(),
+                        location: Some(format!("page:{}/block:{}", page.number, block.ordinal + 1)),
+                        message: "Translated text could not fit at the minimum readable size."
+                            .into(),
+                    });
+                }
+                if block.font_hint.is_some() || text.chars().any(|c| c as u32 > 0x2ff) {
+                    warnings.push(DocumentWarning {
+                        code: "fontSubstitution".into(),
+                        location: Some(format!("page:{}/block:{}", page.number, block.ordinal + 1)),
+                        message: "Translation used bundled or operating-system fallback glyphs."
+                            .into(),
+                    });
+                }
+                if confidence_for(segments, page.number, block.ordinal).is_some_and(|v| v < 0.70) {
+                    warnings.push(DocumentWarning {
+                        code: "lowConfidenceOcr".into(),
+                        location: Some(format!("page:{}/ocr:{}", page.number, block.ordinal + 1)),
+                        message: "OCR confidence is low; review this translated block.".into(),
+                    });
+                }
+            }
         }
         if operations.is_empty() {
             continue;
@@ -121,13 +233,36 @@ pub fn rebuild(
             .map_err(|_| DocumentError::InvalidPackage)?;
         page_obj.set("Resources", Object::Reference(resources_id));
         let old = page_obj.get(b"Contents").ok().cloned();
-        let mut items = match old {
-            Some(Object::Array(v)) => v,
-            Some(v) => vec![v],
-            None => vec![],
+        let mut items = if rasterize {
+            Vec::new()
+        } else {
+            match old {
+                Some(Object::Array(v)) => v,
+                Some(v) => vec![v],
+                None => vec![],
+            }
         };
         items.push(Object::Reference(stream_id));
         page_obj.set("Contents", Object::Array(items));
+        if !options.preserve_annotations {
+            page_obj.remove(b"Annots");
+        }
+    }
+    checkpoint(
+        DocumentStage::Reflow,
+        inspection.pages.len(),
+        inspection.pages.len(),
+    );
+    for page in &inspection.pages {
+        if let Some(reason) = &page.fallback_reason {
+            warnings.push(DocumentWarning {
+                code: "unsupportedEncoding".into(),
+                location: Some(format!("page:{}", page.number)),
+                message: format!(
+                    "Native text extraction was unsafe ({reason}); local raster OCR was used."
+                ),
+            });
+        }
     }
     if inspection.has_signatures {
         warnings.push(DocumentWarning{code:"signatureInvalidated".into(),location:None,message:"The source contains a digital signature; the translated copy does not preserve signature validity.".into()});
@@ -135,9 +270,30 @@ pub fn rebuild(
     if inspection.has_forms {
         warnings.push(DocumentWarning{code:"interactiveFormPreserved".into(),location:None,message:"Interactive form objects are preserved but translated field values are not changed.".into()});
     }
+    if !options.preserve_annotations {
+        if let Ok(root) = doc.trailer.get(b"Root").and_then(Object::as_reference) {
+            if let Ok(catalog) = doc.get_object_mut(root).and_then(Object::as_dict_mut) {
+                catalog.remove(b"AcroForm");
+            }
+        }
+    }
     doc.prune_objects();
     doc.compress();
-    doc.save(output).map_err(|_| DocumentError::Io)?;
+    if cancelled.load(Ordering::Acquire) {
+        return Err(DocumentError::Cancelled);
+    }
+    checkpoint(DocumentStage::Save, 0, 1);
+    let file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(output)
+        .map_err(|_| DocumentError::OutputExists)?;
+    let mut writer = BufWriter::new(file);
+    doc.save_to(&mut writer).map_err(|_| DocumentError::Io)?;
+    writer.flush().map_err(|_| DocumentError::Io)?;
+    writer.get_ref().sync_all().map_err(|_| DocumentError::Io)?;
+    drop(writer);
+    checkpoint(DocumentStage::Save, 1, 1);
     let reopened = inspect(output, false)?;
     if reopened.pages.len() != inspection.pages.len() {
         return Err(DocumentError::ValidationFailed);
@@ -150,16 +306,52 @@ pub fn rebuild(
             return Err(DocumentError::ValidationFailed);
         }
     }
+    if options.preserve_annotations
+        && (reopened.has_annotations != inspection.has_annotations
+            || reopened.has_forms != inspection.has_forms
+            || reopened.attachment_count != inspection.attachment_count)
+    {
+        return Err(DocumentError::ValidationFailed);
+    }
     Ok(warnings)
 }
 
-fn render_text(text: &str, width: u32, height: u32) -> Vec<u8> {
+struct RenderedText {
+    rgb: Vec<u8>,
+    overflow: bool,
+}
+fn render_text(text: &str, width: u32, height: u32, fit: bool) -> RenderedText {
     let mut image = RgbImage::from_pixel(width, height, image::Rgb([255, 255, 255]));
     let mut fonts = FontSystem::new();
     fonts.db_mut().load_font_data(BUNDLED_FONT.to_vec());
     fonts.db_mut().load_system_fonts();
     let mut cache = SwashCache::new();
-    let size = (height as f32 * 0.62).clamp(8.0, 72.0);
+    let mut size = (height as f32 * 0.62).clamp(8., 72.);
+    if fit {
+        let mut low = 8.;
+        let mut high = size.max(8.);
+        for _ in 0..6 {
+            let candidate = (low + high) / 2.;
+            let mut probe = Buffer::new(&mut fonts, Metrics::new(candidate, candidate * 1.18));
+            probe.set_size(&mut fonts, Some(width as f32), Some(height as f32));
+            probe.set_text(
+                &mut fonts,
+                text,
+                &Attrs::new().family(Family::SansSerif),
+                Shaping::Advanced,
+            );
+            probe.shape_until_scroll(&mut fonts, false);
+            if probe
+                .layout_runs()
+                .all(|r| r.line_top + r.line_height <= height as f32 + 0.5)
+            {
+                size = candidate;
+                low = candidate
+            } else {
+                high = candidate
+            }
+        }
+    }
     let mut buffer = Buffer::new(&mut fonts, Metrics::new(size, size * 1.18));
     buffer.set_size(&mut fonts, Some(width as f32), Some(height as f32));
     buffer.set_text(
@@ -169,6 +361,9 @@ fn render_text(text: &str, width: u32, height: u32) -> Vec<u8> {
         Shaping::Advanced,
     );
     buffer.shape_until_scroll(&mut fonts, false);
+    let overflow = buffer
+        .layout_runs()
+        .any(|r| r.line_top + r.line_height > height as f32 + 0.5);
     buffer.draw(
         &mut fonts,
         &mut cache,
@@ -190,7 +385,10 @@ fn render_text(text: &str, width: u32, height: u32) -> Vec<u8> {
             }
         },
     );
-    image.into_raw()
+    RenderedText {
+        rgb: image.into_raw(),
+        overflow,
+    }
 }
 fn cloned_resources(doc: &Document, page_id: (u32, u16)) -> Dictionary {
     let Ok(page) = doc.get_object(page_id).and_then(Object::as_dict) else {
@@ -232,4 +430,17 @@ fn parse_ocr_block(segment: &Segment, page: u32) -> Option<super::PdfBlock> {
         bounds: [values[0], values[1], values[2], values[3]],
         font_hint: None,
     })
+}
+fn confidence_for(segments: &[Segment], page: u32, ordinal: usize) -> Option<f32> {
+    let part = format!("page:{page}");
+    let s = segments
+        .iter()
+        .find(|s| s.part == part && s.ordinal == ordinal && s.location.contains("/ocr:"))?;
+    s.location
+        .split('@')
+        .nth(1)?
+        .split(',')
+        .nth(4)?
+        .parse()
+        .ok()
 }

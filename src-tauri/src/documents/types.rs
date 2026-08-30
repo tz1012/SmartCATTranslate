@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::capture::DecodedImage;
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum DocumentFormat {
@@ -35,6 +37,7 @@ pub struct DocumentOptions {
     pub source_language: Option<String>,
     pub profile_id: Option<Uuid>,
     pub model: Option<String>,
+    pub quality: Option<crate::core::types::Quality>,
     pub pdf_force_ocr: bool,
     pub pdf_fit: bool,
     pub preserve_annotations: bool,
@@ -51,6 +54,7 @@ impl Default for DocumentOptions {
             source_language: None,
             profile_id: None,
             model: None,
+            quality: None,
             pdf_force_ocr: false,
             pdf_fit: true,
             preserve_annotations: true,
@@ -118,6 +122,19 @@ pub struct DocumentReport {
     pub resumed_from_stage: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum DocumentStage {
+    Inspect,
+    Extract,
+    Ocr,
+    Translate,
+    Reflow,
+    Save,
+    Validate,
+    Completed,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum DocumentError {
     #[error("unsupported document format")]
@@ -149,4 +166,6 @@ pub struct DocumentPlan {
     pub format: DocumentFormat,
     pub manifest: DocumentManifest,
     pub segments: Vec<Segment>,
+    pub pdf_rasters: std::collections::HashMap<u32, DecodedImage>,
+    pub resumed_from_stage: Option<String>,
 }

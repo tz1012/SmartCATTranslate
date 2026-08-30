@@ -263,3 +263,10 @@ OCR 경계: 사용자 이미지 픽셀은 Windows.Media.Ocr 또는 macOS Vision�
 OCR: Windows는 Windows.Data.Pdf, macOS는 PDFKit/CoreGraphics Objective-C bridge로 각 scanned/mixed page를 144DPI(72–300 clamp), 최대 8192px/80MP RGBA로 렌더한 뒤 기존 로컬 Windows.Media.Ocr 또는 Vision 어댑터에 전달한다. 운영체제 렌더러·언어 팩·OCR을 사용할 수 없으면 정상 번역 사본으로 가장하지 않고 typed `OcrUnavailable`로 실패한다.
 재조립: 원본 content/resources를 제거하지 않고 translated text를 cosmic-text와 OFL Noto/system fallback으로 raster shape한 XObject overlay로 추가한다. page size·rotation·annotations·attachments·forms를 최대한 보존하고 결과를 재열어 page/box/rotation을 확인한다. 복잡한 배경은 `backgroundApproximation`, 전자서명은 `signatureInvalidated`, 양식은 `interactiveFormPreserved`로 위치와 조치가 명확한 보고를 만든다.
 라이선스: PDFium은 다운로드·포함하지 않는다. Windows.Data.Pdf와 PDFKit/CoreGraphics는 각 OS 구성요소이고 lopdf 0.38.0은 Cargo.lock에 고정한다. Noto Sans variable font와 SIL Open Font License 1.1은 설치 번들 resource에 함께 포함한다.
+
+[D-043] PDF 불확실성 fallback·비덮어쓰기 발행·재개 연결점
+상태: 확정
+추출 경계: ToUnicode/font encoding과 누적 CTM/text matrix로 안전하게 복원할 수 있는 가로쓰기 text operator만 구조화한다. vertical font, clipping, Form XObject, 지원하지 않는 encoding과 replacement glyph는 잘못된 문자열을 번역하지 않고 해당 페이지를 bounded raster OCR로 전환하며 사유를 보고한다. 큰 이미지는 개수가 아니라 페이지 면적 비율로 판정하고 native/OCR block은 동일 좌표계의 IoU로 중복 제거한다.
+재조립 경계: CropBox 원점과 rotation을 page/display/OCR 사이에서 명시적으로 변환한다. 복잡·스캔 페이지는 최대 300DPI raster fallback을 사용하고 일반 페이지는 실제 fit 결과를 검사한다. low-confidence OCR, font substitution, background approximation, overflow와 raster fallback은 내용 없는 code와 위치로 경고한다. annotations/forms/attachments 보존 선택과 재열기 구조 검증을 결과 발행 전에 적용한다.
+발행 경계: 결과 partial은 create-new handle에 쓰고 flush/sync한 뒤 동일 volume hard link로 존재하지 않는 최종 이름에만 원자 발행한다. 오류 시 이번 작업이 만든 partial 또는 새 output만 제거하며 source나 기존 결과는 건드리지 않는다.
+진행·재개: inspect/extract/ocr/translate/reflow/save/validate/completed 단계와 결정적 unit ID를 event/checkpoint 경계로 제공한다. 취소는 OCR·재조립·저장 사이에도 검사한다. 내구 resume는 암호화 JobStore를 도입하는 history/recovery milestone이 권위 저장소를 제공할 때 `resumed_from_stage` 연결점을 사용하며, 그 전에는 프로세스 간 재개 완료를 주장하지 않는다.

@@ -105,6 +105,7 @@ pub fn run() {
             commands::capture::update_capture_block,
             commands::capture::export_translated_image,
             commands::documents::choose_document,
+            commands::documents::inspect_document_path,
             commands::documents::translate_document,
             commands::documents::cancel_document_translation,
             commands::documents::open_document_result,

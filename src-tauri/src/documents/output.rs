@@ -10,9 +10,17 @@ pub fn next_output_path(source: &Path, target_language: &str) -> Result<PathBuf,
     next_output_path_in(source, target_language, None)
 }
 
-pub fn next_output_path_in(source: &Path, target_language: &str, directory: Option<&Path>) -> Result<PathBuf, DocumentError> {
-    let parent = directory.or_else(|| source.parent()).ok_or(DocumentError::Io)?;
-    if !parent.is_dir() { return Err(DocumentError::Io); }
+pub fn next_output_path_in(
+    source: &Path,
+    target_language: &str,
+    directory: Option<&Path>,
+) -> Result<PathBuf, DocumentError> {
+    let parent = directory
+        .or_else(|| source.parent())
+        .ok_or(DocumentError::Io)?;
+    if !parent.is_dir() {
+        return Err(DocumentError::Io);
+    }
     let stem = source
         .file_stem()
         .and_then(|v| v.to_str())
@@ -59,10 +67,32 @@ pub fn publish_atomic(output: &Path, bytes: &[u8]) -> Result<(), DocumentError> 
             .and_then(|_| file.sync_all())
             .map_err(|_| DocumentError::Io)?;
         drop(file);
-        fs::rename(&partial, output).map_err(|_| DocumentError::Io)
+        publish_existing_partial(&partial, output)
     })();
     if result.is_err() {
         let _ = fs::remove_file(&partial);
     }
     result
+}
+
+pub fn publish_existing_partial(partial: &Path, output: &Path) -> Result<(), DocumentError> {
+    if output.exists() {
+        return Err(DocumentError::OutputExists);
+    }
+    fs::hard_link(partial, output).map_err(|_| {
+        if output.exists() {
+            DocumentError::OutputExists
+        } else {
+            DocumentError::Io
+        }
+    })?;
+    if let Err(error) = fs::remove_file(partial) {
+        let _ = fs::remove_file(output);
+        return Err(if error.kind() == std::io::ErrorKind::NotFound {
+            DocumentError::Io
+        } else {
+            DocumentError::Io
+        });
+    }
+    Ok(())
 }
