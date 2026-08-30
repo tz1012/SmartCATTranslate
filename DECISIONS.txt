@@ -193,7 +193,7 @@ macOS 경계: 접근성 권한이 이미 허용된 경우에만 `CGEventTapCreat
 [D-032] 네이티브 단축키 관찰기의 복구·건강 상태 경계
 상태: 확정
 등록 복구: Windows 직접 등록 시험은 전용 짧은 수명 스레드가 등록을 소유하고 RAII lease가 같은 식별자의 해제를 제한된 횟수로 재시도한다. 명시적 해제가 끝내 실패하면 `BackendError`로 반환하여 강제 지정할 수 없게 하며, 시험 스레드 종료가 운영체제의 스레드 소유 등록까지 제거한다. 등록 조합이나 키 값은 진단에 포함하지 않는다.
-종료 복구: Windows 관찰기는 별도 종료 이벤트와 완료 채널을 사용한다. 종료 신호 오류를 보존하면서도 완료가 확인되면 worker를 반드시 join하고, 완료되지 않으면 제한시간 뒤 생산 채널을 끊고 타입이 있는 종료 오류로 닫아 무기한 대기하지 않는다. 컨트롤러 worker도 제한된 수신 대기를 사용해 플랫폼이 sender를 잘못 보존한 경우 종료가 제한시간 안에 끝난다.
+종료 복구: Windows 관찰기는 별도 종료 이벤트와 완료 채널을 사용한다. 종료 신호 오류를 보존하면서도 완료가 확인되면 worker를 반드시 join하고, 완료되지 않으면 제한시간 뒤 생산 채널을 끊고 타입이 있는 종료 오류로 닫아 무기한 대기하지 않는다. 완료 채널 단절은 worker 종료로 분류하며 join panic을 구조화된 종료 오류로 보존하되 process-wide active flag는 finally-style로 반드시 해제한다. macOS도 같은 단절·join 오류 경계를 적용한다. 컨트롤러 worker도 제한된 수신 대기를 사용해 플랫폼이 sender를 잘못 보존한 경우 종료가 제한시간 안에 끝난다.
 키 정체성: Windows 저수준 후크는 virtual key뿐 아니라 scan code와 extended flag를 함께 정규화한다. 따라서 주 키보드 Enter/Equal과 NumpadEnter/NumpadEqual을 구분하고, Num Lock이 꺼진 숫자패드 방향·삽입·삭제 키도 전용 탐색 키와 구분하며 반복 상태를 이 결합 정체성으로 추적한다. 직접 등록 표현과 관찰 결과가 같은 키로 왕복되지 않는 조합은 현재 건강한 비소비 관찰기 경로로만 제공한다.
 관찰기 건강: macOS 이벤트 탭이 시간 초과 또는 사용자 입력으로 비활성화되면 callback에서 제한된 세 번만 재활성화를 시도하고 실제 활성 상태를 다시 확인한다. 회복하지 못하면 생산 채널을 끊고 run loop를 종료하며 `ObserverDisabled`를 반환한다. 살아 있는 것으로 표시한 채 조용히 입력을 잃는 상태를 허용하지 않는다.
 시작 원자성: Windows와 macOS 모두 process-wide active flag를 rollback guard로 획득한다. sender/키 상태 mutex, native handle, worker 시작 또는 준비 확인 중 어느 단계가 실패해도 guard가 active flag를 되돌려 다음 정상 시작을 막지 않는다. worker 종료와 제한시간 경합은 3상태 원자 handshake로 소유권을 넘겨, 이전 관찰기의 늦은 정리가 새 관찰기의 전역 상태를 지우지 못하게 한다.

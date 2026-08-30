@@ -623,3 +623,15 @@ TDD 및 검증
 - Windows 호스트의 전체 Tauri macOS 교차 검사는 Objective-C 컴파일러가 없어 의존성 빌드 단계에서 중단됐다. 대신 D 드라이브의 최소 검증 하네스가 실제 hotkeys와 macOS adapter 소스를 그대로 포함해 `aarch64-apple-darwin --tests` 타입 검사를 통과했다. 실제 macOS 실행 통과를 주장하지 않으며 arm64와 x86_64의 check/test 실패 폐쇄 관문은 CI 행렬에 유지했다.
 - 독립 최종 재검토는 Windows/macOS native resource 소유권, 선종료, 시작·종료 제한시간과 CAS 종료 handshake를 확인한 뒤 `READY — Critical 0 / Important 0`으로 승인했다.
 - 키 입력, 키 조합, 창 제목, 전체 실행 경로, 프로세스 식별자, 원문·번역문, 계정·인증 정보는 기록하지 않았다.
+
+[2026-08-30] 전역 단축키 Task 4 검토 수정 2 — worker 비정상 종료 뒤 재시작 복구
+
+구현
+- Windows와 macOS 관찰기는 완료 채널 단절을 worker 종료로 분류한다. worker join이 panic 오류를 반환해도 오류를 보존하면서 process-wide active flag와 소유 handle을 finally-style로 정리해 다음 시작이 영구 `AlreadyRunning`으로 막히지 않는다.
+
+TDD 및 검증
+- RED: 완료 sender를 끊고 panic하는 Windows worker 주입 시험에서 종료 오류 뒤 active flag가 남는 실패를 재현했다.
+- GREEN: 같은 주입 시험이 구조화된 `ShutdownFailed`를 유지하면서 active flag와 worker handle을 모두 정리했다. macOS에는 같은 계약의 cfg-isolated 회귀 시험을 추가했다.
+- Windows 집중 시험 11/11과 macOS arm64 테스트 타입 검사가 통과했다. 전체 기능 Rust는 210개 통과, 환경 의존 2개 제외, 실패 0개였고 전체 대상·전체 기능 엄격 Clippy와 자동 기록 16/16이 통과했다.
+- 독립 최종 재검토는 `READY — Critical 0 / Important 0`으로 승인했다.
+- 키 입력, 키 조합, 창 제목, 전체 실행 경로, 프로세스 식별자, 원문·번역문, 계정·인증 정보는 기록하지 않았다.

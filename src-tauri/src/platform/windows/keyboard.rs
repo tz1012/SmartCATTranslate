@@ -311,14 +311,14 @@ impl HotkeyObserver for WindowsObserver {
             Err(mpsc::TryRecvError::Empty) => false,
         };
         let result = if already_stopped {
-            if self
+            let join_failed = self
                 .worker
                 .take()
-                .is_some_and(|handle| handle.join().is_err())
-            {
+                .is_some_and(|handle| handle.join().is_err());
+            OBSERVER_ACTIVE.store(false, Ordering::Release);
+            if join_failed {
                 Err(PlatformError::ShutdownFailed)
             } else {
-                OBSERVER_ACTIVE.store(false, Ordering::Release);
                 Ok(())
             }
         } else {
@@ -368,7 +368,10 @@ where
     F: FnMut() -> Result<(), PlatformError>,
 {
     let signal_error = signal_stop().err();
-    let completed = done_receiver.recv_timeout(timeout).is_ok();
+    let completed = matches!(
+        done_receiver.recv_timeout(timeout),
+        Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected)
+    );
     let join_error = if completed {
         let failed = worker.take().is_some_and(|handle| handle.join().is_err());
         active.store(false, Ordering::Release);
@@ -829,6 +832,7 @@ mod tests {
         finish_observer_shutdown, native_key_to_chord, native_key_to_key,
         probe_registered_with_api, NativeKey, ObserverExitHandshake, RegistrationApi,
         WindowsKeyEventSource, WindowsObserver, WindowsRegistrationProbe, WindowsStopEvent,
+        OBSERVER_ACTIVE,
     };
 
     static OBSERVER_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -952,6 +956,30 @@ mod tests {
         };
 
         assert_eq!(observer.stop(), Ok(()));
+        assert!(observer.worker.is_none());
+    }
+
+    #[test]
+    fn observer_stop_releases_singleton_after_worker_panics() {
+        let _serial = OBSERVER_TEST_LOCK.lock().unwrap();
+        OBSERVER_ACTIVE.store(true, Ordering::Release);
+        let raw = unsafe { CreateEventW(ptr::null(), 1, 0, ptr::null()) };
+        assert!(!raw.is_null());
+        let (done_sender, done_receiver) = mpsc::sync_channel(1);
+        let worker = thread::spawn(move || {
+            drop(done_sender);
+            panic!("injected observer worker failure");
+        });
+        let mut observer = WindowsObserver {
+            stop_event: Arc::new(WindowsStopEvent(raw as usize)),
+            done_receiver: Some(done_receiver),
+            worker: Some(worker),
+            exit_handshake: Arc::new(ObserverExitHandshake::new()),
+            stopped: false,
+        };
+
+        assert_eq!(observer.stop(), Err(PlatformError::ShutdownFailed));
+        assert!(!OBSERVER_ACTIVE.load(Ordering::Acquire));
         assert!(observer.worker.is_none());
     }
 

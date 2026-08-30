@@ -178,7 +178,10 @@ impl KeyEventSource for MacKeyEventSource {
                 }))
             }
             Ok(Err(error)) => {
-                let completed = done_receiver.recv_timeout(STOP_TIMEOUT).is_ok();
+                let completed = matches!(
+                    done_receiver.recv_timeout(STOP_TIMEOUT),
+                    Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected)
+                );
                 if completed {
                     let _ = worker.join();
                     clear_worker_state();
@@ -200,7 +203,10 @@ impl KeyEventSource for MacKeyEventSource {
                         CFRunLoopWakeUp(run_loop.raw());
                     }
                 }
-                let completed = done_receiver.recv_timeout(STOP_TIMEOUT).is_ok();
+                let completed = matches!(
+                    done_receiver.recv_timeout(STOP_TIMEOUT),
+                    Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected)
+                );
                 if completed {
                     let _ = worker.join();
                     clear_worker_state();
@@ -246,7 +252,11 @@ impl HotkeyObserver for MacObserver {
                 CFRunLoopWakeUp(self.run_loop.raw());
             }
         }
-        let stopped = already_stopped || done_receiver.recv_timeout(STOP_TIMEOUT).is_ok();
+        let stopped = already_stopped
+            || matches!(
+                done_receiver.recv_timeout(STOP_TIMEOUT),
+                Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected)
+            );
         if !stopped {
             disconnect_event_sender();
             OBSERVER_HEALTHY.store(false, Ordering::Release);
@@ -255,12 +265,15 @@ impl HotkeyObserver for MacObserver {
             self.stopped = true;
             return Err(PlatformError::ShutdownFailed);
         }
-        if let Some(worker) = self.worker.take() {
-            worker.join().map_err(|_| PlatformError::ShutdownFailed)?;
-        }
+        let join_failed = self
+            .worker
+            .take()
+            .is_some_and(|worker| worker.join().is_err());
         OBSERVER_ACTIVE.store(false, Ordering::Release);
         self.stopped = true;
-        if OBSERVER_FAILURES.load(Ordering::Acquire) != self.failure_generation {
+        if join_failed {
+            Err(PlatformError::ShutdownFailed)
+        } else if OBSERVER_FAILURES.load(Ordering::Acquire) != self.failure_generation {
             Err(PlatformError::ObserverDisabled)
         } else {
             Ok(())
@@ -626,11 +639,14 @@ mod tests {
 
     use super::{
         is_tap_disabled_event, mac_keycode, recover_disabled_tap, trigger_is_representable,
-        CFRetain, CFRunLoopGetCurrent, MacObserver, RetainedRunLoop, OBSERVER_FAILURES,
+        CFRetain, CFRunLoopGetCurrent, MacObserver, RetainedRunLoop, OBSERVER_ACTIVE,
+        OBSERVER_FAILURES,
     };
     use crate::hotkeys::{
-        parse_trigger, HotkeyObserver, KeyCode, ObserverExitHandshake, PhysicalKey,
+        parse_trigger, HotkeyObserver, KeyCode, ObserverExitHandshake, PhysicalKey, PlatformError,
     };
+
+    static OBSERVER_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn maps_physical_c_key_without_observing_text() {
@@ -673,6 +689,7 @@ mod tests {
 
     #[test]
     fn observer_can_join_worker_that_exited_before_stop_without_a_stale_run_loop_call() {
+        let _serial = OBSERVER_TEST_LOCK.lock().unwrap();
         let native = unsafe { CFRunLoopGetCurrent() };
         unsafe { CFRetain(native) };
         let run_loop = Arc::new(RetainedRunLoop(native as usize));
@@ -693,6 +710,32 @@ mod tests {
         };
 
         assert_eq!(observer.stop(), Ok(()));
+        assert!(observer.worker.is_none());
+    }
+
+    #[test]
+    fn observer_stop_releases_singleton_after_worker_panics() {
+        let _serial = OBSERVER_TEST_LOCK.lock().unwrap();
+        OBSERVER_ACTIVE.store(true, Ordering::Release);
+        let native = unsafe { CFRunLoopGetCurrent() };
+        unsafe { CFRetain(native) };
+        let run_loop = Arc::new(RetainedRunLoop(native as usize));
+        let (done_sender, done_receiver) = mpsc::sync_channel(1);
+        let worker = thread::spawn(move || {
+            drop(done_sender);
+            panic!("injected observer worker failure");
+        });
+        let mut observer = MacObserver {
+            run_loop,
+            failure_generation: OBSERVER_FAILURES.load(Ordering::Acquire),
+            done_receiver: Some(done_receiver),
+            worker: Some(worker),
+            exit_handshake: Arc::new(ObserverExitHandshake::new()),
+            stopped: false,
+        };
+
+        assert_eq!(observer.stop(), Err(PlatformError::ShutdownFailed));
+        assert!(!OBSERVER_ACTIVE.load(Ordering::Acquire));
         assert!(observer.worker.is_none());
     }
 }
