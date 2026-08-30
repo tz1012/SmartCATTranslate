@@ -10,6 +10,7 @@ pub mod app_state;
 pub mod codex;
 pub mod commands;
 pub mod core;
+pub mod hotkeys;
 pub mod settings;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
