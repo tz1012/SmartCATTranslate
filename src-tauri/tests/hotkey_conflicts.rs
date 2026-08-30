@@ -263,6 +263,45 @@ fn matches_vscode_identity_without_falling_back_after_a_bundle_mismatch() {
 }
 
 #[test]
+fn matches_macos_deepl_bundle_for_translation_and_improvement_shortcuts() {
+    // Mutation caught: leaving the authoritative bundle ID empty or omitting the Mac improve row.
+    let catalog = ShortcutCatalog::from_embedded(date()).unwrap();
+    let deepl = RunningApps(vec![AppIdentity::new(
+        Some("DeepL"),
+        Some("com.linguee.DeepLCopyTranslator"),
+    )
+    .unwrap()]);
+
+    for (trigger, status, feature) in [
+        (
+            "Meta+C, C",
+            RegistrationProbeStatus::AvailableViaObserver,
+            "선택한 텍스트 번역",
+        ),
+        (
+            "Ctrl+Meta+C",
+            RegistrationProbeStatus::Available,
+            "선택한 텍스트 개선",
+        ),
+    ] {
+        let probe = SelectiveProbe::with_status(trigger, status);
+        let report = analyzer(Platform::Macos, &catalog, &probe, &deepl)
+            .analyze(&parse_trigger(trigger).unwrap());
+        assert_eq!(report.level, ConflictLevel::Possible, "{trigger}");
+        assert!(!report.registration_allowed(false), "{trigger}");
+        assert!(report.causes.iter().any(|cause| {
+            cause.application.as_deref() == Some("DeepL")
+                && cause.feature.as_deref() == Some(feature)
+                && cause.source_url.as_deref()
+                    == Some(
+                        "https://support.deepl.com/hc/en-us/articles/360020613059-Use-DeepL-shortcuts-for-desktop-apps",
+                    )
+                && cause.verified_at.as_deref() == Some(AS_OF)
+        }));
+    }
+}
+
+#[test]
 fn sequence_catalog_blocks_only_full_containment_and_advises_on_a_strict_prefix() {
     // Mutation caught: symmetric overlap that blocks one prefix chord or an unrelated lead-in.
     let catalog = ShortcutCatalog::from_embedded(date()).unwrap();
@@ -582,7 +621,7 @@ fn embedded_catalog_has_a_bounded_schema_version_and_verified_hash() {
 
     let catalog = ShortcutCatalog::from_embedded(date()).unwrap();
     assert_eq!(catalog.schema_version(), 1);
-    assert_eq!(catalog.catalog_version(), "2026.08.30.3");
+    assert_eq!(catalog.catalog_version(), "2026.08.30.4");
     assert_eq!(catalog.sha256(), format!("{:x}", Sha256::digest(bytes)));
     assert!(catalog.entries().len() >= 13);
     let powerpoint = catalog

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "catalogVersion": "2026.08.30.3",
+  "catalogVersion": "2026.08.30.4",
   "entries": [
     {
       "platform": "windows",
@@ -150,9 +150,20 @@
       "kind": "application",
       "application": "DeepL",
       "processNames": ["DeepL"],
-      "bundleIds": [],
+      "bundleIds": ["com.linguee.DeepLCopyTranslator"],
       "trigger": "Meta+C, C",
       "feature": "선택한 텍스트 번역",
+      "sourceUrl": "https://support.deepl.com/hc/en-us/articles/360020613059-Use-DeepL-shortcuts-for-desktop-apps",
+      "verifiedAt": "2026-08-30"
+    },
+    {
+      "platform": "macos",
+      "kind": "application",
+      "application": "DeepL",
+      "processNames": ["DeepL"],
+      "bundleIds": ["com.linguee.DeepLCopyTranslator"],
+      "trigger": "Ctrl+Meta+C",
+      "feature": "선택한 텍스트 개선",
       "sourceUrl": "https://support.deepl.com/hc/en-us/articles/360020613059-Use-DeepL-shortcuts-for-desktop-apps",
       "verifiedAt": "2026-08-30"
     },
