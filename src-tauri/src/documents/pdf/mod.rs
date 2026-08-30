@@ -26,7 +26,7 @@ pub async fn append_native_ocr(
     language_hints: &[String],
     force_ocr: bool,
     cancelled: &AtomicBool,
-    checkpoint: &(dyn Fn(&DocumentCheckpoint) + Sync),
+    checkpoint: &(dyn Fn(&DocumentCheckpoint) -> Result<(), DocumentError> + Sync),
 ) -> Result<(), DocumentError> {
     if plan.format != crate::documents::DocumentFormat::Pdf {
         return Ok(());
@@ -51,7 +51,7 @@ pub async fn append_native_ocr(
             spool,
             0,
             &[],
-        );
+        )?;
         let image = load_or_render_page(&plan.source, page, spool).await?;
         if !matches!(page.kind, PdfPageKind::Scanned | PdfPageKind::Mixed) {
             continue;
@@ -116,7 +116,7 @@ pub async fn append_native_ocr(
         spool,
         0,
         &[],
-    );
+    )?;
     plan.manifest.segment_count = plan.segments.len();
     Ok(())
 }
@@ -337,7 +337,7 @@ fn available_space(_: &Path) -> Option<u64> {
 }
 
 pub fn emit_checkpoint(
-    callback: &(dyn Fn(&DocumentCheckpoint) + Sync),
+    callback: &(dyn Fn(&DocumentCheckpoint) -> Result<(), DocumentError> + Sync),
     source_fingerprint: &str,
     stage: DocumentStage,
     stable_unit_id: String,
@@ -346,7 +346,7 @@ pub fn emit_checkpoint(
     spool: &PdfRasterSpool,
     completed_batch_cursor: usize,
     translated_result_refs: &[String],
-) {
+) -> Result<(), DocumentError> {
     let mut raster_refs = spool.refs.values().cloned().collect::<Vec<_>>();
     raster_refs.sort();
     callback(&DocumentCheckpoint {
@@ -358,7 +358,7 @@ pub fn emit_checkpoint(
         completed_batch_cursor,
         raster_refs,
         translated_result_refs: translated_result_refs.to_vec(),
-    });
+    })
 }
 
 pub async fn validate_rendered_output(
@@ -366,7 +366,7 @@ pub async fn validate_rendered_output(
     path: &Path,
     inspection: &PdfInspection,
     cancelled: &AtomicBool,
-    checkpoint: &(dyn Fn(&DocumentCheckpoint) + Sync),
+    checkpoint: &(dyn Fn(&DocumentCheckpoint) -> Result<(), DocumentError> + Sync),
     source_fingerprint: &str,
     completed_batch_cursor: usize,
     translated_result_refs: &[String],
@@ -389,14 +389,14 @@ pub async fn validate_rendered_output(
         emit_checkpoint(
             checkpoint,
             source_fingerprint,
-            DocumentStage::Validate,
-            format!("page:{}", expected.number),
+            DocumentStage::Save,
+            format!("save:verified-page:{}", expected.number),
             index + 1,
             inspection.pages.len(),
             &empty_spool,
             completed_batch_cursor,
             translated_result_refs,
-        );
+        )?;
     }
     Ok(())
 }

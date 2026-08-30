@@ -10,7 +10,7 @@
     "records:add": "node scripts/record-change.mjs",
     "records:check": "node scripts/check-records.mjs",
     "records:test": "node --test scripts/check-records.test.mjs scripts/record-change.test.mjs",
-    "privacy:check": "node scripts/scan-sensitive-logs.mjs test-results/logs PROJECT_LOG.txt DECISIONS.txt CHANGELOG.md RECORDING_POLICY.txt",
+    "privacy:check": "node scripts/scan-sensitive-logs.mjs scripts/fixtures/captured-logs PROJECT_LOG.txt DECISIONS.txt CHANGELOG.md RECORDING_POLICY.txt",
     "runtime:pin": "node scripts/pin-codex-runtime.mjs",
     "runtime:pin:test": "node --test scripts/pin-codex-runtime.test.mjs",
     "runtime:build": "node scripts/build-smartcat-codex-runtime.mjs",

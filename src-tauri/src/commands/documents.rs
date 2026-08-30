@@ -11,7 +11,10 @@ use crate::{
         settings::open_store,
         translation::{TranslationEvent, TranslationEventSink},
     },
-    core::types::{GlossaryMapping, TranslationMode, TranslationModel, TranslationRequest},
+    core::{
+        diagnostics::{DiagnosticEvent, DiagnosticEventName, DiagnosticOutcome, JobKind},
+        types::{GlossaryMapping, TranslationMode, TranslationModel, TranslationRequest},
+    },
     documents::{
         self,
         translate::{batches, finish_batch, prepare_batch},
@@ -19,7 +22,7 @@ use crate::{
         DocumentResumeRequest, DocumentRetentionPayload, DocumentStage, PdfRasterSpool,
         TranslatedSegment,
     },
-    storage::{CanonicalTranslationOptions, DocumentRecoveryContext},
+    storage::{CanonicalTranslationOptions, CleanupService, DocumentRecoveryContext, JobStore},
 };
 use zeroize::Zeroizing;
 
@@ -107,6 +110,7 @@ pub async fn translate_document(
     let secret = options.secret;
     let target_language = options.target_language.clone();
     let recovery_context = document_recovery_context(&app, &source_path, &options).await?;
+    let resume_record_id = resume.as_ref().map(|value| value.record_id.clone());
     let resume = resume
         .map(|request| {
             if request.option_hash != recovery_context.option_hash {
@@ -116,17 +120,20 @@ pub async fn translate_document(
                 .ok_or_else(|| "document_resume_record_unavailable".to_owned())
         })
         .transpose()?;
-    let jobs_root = document_jobs_root(&app)?;
-    let job_root = jobs_root.join(job_id.simple().to_string());
-    if std::fs::create_dir_all(&job_root).is_err() {
-        cleanup_job_root(&jobs_root, &job_root);
-        return Err("document_io_failed".to_owned());
-    }
-    set_private_permissions(&jobs_root, true);
+    let cleanup = app.state::<CleanupService>();
+    let job_root = cleanup
+        .create_job_root(&job_id.simple().to_string())
+        .map_err(|_| "document_io_failed".to_owned())?;
     set_private_permissions(&job_root, true);
     let cancelled = jobs.begin(job_id);
-    let latest_checkpoint = Arc::new(Mutex::new(None));
     let translated_results = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    DiagnosticEvent::new(
+        DiagnosticEventName::JobLifecycle,
+        DiagnosticOutcome::Started,
+    )
+    .with_job_kind(JobKind::Document)
+    .with_stage("queued")
+    .emit();
     let outcome = translate_document_inner(
         &app,
         &state,
@@ -136,13 +143,20 @@ pub async fn translate_document(
         options,
         resume,
         &job_root,
-        &latest_checkpoint,
         &translated_results,
+        &recovery_context,
+        secret,
     )
     .await;
     jobs.finish(job_id);
     match &outcome {
         Ok(report) => {
+            if let Some(store) = app.try_state::<Arc<JobStore>>() {
+                let _ = store.delete(&job_id.simple().to_string());
+                if let Some(record_id) = &resume_record_id {
+                    let _ = store.delete(record_id);
+                }
+            }
             if let Some(history) = app.try_state::<Arc<crate::storage::HistoryStore>>() {
                 let _ = history.save(crate::storage::NewHistoryRecord {
                     kind: "document".to_owned(),
@@ -171,6 +185,13 @@ pub async fn translate_document(
                     report: report.clone(),
                 },
             );
+            DiagnosticEvent::new(
+                DiagnosticEventName::JobLifecycle,
+                DiagnosticOutcome::Succeeded,
+            )
+            .with_job_kind(JobKind::Document)
+            .with_stage("completed")
+            .emit();
         }
         Err(code) => {
             let _ = app.emit(
@@ -181,31 +202,24 @@ pub async fn translate_document(
                     location: None,
                 },
             );
+            let diagnostic_outcome = if code == "document_cancelled" {
+                DiagnosticOutcome::Cancelled
+            } else {
+                DiagnosticOutcome::Failed
+            };
+            DiagnosticEvent::new(DiagnosticEventName::JobLifecycle, diagnostic_outcome)
+                .with_job_kind(JobKind::Document)
+                .with_error_code(code)
+                .emit();
         }
     }
     let retryable = outcome
         .as_ref()
         .err()
         .is_some_and(|code| retryable_document_error(code));
-    if !secret && retryable {
-        if let Some(mut checkpoint) = latest_checkpoint
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone()
-        {
-            checkpoint.raster_refs.clear();
-            let token = Uuid::new_v4().simple().to_string();
-            let retained_copy = translated_results
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clone();
-            jobs.request_retention(
-                job_id,
-                token,
-                checkpoint,
-                retained_copy,
-                recovery_context.clone(),
-            );
+    if secret || !retryable {
+        if let Some(store) = app.try_state::<Arc<JobStore>>() {
+            let _ = store.delete(&job_id.simple().to_string());
         }
     }
     documents::wipe_translated_results(
@@ -213,7 +227,7 @@ pub async fn translate_document(
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()),
     );
-    cleanup_job_root(&jobs_root, &job_root);
+    let _ = cleanup.on_job_complete(&job_id.simple().to_string());
     outcome
 }
 
@@ -226,8 +240,9 @@ async fn translate_document_inner(
     options: DocumentOptions,
     resume: Option<DocumentRetentionPayload>,
     job_root: &std::path::Path,
-    latest_checkpoint: &Arc<Mutex<Option<DocumentCheckpoint>>>,
     retained_results: &Arc<Mutex<std::collections::HashMap<String, TranslatedSegment>>>,
+    recovery_context: &DocumentRecoveryContext,
+    secret: bool,
 ) -> Result<DocumentReport, String> {
     let mut plan = documents::inspect_document(std::path::Path::new(&source_path), &options)
         .map_err(error_code)?;
@@ -261,8 +276,11 @@ async fn translate_document_inner(
             0,
             &[],
         ),
-        latest_checkpoint,
-    );
+        retained_results,
+        recovery_context,
+        secret,
+    )
+    .map_err(error_code)?;
     emit(
         app,
         job_id,
@@ -275,8 +293,11 @@ async fn translate_document_inner(
             0,
             &[],
         ),
-        latest_checkpoint,
-    );
+        retained_results,
+        recovery_context,
+        secret,
+    )
+    .map_err(error_code)?;
     let settings = open_store(app)?
         .load()
         .await
@@ -299,31 +320,29 @@ async fn translate_document_inner(
             &hints,
             options.pdf_force_ocr,
             cancelled,
-            &|value| emit(app, job_id, value.clone(), latest_checkpoint),
+            &|value| {
+                emit(
+                    app,
+                    job_id,
+                    value.clone(),
+                    retained_results,
+                    recovery_context,
+                    secret,
+                )
+            },
         )
         .await
         .map_err(error_code)?;
     }
-    let glossary = settings
-        .glossary
-        .iter()
-        .filter(|e| {
-            !e.protect_only
-                && e.target_language
-                    .eq_ignore_ascii_case(&options.target_language)
-        })
-        .map(|e| GlossaryMapping {
-            source_term: e.source_term.clone(),
-            target_term: e.target_term.clone(),
-        })
-        .collect::<Vec<_>>();
-    let mut protected = saved.profile.protected_terms.clone();
-    protected.extend(
-        settings
-            .glossary
-            .iter()
-            .filter(|e| e.protect_only)
-            .map(|e| e.source_term.clone()),
+    let effective_source_language = options
+        .source_language
+        .as_deref()
+        .or(saved.profile.source_language.as_deref());
+    let (glossary, protected) = applied_document_glossary(
+        &settings,
+        &saved,
+        effective_source_language,
+        &options.target_language,
     );
     let total = batches(&plan.segments).len();
     let resume_state = resume
@@ -364,8 +383,11 @@ async fn translate_document_inner(
                 start_cursor,
                 &refs,
             ),
-            latest_checkpoint,
-        );
+            retained_results,
+            recovery_context,
+            secret,
+        )
+        .map_err(error_code)?;
     }
     let all_batches = batches(&plan.segments);
     let manager = state
@@ -392,8 +414,11 @@ async fn translate_document_inner(
                 index,
                 &translated_refs,
             ),
-            latest_checkpoint,
-        );
+            retained_results,
+            recovery_context,
+            secret,
+        )
+        .map_err(error_code)?;
         let prepared_batch =
             prepare_batch(segment_batch, &protected, job_id).map_err(error_code)?;
         let mut profile = saved.profile.clone();
@@ -464,8 +489,11 @@ async fn translate_document_inner(
                 index + 1,
                 &translated_refs,
             ),
-            latest_checkpoint,
-        );
+            retained_results,
+            recovery_context,
+            secret,
+        )
+        .map_err(error_code)?;
     }
     let report = documents::pipeline::rebuild_document_checked(
         &plan,
@@ -473,7 +501,16 @@ async fn translate_document_inner(
         &options,
         job_id,
         cancelled,
-        &|value| emit(app, job_id, value.clone(), latest_checkpoint),
+        &|value| {
+            emit(
+                app,
+                job_id,
+                value.clone(),
+                retained_results,
+                recovery_context,
+                secret,
+            )
+        },
     )
     .map_err(error_code)?;
     if plan.format == crate::documents::DocumentFormat::Pdf {
@@ -484,7 +521,16 @@ async fn translate_document_inner(
             std::path::Path::new(&report.output_path),
             &inspection,
             cancelled,
-            &|value| emit(app, job_id, value.clone(), latest_checkpoint),
+            &|value| {
+                emit(
+                    app,
+                    job_id,
+                    value.clone(),
+                    retained_results,
+                    recovery_context,
+                    secret,
+                )
+            },
             &plan.manifest.source_hash,
             total,
             &translated_refs(&translated),
@@ -510,8 +556,11 @@ async fn translate_document_inner(
                 .map(|value| format!("segment:{}", value.id))
                 .collect::<Vec<_>>(),
         ),
-        latest_checkpoint,
-    );
+        retained_results,
+        recovery_context,
+        secret,
+    )
+    .map_err(error_code)?;
     Ok(report)
 }
 
@@ -533,10 +582,20 @@ impl TranslationEventSink for DocumentSink {
 
 #[tauri::command]
 pub fn cancel_document_translation(
+    app: tauri::AppHandle,
     jobs: tauri::State<'_, Arc<DocumentJobStore>>,
     job_id: Uuid,
 ) -> bool {
-    jobs.cancel(job_id)
+    let cancelled = jobs.cancel(job_id);
+    if cancelled {
+        if let Some(store) = app.try_state::<Arc<JobStore>>() {
+            let _ = store.delete(&job_id.simple().to_string());
+        }
+        if let Some(cleanup) = app.try_state::<CleanupService>() {
+            let _ = cleanup.on_job_cancel(&job_id.simple().to_string());
+        }
+    }
+    cancelled
 }
 
 async fn document_recovery_context(
@@ -557,19 +616,12 @@ async fn document_recovery_context(
         .source_language
         .clone()
         .or_else(|| profile.profile.source_language.clone());
-    let glossary = settings
-        .glossary
-        .iter()
-        .filter(|entry| {
-            source_language
-                .as_deref()
-                .is_none_or(|source| entry.source_language.eq_ignore_ascii_case(source))
-                && entry
-                    .target_language
-                    .eq_ignore_ascii_case(&options.target_language)
-        })
-        .cloned()
-        .collect::<Vec<_>>();
+    let (glossary, protected_terms) = applied_document_glossary(
+        &settings,
+        profile,
+        source_language.as_deref(),
+        &options.target_language,
+    );
     let snapshot = CanonicalTranslationOptions {
         source_language,
         target_language: options.target_language.clone(),
@@ -581,7 +633,10 @@ async fn document_recovery_context(
         .map_err(|_| "document_options_invalid")?,
         quality: serde_json::to_value(options.quality.as_ref().unwrap_or(&profile.profile.quality))
             .map_err(|_| "document_options_invalid")?,
-        glossary: serde_json::to_value(glossary).map_err(|_| "document_options_invalid")?,
+        glossary: serde_json::json!({
+            "mappings": glossary,
+            "protectedTerms": protected_terms,
+        }),
         format_options: serde_json::to_value(options).map_err(|_| "document_options_invalid")?,
     };
     let option_hash = snapshot
@@ -594,11 +649,44 @@ async fn document_recovery_context(
         .to_owned();
     Ok(DocumentRecoveryContext {
         source_path: source_path.to_owned(),
+        source_fingerprint: crate::documents::pipeline::hash_bytes(
+            &std::fs::read(source_path).map_err(|_| "document_source_changed".to_owned())?,
+        ),
         display_name,
         options: options.clone(),
         option_snapshot: snapshot,
         option_hash,
     })
+}
+
+fn applied_document_glossary(
+    settings: &crate::settings::types::AppSettings,
+    saved: &crate::settings::types::SavedProfile,
+    source_language: Option<&str>,
+    target_language: &str,
+) -> (Vec<GlossaryMapping>, Vec<String>) {
+    let applicable = settings.glossary.iter().filter(|entry| {
+        source_language.is_none_or(|source| entry.source_language.eq_ignore_ascii_case(source))
+            && entry.target_language.eq_ignore_ascii_case(target_language)
+    });
+    let mut mappings = Vec::new();
+    let mut protected_terms = saved.profile.protected_terms.clone();
+    for entry in applicable {
+        if entry.protect_only {
+            if !protected_terms
+                .iter()
+                .any(|value| value == &entry.source_term)
+            {
+                protected_terms.push(entry.source_term.clone());
+            }
+        } else {
+            mappings.push(GlossaryMapping {
+                source_term: entry.source_term.clone(),
+                target_term: entry.target_term.clone(),
+            });
+        }
+    }
+    (mappings, protected_terms)
 }
 
 #[tauri::command]
@@ -671,19 +759,38 @@ pub fn choose_document_output_directory(app: tauri::AppHandle) -> Option<String>
 fn emit(
     app: &tauri::AppHandle,
     job_id: Uuid,
-    checkpoint: DocumentCheckpoint,
-    latest_checkpoint: &Arc<Mutex<Option<DocumentCheckpoint>>>,
-) {
+    mut checkpoint: DocumentCheckpoint,
+    retained_results: &Arc<Mutex<std::collections::HashMap<String, TranslatedSegment>>>,
+    recovery_context: &DocumentRecoveryContext,
+    secret: bool,
+) -> Result<(), documents::types::DocumentError> {
     let resumable = checkpoint.stage != DocumentStage::Translate
         || checkpoint.completed_batch_cursor == 0
         || checkpoint.stable_unit_id.ends_with(":completed");
     if resumable {
-        *latest_checkpoint.lock().unwrap_or_else(|p| p.into_inner()) = Some(checkpoint.clone());
+        checkpoint.raster_refs.clear();
+        let translated_results = retained_results
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        app.try_state::<Arc<JobStore>>()
+            .ok_or(documents::types::DocumentError::Io)?
+            .checkpoint_document(
+                job_id,
+                recovery_context,
+                &DocumentRetentionPayload {
+                    checkpoint: checkpoint.clone(),
+                    translated_results,
+                },
+                secret,
+            )
+            .map_err(|_| documents::types::DocumentError::Io)?;
     }
     let _ = app.emit(
         "document-job",
         DocumentJobEvent::Progress { job_id, checkpoint },
     );
+    Ok(())
 }
 
 fn checkpoint(
@@ -713,30 +820,6 @@ fn checkpoint(
     }
 }
 
-fn cleanup_job_root(root: &std::path::Path, job_root: &std::path::Path) {
-    let Ok(root) = root.canonicalize() else {
-        return;
-    };
-    let Ok(job_root) = job_root.canonicalize() else {
-        return;
-    };
-    if job_root.parent() == Some(root.as_path())
-        && job_root
-            .file_name()
-            .and_then(|value| value.to_str())
-            .is_some_and(|value| value.len() == 32 && value.chars().all(|c| c.is_ascii_hexdigit()))
-    {
-        let _ = std::fs::remove_dir_all(job_root);
-    }
-}
-
-fn document_jobs_root(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    app.path()
-        .app_data_dir()
-        .map(|path| path.join("document-jobs"))
-        .map_err(|_| "document_io_failed".to_owned())
-}
-
 fn translated_refs(translated: &[TranslatedSegment]) -> Vec<String> {
     translated
         .iter()
@@ -759,14 +842,14 @@ fn remember_translated(
 }
 
 #[cfg(unix)]
-fn set_private_permissions(path: &std::path::Path, directory: bool) {
+pub(crate) fn set_private_permissions(path: &std::path::Path, directory: bool) {
     use std::os::unix::fs::PermissionsExt;
     let mode = if directory { 0o700 } else { 0o600 };
     let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
 }
 
 #[cfg(windows)]
-fn set_private_permissions(path: &std::path::Path, directory: bool) {
+pub(crate) fn set_private_permissions(path: &std::path::Path, directory: bool) {
     use std::{ffi::OsString, os::windows::ffi::OsStrExt};
     use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Authorization::{

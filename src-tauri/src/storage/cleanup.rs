@@ -1,3 +1,4 @@
+use crate::core::diagnostics::{DiagnosticEvent, DiagnosticEventName, DiagnosticOutcome};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -33,6 +34,29 @@ impl CleanupService {
     pub fn on_start(&self) -> Result<CleanupStats, CleanupError> {
         self.purge(Duration::from_secs(7 * 24 * 60 * 60))
     }
+    pub fn create_job_root(&self, job_id: &str) -> Result<PathBuf, CleanupError> {
+        if !valid_job_id(job_id) {
+            return Err(CleanupError::OutsideRoot);
+        }
+        let candidate = self.root.join(job_id);
+        match fs::symlink_metadata(&candidate) {
+            Ok(metadata) if is_link_or_reparse(&metadata) || !metadata.is_dir() => {
+                return Err(CleanupError::OutsideRoot)
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                fs::create_dir(&candidate).map_err(|_| CleanupError::Unavailable)?;
+            }
+            Err(_) => return Err(CleanupError::Unavailable),
+        }
+        let canonical = candidate
+            .canonicalize()
+            .map_err(|_| CleanupError::Unavailable)?;
+        if canonical.parent() != Some(self.root.as_path()) {
+            return Err(CleanupError::OutsideRoot);
+        }
+        Ok(canonical)
+    }
     pub fn on_job_complete(&self, job_id: &str) -> Result<CleanupStats, CleanupError> {
         self.remove_job(job_id)
     }
@@ -52,7 +76,7 @@ impl CleanupService {
             }
             let metadata =
                 fs::symlink_metadata(entry.path()).map_err(|_| CleanupError::Unavailable)?;
-            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            if is_link_or_reparse(&metadata) || !metadata.is_dir() {
                 continue;
             }
             let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
@@ -62,6 +86,12 @@ impl CleanupService {
                 stats.byte_count += removed.byte_count;
             }
         }
+        DiagnosticEvent::new(
+            DiagnosticEventName::TemporaryCleanup,
+            DiagnosticOutcome::Succeeded,
+        )
+        .with_counts(stats.item_count, stats.byte_count)
+        .emit();
         Ok(stats)
     }
 
@@ -74,7 +104,7 @@ impl CleanupService {
             return Ok(CleanupStats::default());
         }
         let metadata = fs::symlink_metadata(&candidate).map_err(|_| CleanupError::Unavailable)?;
-        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        if is_link_or_reparse(&metadata) || !metadata.is_dir() {
             return Err(CleanupError::OutsideRoot);
         }
         let canonical = candidate
@@ -83,8 +113,14 @@ impl CleanupService {
         if canonical.parent() != Some(self.root.as_path()) {
             return Err(CleanupError::OutsideRoot);
         }
-        let stats = measure_without_symlinks(&canonical)?;
+        let stats = measure_confined(&canonical, &canonical)?;
         fs::remove_dir_all(&canonical).map_err(|_| CleanupError::Unavailable)?;
+        DiagnosticEvent::new(
+            DiagnosticEventName::TemporaryCleanup,
+            DiagnosticOutcome::Succeeded,
+        )
+        .with_counts(stats.item_count, stats.byte_count)
+        .emit();
         Ok(stats)
     }
 
@@ -93,17 +129,24 @@ impl CleanupService {
     }
 }
 
-fn measure_without_symlinks(path: &Path) -> Result<CleanupStats, CleanupError> {
+fn measure_confined(root: &Path, path: &Path) -> Result<CleanupStats, CleanupError> {
     let mut stats = CleanupStats::default();
     for entry in fs::read_dir(path).map_err(|_| CleanupError::Unavailable)? {
         let entry = entry.map_err(|_| CleanupError::Unavailable)?;
         let metadata = fs::symlink_metadata(entry.path()).map_err(|_| CleanupError::Unavailable)?;
-        if metadata.file_type().is_symlink() {
-            continue;
+        if is_link_or_reparse(&metadata) {
+            return Err(CleanupError::OutsideRoot);
+        }
+        let canonical = entry
+            .path()
+            .canonicalize()
+            .map_err(|_| CleanupError::Unavailable)?;
+        if canonical != root && !canonical.starts_with(root) {
+            return Err(CleanupError::OutsideRoot);
         }
         stats.item_count += 1;
         if metadata.is_dir() {
-            let nested = measure_without_symlinks(&entry.path())?;
+            let nested = measure_confined(root, &canonical)?;
             stats.item_count += nested.item_count;
             stats.byte_count += nested.byte_count
         } else {
@@ -111,6 +154,17 @@ fn measure_without_symlinks(path: &Path) -> Result<CleanupStats, CleanupError> {
         }
     }
     Ok(stats)
+}
+#[cfg(windows)]
+fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    metadata.file_type().is_symlink()
+        || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+#[cfg(not(windows))]
+fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
+    metadata.file_type().is_symlink()
 }
 fn valid_job_id(value: &str) -> bool {
     value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit())

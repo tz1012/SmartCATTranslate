@@ -838,3 +838,17 @@ TDD 및 검증
 
 남은 acceptance
 - OS keyring 잠금/삭제, 실 DB·WAL canary inspection, crash/restart resume, symlink/junction 공격, Windows/macOS 설치 앱은 이번 속도 우선 관문에서 실기하지 않았다.
+
+[2026-08-31] Tasks 1–4 검토 보강 1 — 실행 중 체크포인트·통합 private temp·보존 경계
+
+구현
+- 문서 inspect/extract/OCR/translate/rebuild/validate/save/completed와 각 완료 batch의 checkpoint를 진행 callback 안에서 동기적으로 암호화하고 SQLite transaction commit한 뒤에만 UI progress를 내보낸다. JobStage 순차 전이를 payload와 평문 비민감 stage에 함께 유지하며 시크릿 작업은 같은 checkpoint 경로의 프로세스 메모리 맵만 사용한다.
+- 성공·취소·비재시도 실패는 현재 recovery row와 시크릿 checkpoint를 삭제하고, 성공한 재개는 이전 opaque recovery row도 삭제한다. 문서와 capture 입력/spool은 CleanupService가 소유한 단일 per-user private-temp의 UUID 직계 자식으로 만들고 완료·취소 및 시작 시 7일 purge에서 제거한다. Windows reparse point와 모든 플랫폼 symlink를 삭제 대상으로 따라가지 않는다.
+- history는 시작·save·list에서 현재 기본 30일 보존을 적용하고 `(created_at,id)` cursor로 동시간 항목을 건너뛰지 않는다. migration v1/v2는 단일 transaction과 `user_version`으로 실행한다.
+- 실제 번역 요청과 옵션 snapshot이 동일한 canonical glossary/protected-term 선택 함수를 사용한다. OS key의 Base64 문자열·decoded buffer·key 이동 값은 성공과 오류 경로에서 Zeroizing으로 정리하며 keyring 실패는 내용·경로 없는 native 안내로 실패 폐쇄한다.
+- typed allowlist diagnostics를 history/job/cleanup/document/capture 생명주기에 연결했다. privacy scanner는 누락·초과 크기·symlink·빈 입력을 실패 처리하고 tracked sanitized captured-log를 실제 입력으로 검사한다. 복구 안내에는 checkpoint 나이를 표시한다.
+
+검증
+- 사용자 속도 지시에 따라 새 실패 테스트·실패 주입·전체 회귀·장시간 smoke는 추가하거나 실행하지 않았다.
+- Rust formatter PASS, `pnpm build` PASS(63 modules, Vite 1.27s).
+- warm D cache 확인 뒤 `cargo check --lib --offline`은 의존성 컴파일이 60초를 넘겨 사용자 지시에 따라 중단했다. 제품 compile 오류는 출력되기 전이었으므로 Rust 통과를 주장하지 않는다.

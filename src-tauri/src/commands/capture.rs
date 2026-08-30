@@ -1,9 +1,6 @@
-use std::{
-    path::PathBuf,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
-    },
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
 };
 
 use base64::Engine as _;
@@ -24,8 +21,12 @@ use crate::{
     },
     commands::settings::open_store,
     commands::translation::{TranslationEvent, TranslationEventSink},
-    core::types::{GlossaryMapping, TranslationMode, TranslationModel, TranslationRequest},
+    core::{
+        diagnostics::{DiagnosticEvent, DiagnosticEventName, DiagnosticOutcome, JobKind},
+        types::{GlossaryMapping, TranslationMode, TranslationModel, TranslationRequest},
+    },
     hotkeys::{Blocklist, ForegroundAppProvider},
+    storage::CleanupService,
 };
 
 #[cfg(target_os = "macos")]
@@ -153,13 +154,24 @@ pub fn complete_screen_capture<R: Runtime>(
     session_id: Uuid,
     selection: CaptureSelection,
 ) -> Result<CaptureJobResult, String> {
-    let root = capture_root(&app)?;
-    let decoded = app
+    let job_id = Uuid::new_v4();
+    let cleanup = app.state::<CleanupService>();
+    let root = cleanup
+        .create_job_root(&job_id.simple().to_string())
+        .map_err(|_| "capture_storage_unavailable".to_owned())?;
+    crate::commands::documents::set_private_permissions(&root, true);
+    let decoded = match app
         .state::<CaptureCoordinator>()
         .complete(session_id, selection, &root)
-        .map_err(|error| error.code().to_owned())?;
+    {
+        Ok(decoded) => decoded,
+        Err(error) => {
+            let _ = cleanup.on_job_cancel(&job_id.simple().to_string());
+            return Err(error.code().to_owned());
+        }
+    };
     close_overlays(&app);
-    let result = source_result(&decoded);
+    let result = source_result(&decoded, job_id);
     app.state::<CaptureJobStore>().insert(CaptureJob {
         source: decoded,
         result: result.clone(),
@@ -202,9 +214,20 @@ pub fn choose_image<R: Runtime>(
     let path = chosen
         .into_path()
         .map_err(|_| "unsupported_image_path".to_owned())?;
-    let decoded = crate::capture::ImageInput::open_read_only(path, capture_root(&app)?)
-        .map_err(|error| error.code().to_owned())?;
-    let result = source_result(&decoded);
+    let job_id = Uuid::new_v4();
+    let cleanup = app.state::<CleanupService>();
+    let root = cleanup
+        .create_job_root(&job_id.simple().to_string())
+        .map_err(|_| "capture_storage_unavailable".to_owned())?;
+    crate::commands::documents::set_private_permissions(&root, true);
+    let decoded = match crate::capture::ImageInput::open_read_only(path, root) {
+        Ok(decoded) => decoded,
+        Err(error) => {
+            let _ = cleanup.on_job_cancel(&job_id.simple().to_string());
+            return Err(error.code().to_owned());
+        }
+    };
+    let result = source_result(&decoded, job_id);
     app.state::<CaptureJobStore>().insert(CaptureJob {
         source: decoded,
         result: result.clone(),
@@ -216,9 +239,9 @@ pub fn choose_image<R: Runtime>(
     Ok(Some(result))
 }
 
-fn source_result(decoded: &crate::capture::DecodedImage) -> CaptureJobResult {
+fn source_result(decoded: &crate::capture::DecodedImage, job_id: Uuid) -> CaptureJobResult {
     CaptureJobResult {
-        job_id: Uuid::new_v4(),
+        job_id,
         status: CaptureJobStatus::SourceReady,
         image_width: decoded.width,
         image_height: decoded.height,
@@ -239,6 +262,13 @@ pub async fn translate_image(
     language_hints: Vec<String>,
     secret: bool,
 ) -> Result<CaptureJobResult, String> {
+    DiagnosticEvent::new(
+        DiagnosticEventName::JobLifecycle,
+        DiagnosticOutcome::Started,
+    )
+    .with_job_kind(JobKind::Capture)
+    .with_stage("ocr")
+    .emit();
     let (source, cancelled) = jobs
         .with(job_id, |job| (job.source.clone(), job.cancelled.clone()))
         .ok_or_else(|| "capture_job_not_found".to_owned())?;
@@ -310,6 +340,13 @@ pub async fn translate_image(
     .ok_or_else(|| "capture_job_not_found".to_owned())?;
     cleanup_capture_source(&app, &jobs, job_id);
     emit_progress(&app, job_id, "complete", 100);
+    DiagnosticEvent::new(
+        DiagnosticEventName::JobLifecycle,
+        DiagnosticOutcome::Succeeded,
+    )
+    .with_job_kind(JobKind::Capture)
+    .with_stage("completed")
+    .emit();
     Ok(result)
 }
 
@@ -414,6 +451,12 @@ pub async fn cancel_image_translation(
         }
     }
     cleanup_capture_source(&app, &jobs, job_id);
+    DiagnosticEvent::new(
+        DiagnosticEventName::JobLifecycle,
+        DiagnosticOutcome::Cancelled,
+    )
+    .with_job_kind(JobKind::Capture)
+    .emit();
     Ok(())
 }
 
@@ -518,36 +561,13 @@ fn emit_progress(app: &tauri::AppHandle, job_id: Uuid, stage: &'static str, perc
     );
 }
 
-fn capture_root<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
-    app.path()
-        .app_local_data_dir()
-        .map(|path| path.join("capture-inputs"))
-        .map_err(|_| "capture_storage_unavailable".to_owned())
-}
-
 fn cleanup_capture_source<R: Runtime>(
     app: &tauri::AppHandle<R>,
-    jobs: &CaptureJobStore,
+    _jobs: &CaptureJobStore,
     job_id: Uuid,
 ) {
-    let Some(candidate) = jobs.with(job_id, |job| job.source.immutable_copy.clone()) else {
-        return;
-    };
-    let Ok(root) = capture_root(app).and_then(|value| {
-        value
-            .canonicalize()
-            .map_err(|_| "capture_storage_unavailable".to_owned())
-    }) else {
-        return;
-    };
-    let Ok(canonical) = candidate.canonicalize() else {
-        return;
-    };
-    if canonical.parent() == Some(root.as_path())
-        && std::fs::symlink_metadata(&canonical)
-            .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
-    {
-        let _ = std::fs::remove_file(canonical);
+    if let Some(cleanup) = app.try_state::<CleanupService>() {
+        let _ = cleanup.on_job_complete(&job_id.simple().to_string());
     }
 }
 

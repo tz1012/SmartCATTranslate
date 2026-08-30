@@ -36,6 +36,10 @@ impl CryptoBox {
         }
     }
 
+    pub fn from_zeroizing(key: Zeroizing<[u8; 32]>) -> Self {
+        Self { key }
+    }
+
     pub fn seal(&self, plaintext: &[u8], aad: &[u8]) -> Result<EncryptedEnvelope, CryptoError> {
         let mut nonce = [0_u8; 12];
         OsRng.fill_bytes(&mut nonce);

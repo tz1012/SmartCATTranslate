@@ -101,7 +101,7 @@ pub fn rebuild_document(
     job_id: uuid::Uuid,
 ) -> Result<DocumentReport, DocumentError> {
     let cancelled = std::sync::atomic::AtomicBool::new(false);
-    rebuild_document_checked(plan, translated, options, job_id, &cancelled, &|_| {})
+    rebuild_document_checked(plan, translated, options, job_id, &cancelled, &|_| Ok(()))
 }
 
 pub fn rebuild_document_checked(
@@ -110,7 +110,7 @@ pub fn rebuild_document_checked(
     options: &DocumentOptions,
     job_id: uuid::Uuid,
     cancelled: &std::sync::atomic::AtomicBool,
-    checkpoint: &(dyn Fn(&DocumentCheckpoint) + Sync),
+    checkpoint: &(dyn Fn(&DocumentCheckpoint) -> Result<(), DocumentError> + Sync),
 ) -> Result<DocumentReport, DocumentError> {
     use std::sync::atomic::Ordering;
     if cancelled.load(Ordering::Acquire) {
@@ -151,7 +151,31 @@ pub fn rebuild_document_checked(
             if cancelled.load(Ordering::Acquire) {
                 return Err(DocumentError::Cancelled);
             }
+            checkpoint(&stage_checkpoint(
+                plan,
+                DocumentStage::Save,
+                "save:partial",
+                0,
+                1,
+                crate::documents::translate::batches(&plan.segments).len(),
+                &translated
+                    .iter()
+                    .map(|value| format!("segment:{}", value.id))
+                    .collect::<Vec<_>>(),
+            ))?;
             publish_existing_partial(&partial, &output)?;
+            checkpoint(&stage_checkpoint(
+                plan,
+                DocumentStage::Save,
+                "save:synced",
+                1,
+                1,
+                crate::documents::translate::batches(&plan.segments).len(),
+                &translated
+                    .iter()
+                    .map(|value| format!("segment:{}", value.id))
+                    .collect::<Vec<_>>(),
+            ))?;
             let output_bytes = match fs::read(&output) {
                 Ok(v) => v,
                 Err(_) => {
@@ -195,7 +219,7 @@ pub fn rebuild_document_checked(
         1,
         completed_batch_cursor,
         &translated_result_refs,
-    ));
+    ))?;
     match plan.format {
         DocumentFormat::Docx => docx::rebuild(&mut package, &plan.segments, translated)?,
         DocumentFormat::Pptx => pptx::rebuild(&mut package, &plan.segments, translated)?,
@@ -210,8 +234,30 @@ pub fn rebuild_document_checked(
         1,
         completed_batch_cursor,
         &translated_result_refs,
-    ));
+    ))?;
     let output_bytes = package.write()?;
+    checkpoint(&stage_checkpoint(
+        plan,
+        DocumentStage::Validate,
+        "validate:package",
+        0,
+        1,
+        completed_batch_cursor,
+        &translated_result_refs,
+    ))?;
+    let reopened = OoxmlPackage::open(&output_bytes)?;
+    if reopened.entries.len() != plan.manifest.part_count {
+        return Err(DocumentError::ValidationFailed);
+    }
+    checkpoint(&stage_checkpoint(
+        plan,
+        DocumentStage::Validate,
+        "validate:completed",
+        1,
+        1,
+        completed_batch_cursor,
+        &translated_result_refs,
+    ))?;
     checkpoint(&stage_checkpoint(
         plan,
         DocumentStage::Save,
@@ -220,11 +266,7 @@ pub fn rebuild_document_checked(
         1,
         completed_batch_cursor,
         &translated_result_refs,
-    ));
-    let reopened = OoxmlPackage::open(&output_bytes)?;
-    if reopened.entries.len() != plan.manifest.part_count {
-        return Err(DocumentError::ValidationFailed);
-    }
+    ))?;
     publish_atomic(&output, &output_bytes)?;
     checkpoint(&stage_checkpoint(
         plan,
@@ -234,7 +276,7 @@ pub fn rebuild_document_checked(
         1,
         completed_batch_cursor,
         &translated_result_refs,
-    ));
+    ))?;
     if hash_bytes(&fs::read(&plan.source).map_err(|_| DocumentError::Io)?)
         != plan.manifest.source_hash
     {

@@ -69,6 +69,20 @@ impl DiagnosticEvent {
         self.stage = valid_code(stage).then(|| stage.to_owned());
         self
     }
+    pub fn with_job_kind(mut self, job_kind: JobKind) -> Self {
+        self.job_kind = Some(job_kind);
+        self
+    }
+    pub fn with_counts(mut self, item_count: u64, byte_count: u64) -> Self {
+        self.item_count = Some(item_count);
+        self.byte_count = Some(byte_count);
+        self
+    }
+    pub fn emit(&self) {
+        if let Ok(encoded) = serde_json::to_string(self) {
+            eprintln!("{encoded}");
+        }
+    }
 }
 fn valid_code(value: &str) -> bool {
     !value.is_empty()

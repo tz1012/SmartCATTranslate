@@ -1,7 +1,8 @@
 use crate::{
+    core::diagnostics::{DiagnosticEvent, DiagnosticEventName, DiagnosticOutcome, JobKind},
     documents::{
         DocumentCheckpoint, DocumentJobStore, DocumentOptions, DocumentResumeBackend,
-        DocumentRetentionNotice, DocumentRetentionPayload, TranslatedSegment,
+        DocumentRetentionNotice, DocumentRetentionPayload, DocumentStage, TranslatedSegment,
     },
     storage::{CryptoBox, CryptoError, StorageDatabase},
 };
@@ -100,6 +101,7 @@ impl CanonicalTranslationOptions {
 #[derive(Clone, Debug)]
 pub struct DocumentRecoveryContext {
     pub source_path: String,
+    pub source_fingerprint: String,
     pub display_name: String,
     pub options: DocumentOptions,
     pub option_snapshot: CanonicalTranslationOptions,
@@ -115,6 +117,8 @@ struct DocumentRecoveryMetadata {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct DocumentRecoveryPayload {
+    #[serde(default = "initial_job_state")]
+    job_state: JobCheckpoint,
     checkpoint: DocumentCheckpoint,
     translated_results: HashMap<String, TranslatedSegment>,
 }
@@ -180,25 +184,61 @@ impl JobStore {
         secret: bool,
     ) -> Result<Option<String>, JobError> {
         let record_id = job_id.simple().to_string();
-        let serializable = DocumentRecoveryPayload {
-            checkpoint: payload.checkpoint.clone(),
-            translated_results: payload.translated_results.clone(),
-        };
-        if secret {
-            self.secret
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .insert(record_id.clone(), serializable);
-            return Ok(None);
+        if payload.checkpoint.source_fingerprint != context.source_fingerprint
+            || payload.checkpoint.source_fingerprint.len() != 64
+        {
+            return Err(JobError::ResumeMismatch);
         }
         if context.option_snapshot.hash()? != context.option_hash || context.option_hash.len() != 64
         {
             return Err(JobError::Invalid);
         }
+        if secret {
+            let mut values = self.secret.lock().unwrap_or_else(|p| p.into_inner());
+            let mut job_state = values
+                .get(&record_id)
+                .map(|value| value.job_state.clone())
+                .unwrap_or_else(initial_job_state);
+            advance_job_state(&mut job_state, payload.checkpoint.stage)?;
+            remember_completed_unit(&mut job_state, &payload.checkpoint);
+            values.insert(
+                record_id.clone(),
+                DocumentRecoveryPayload {
+                    job_state,
+                    checkpoint: payload.checkpoint.clone(),
+                    translated_results: payload.translated_results.clone(),
+                },
+            );
+            diagnostic_checkpoint(&payload.checkpoint, DiagnosticOutcome::Succeeded);
+            return Ok(None);
+        }
         let metadata = DocumentRecoveryMetadata {
             source_path: context.source_path.clone(),
             options: context.options.clone(),
             option_snapshot: context.option_snapshot.clone(),
+        };
+        let mut connection = self.database.0.lock().unwrap_or_else(|p| p.into_inner());
+        let existing_blob = connection
+            .query_row(
+                "SELECT payload_blob FROM recovery_jobs WHERE id=?1",
+                [&record_id],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .optional()?;
+        let mut job_state = existing_blob
+            .map(|blob| {
+                self.crypto
+                    .open_json::<DocumentRecoveryPayload>(&blob, &aad(&record_id, "payload"))
+            })
+            .transpose()?
+            .map(|value| value.job_state)
+            .unwrap_or_else(initial_job_state);
+        advance_job_state(&mut job_state, payload.checkpoint.stage)?;
+        remember_completed_unit(&mut job_state, &payload.checkpoint);
+        let serializable = DocumentRecoveryPayload {
+            job_state: job_state.clone(),
+            checkpoint: payload.checkpoint.clone(),
+            translated_results: payload.translated_results.clone(),
         };
         let display = self
             .crypto
@@ -211,10 +251,13 @@ impl JobStore {
             .seal_json(&serializable, &aad(&record_id, "payload"))?;
         let created_at = Utc::now();
         let checkpoint = &payload.checkpoint;
-        self.database.0.lock().unwrap_or_else(|p| p.into_inner()).execute(
-            "INSERT OR REPLACE INTO recovery_jobs (id,created_at,expires_at,kind,stage,completed,total,source_fingerprint,option_hash,display_name_blob,metadata_blob,payload_blob) VALUES (?1,?2,?3,'document',?4,?5,?6,?7,?8,?9,?10,?11)",
-            params![record_id,created_at.to_rfc3339(),(created_at+Duration::days(7)).to_rfc3339(),format!("{:?}",checkpoint.stage).to_ascii_lowercase(),checkpoint.completed as i64,checkpoint.total as i64,checkpoint.source_fingerprint,context.option_hash,display,metadata,payload_blob]
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "INSERT INTO recovery_jobs (id,created_at,expires_at,kind,stage,completed,total,source_fingerprint,option_hash,display_name_blob,metadata_blob,payload_blob) VALUES (?1,?2,?3,'document',?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(id) DO UPDATE SET expires_at=excluded.expires_at,stage=excluded.stage,completed=excluded.completed,total=excluded.total,source_fingerprint=excluded.source_fingerprint,option_hash=excluded.option_hash,display_name_blob=excluded.display_name_blob,metadata_blob=excluded.metadata_blob,payload_blob=excluded.payload_blob",
+            params![record_id,created_at.to_rfc3339(),(created_at+Duration::days(7)).to_rfc3339(),format!("{:?}",job_state.stage).to_ascii_lowercase(),checkpoint.completed as i64,checkpoint.total as i64,checkpoint.source_fingerprint,context.option_hash,display,metadata,payload_blob]
         )?;
+        transaction.commit()?;
+        diagnostic_checkpoint(checkpoint, DiagnosticOutcome::Succeeded);
         Ok(Some(record_id))
     }
 
@@ -329,13 +372,20 @@ impl JobStore {
         if !valid_id(record_id) {
             return Err(JobError::Invalid);
         }
+        let removed_secret = self
+            .secret
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(record_id)
+            .is_some();
         Ok(self
             .database
             .0
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .execute("DELETE FROM recovery_jobs WHERE id=?1", [record_id])?
-            > 0)
+            > 0
+            || removed_secret)
     }
     pub fn purge_expired(&self) -> Result<u64, JobError> {
         Ok(self
@@ -410,4 +460,85 @@ fn source_fingerprint(path: &Path) -> Option<String> {
     std::fs::read(path)
         .ok()
         .map(|bytes| format!("{:x}", Sha256::digest(bytes)))
+}
+
+fn initial_job_state() -> JobCheckpoint {
+    JobCheckpoint {
+        stage: JobStage::Queued,
+        previous_active_stage: None,
+        completed_unit_ids: Vec::new(),
+    }
+}
+
+fn document_job_stage(stage: DocumentStage) -> JobStage {
+    match stage {
+        DocumentStage::Inspect | DocumentStage::Extract | DocumentStage::Ocr => JobStage::Extract,
+        DocumentStage::Translate => JobStage::Translate,
+        DocumentStage::Reflow => JobStage::Rebuild,
+        DocumentStage::Validate => JobStage::Validate,
+        DocumentStage::Save => JobStage::Save,
+        DocumentStage::Completed => JobStage::Completed,
+    }
+}
+
+fn stage_rank(stage: JobStage) -> Option<usize> {
+    match stage {
+        JobStage::Queued => Some(0),
+        JobStage::Extract => Some(1),
+        JobStage::Translate => Some(2),
+        JobStage::Rebuild => Some(3),
+        JobStage::Validate => Some(4),
+        JobStage::Save => Some(5),
+        JobStage::Completed => Some(6),
+        JobStage::Paused | JobStage::Cancelled | JobStage::Failed => None,
+    }
+}
+
+fn advance_job_state(
+    state: &mut JobCheckpoint,
+    document_stage: DocumentStage,
+) -> Result<(), JobError> {
+    let target = document_job_stage(document_stage);
+    let current_rank = stage_rank(state.stage).ok_or(JobError::InvalidTransition)?;
+    let target_rank = stage_rank(target).ok_or(JobError::InvalidTransition)?;
+    if target_rank < current_rank {
+        return Err(JobError::InvalidTransition);
+    }
+    let sequence = [
+        JobStage::Queued,
+        JobStage::Extract,
+        JobStage::Translate,
+        JobStage::Rebuild,
+        JobStage::Validate,
+        JobStage::Save,
+        JobStage::Completed,
+    ];
+    for next in sequence.iter().take(target_rank + 1).skip(current_rank + 1) {
+        state.transition(*next)?;
+    }
+    Ok(())
+}
+
+fn diagnostic_checkpoint(checkpoint: &DocumentCheckpoint, outcome: DiagnosticOutcome) {
+    DiagnosticEvent::new(DiagnosticEventName::JobLifecycle, outcome)
+        .with_job_kind(JobKind::Document)
+        .with_stage(&format!("{:?}", checkpoint.stage).to_ascii_lowercase())
+        .with_counts(checkpoint.completed as u64, 0)
+        .emit();
+}
+
+fn remember_completed_unit(state: &mut JobCheckpoint, checkpoint: &DocumentCheckpoint) {
+    let completed = checkpoint.stage != DocumentStage::Translate
+        || checkpoint.stable_unit_id.ends_with(":completed");
+    if completed
+        && state.completed_unit_ids.len() < 10_000
+        && !state
+            .completed_unit_ids
+            .iter()
+            .any(|value| value == &checkpoint.stable_unit_id)
+    {
+        state
+            .completed_unit_ids
+            .push(checkpoint.stable_unit_id.clone());
+    }
 }

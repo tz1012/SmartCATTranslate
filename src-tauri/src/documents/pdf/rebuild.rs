@@ -37,7 +37,7 @@ pub fn rebuild(
     translated_result_refs: &[String],
     completed_batch_cursor: usize,
     cancelled: &AtomicBool,
-    checkpoint: &(dyn Fn(&DocumentCheckpoint) + Sync),
+    checkpoint: &(dyn Fn(&DocumentCheckpoint) -> Result<(), DocumentError> + Sync),
 ) -> Result<Vec<DocumentWarning>, DocumentError> {
     let bytes = fs::read(source).map_err(|_| DocumentError::Io)?;
     let mut doc = Document::load_mem(&bytes).map_err(|_| DocumentError::InvalidPackage)?;
@@ -70,7 +70,7 @@ pub fn rebuild(
             spool,
             completed_batch_cursor,
             translated_result_refs,
-        );
+        )?;
         let page_part = format!("page:{}", page.number);
         let mut effective_blocks = page.blocks.clone();
         if matches!(page.kind, super::PdfPageKind::Scanned) {
@@ -284,7 +284,7 @@ pub fn rebuild(
         spool,
         completed_batch_cursor,
         translated_result_refs,
-    );
+    )?;
     for page in &inspection.pages {
         if let Some(reason) = &page.fallback_reason {
             warnings.push(DocumentWarning {
@@ -317,14 +317,14 @@ pub fn rebuild(
     super::emit_checkpoint(
         checkpoint,
         &inspection.source_hash,
-        DocumentStage::Save,
-        "save:partial".into(),
+        DocumentStage::Reflow,
+        "reflow:serialize".into(),
         0,
         1,
         spool,
         completed_batch_cursor,
         translated_result_refs,
-    );
+    )?;
     let file = OpenOptions::new()
         .create_new(true)
         .write(true)
@@ -338,14 +338,14 @@ pub fn rebuild(
     super::emit_checkpoint(
         checkpoint,
         &inspection.source_hash,
-        DocumentStage::Save,
-        "save:synced".into(),
+        DocumentStage::Validate,
+        "validate:package".into(),
         1,
         1,
         spool,
         completed_batch_cursor,
         translated_result_refs,
-    );
+    )?;
     let reopened = inspect(output, false)?;
     if reopened.pages.len() != inspection.pages.len() {
         return Err(DocumentError::ValidationFailed);
@@ -365,6 +365,17 @@ pub fn rebuild(
     {
         return Err(DocumentError::ValidationFailed);
     }
+    super::emit_checkpoint(
+        checkpoint,
+        &inspection.source_hash,
+        DocumentStage::Validate,
+        "validate:completed".into(),
+        1,
+        1,
+        spool,
+        completed_batch_cursor,
+        translated_result_refs,
+    )?;
     Ok(warnings)
 }
 

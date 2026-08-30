@@ -1,7 +1,7 @@
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use rand::{rngs::OsRng, RngCore};
 use std::sync::Mutex;
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
 
 const SERVICE: &str = "com.smartcat.translate";
 const ACCOUNT: &str = "local-data-key";
@@ -26,25 +26,27 @@ impl KeyStore for OsKeyStore {
         let entry = keyring::Entry::new(SERVICE, ACCOUNT)
             .map_err(|_| KeyStoreError::SecureStorageUnavailable)?;
         match entry.get_password() {
-            Ok(mut encoded) => {
-                let decoded = STANDARD
-                    .decode(encoded.as_bytes())
+            Ok(encoded) => {
+                let encoded = Zeroizing::new(encoded);
+                let decoded = Zeroizing::new(
+                    STANDARD
+                        .decode(encoded.as_bytes())
+                        .map_err(|_| KeyStoreError::InvalidKey)?,
+                );
+                let key: [u8; 32] = decoded
+                    .as_slice()
+                    .try_into()
                     .map_err(|_| KeyStoreError::InvalidKey)?;
-                encoded.zeroize();
-                let key: [u8; 32] = decoded.try_into().map_err(|_| KeyStoreError::InvalidKey)?;
                 Ok(Zeroizing::new(key))
             }
             Err(keyring::Error::NoEntry) => {
-                let mut key = [0_u8; 32];
+                let mut key = Zeroizing::new([0_u8; 32]);
                 OsRng.fill_bytes(&mut key);
-                let mut encoded = STANDARD.encode(key);
+                let encoded = Zeroizing::new(STANDARD.encode(key.as_ref()));
                 if entry.set_password(&encoded).is_err() {
-                    key.zeroize();
-                    encoded.zeroize();
                     return Err(KeyStoreError::SecureStorageUnavailable);
                 }
-                encoded.zeroize();
-                Ok(Zeroizing::new(key))
+                Ok(key)
             }
             Err(_) => Err(KeyStoreError::SecureStorageUnavailable),
         }

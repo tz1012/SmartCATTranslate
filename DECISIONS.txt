@@ -313,3 +313,7 @@ XLSX 위치: workbook relationship으로 worksheet part와 실제 sheet name을 
 [D-051] Tasks 1–4 속도 우선 검증 범위
 상태: 사용자 결정 반영
 결정: 새 failing test/failure injection/장시간 전체 회귀 대신 direct implementation, rustfmt, frontend build, D shared library check와 짧은 records/privacy scanner를 사용한다. 기존 테스트는 보존하며 실제 restart/keyring/공격성 cleanup은 후속 acceptance가 필요하다.
+
+[D-052] 진행 checkpoint와 임시 데이터의 단일 소유권
+상태: 확정
+결정: 문서 pipeline의 단계 및 완료 batch callback은 암호화 JobStore transaction commit이 끝난 뒤 반환하고 그 다음 UI progress를 보낸다. durable payload는 source fingerprint, canonical option hash/snapshot과 encrypted resume refs를 포함한다. 시크릿 payload는 동일 생명주기의 메모리 맵에만 둔다. document/capture plaintext temporary data는 CleanupService의 canonical private root 아래 UUID 직계 자식만 사용하며 성공·취소와 7일 startup purge에서 제거한다.

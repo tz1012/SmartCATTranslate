@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use tauri::Manager;
+use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
 use crate::codex::auth::{AccountChangeReason, AccountEventSink, AccountState};
 use crate::codex::bootstrap::bootstrap_account_service;
@@ -34,8 +35,25 @@ pub fn run() {
         .setup(move |app| {
             lifecycle::setup(app)?;
             let app_data_root = app.path().app_local_data_dir()?;
-            let key = storage::OsKeyStore.load_or_create()?;
-            let crypto = Arc::new(storage::CryptoBox::from_key(*key));
+            let key = match storage::OsKeyStore.load_or_create() {
+                Ok(key) => key,
+                Err(error) => {
+                    let _ = app
+                        .dialog()
+                        .message("Secure local storage is unavailable. Enable Windows Credential Manager or unlock macOS Keychain, then restart the app.")
+                        .title("SmartCAT Translate")
+                        .kind(MessageDialogKind::Error)
+                        .blocking_show();
+                    crate::core::diagnostics::DiagnosticEvent::new(
+                        crate::core::diagnostics::DiagnosticEventName::SecureStorage,
+                        crate::core::diagnostics::DiagnosticOutcome::Failed,
+                    )
+                    .with_error_code("secure_storage_unavailable")
+                    .emit();
+                    return Err(error.into());
+                }
+            };
+            let crypto = Arc::new(storage::CryptoBox::from_zeroizing(key));
             let database = storage::StorageDatabase::open(
                 &app_data_root
                     .join("storage")
@@ -44,6 +62,8 @@ pub fn run() {
             let history_store =
                 Arc::new(storage::HistoryStore::new(database.clone(), crypto.clone()));
             let job_store = Arc::new(storage::JobStore::new(database, crypto));
+            let _ = history_store.purge_expired(30);
+            let _ = job_store.purge_expired();
             document_jobs_for_setup.install_resume_backend(Arc::new(
                 storage::EncryptedDocumentResumeBackend::new(
                     job_store.clone(),
@@ -51,6 +71,7 @@ pub fn run() {
                 ),
             ));
             let cleanup = storage::CleanupService::new(app_data_root.join("private-temp"))?;
+            commands::documents::set_private_permissions(cleanup.root(), true);
             let _ = cleanup.on_start();
             app.manage(history_store);
             app.manage(job_store);
@@ -85,6 +106,10 @@ pub fn run() {
                 let _ = commands::windows::restart_quick_hotkeys(app_handle.clone()).await;
                 if let Ok(store) = commands::settings::open_store(&app_handle) {
                     if let Ok(settings) = store.load().await {
+                        if let Some(history) = app_handle.try_state::<Arc<storage::HistoryStore>>() {
+                            history.set_retention_days(settings.history_retention_days);
+                            let _ = history.purge_expired(settings.history_retention_days);
+                        }
                         app_handle
                             .state::<lifecycle::LifecycleState>()
                             .set_locale(settings.locale, state.hotkeys_suspended());
