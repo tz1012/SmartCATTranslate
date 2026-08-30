@@ -589,3 +589,20 @@ TDD 및 검증
 - RED: held sequence 두 플랫폼이 `None`으로 빠지고 카탈로그 버전이 `.4`인 실패를 focused 시험 17개 중 3개 실패로 재현했다.
 - GREEN: held sequence 충돌, released-modifier 비충돌, macOS bundle identity와 공식 출처를 함께 검증하는 focused 시험 17/17이 통과했다.
 - Rust 포맷, 자동 기록 16/16, 정확한 카탈로그 해시, 프런트엔드 프로덕션 빌드와 diff 검사가 통과했다.
+
+[2026-08-30] 전역 단축키 Task 4 — Windows/macOS 키 관찰과 포그라운드 앱 식별
+
+구현
+- 플랫폼 중립 `KeyEventSource`, `HotkeyObserver`, `ForegroundAppProvider`와 `NativeController`를 추가했다. 운영체제 콜백은 128개 제한 채널에 비차단 전송하고, 별도 상태기계 스레드가 발화 ID를 64개 제한 채널로 전달한다.
+- Windows 단일 조합 등록 시험은 실제 `RegisterHotKey` 성공 직후 같은 스레드에서 즉시 해제한다. 연속 입력은 직접 등록 실패로 오인하지 않고 관찰기 사용 가능 여부를 포함한 구조화 결과를 반환한다.
+- Windows 저수준 키보드 후크는 전용 메시지 루프에서 key down/up, 반복, 수정 키와 물리·논리 키를 정규화하고 항상 원래 이벤트를 다음 후크로 전달한다. 하나의 관찰기만 허용하고 stop 시 메시지 루프와 후크를 정리한 뒤 재시작할 수 있다.
+- Windows 포그라운드 창의 프로세스 이미지는 조회 직후 실행 파일 basename으로 축소한다. macOS는 접근성 권한이 있는 경우 listen-only CGEventTap을 사용하고, NSWorkspace의 frontmost application에서 실행 파일 basename과 bundle identifier만 만든다.
+- CI Rust 행렬을 Windows x86_64, macOS Apple Silicon과 macOS Intel의 명시적 대상별 check/test로 확장했다. 플랫폼 전용 FFI는 해당 cfg에서만 컴파일한다.
+
+TDD 및 검증
+- RED: 플랫폼 중립 source/controller/provider 타입이 없어 계약 시험이 컴파일 실패했다. Windows 실제 adapter 타입이 없는 별도 컴파일 실패와, punctuation/numpad 가상 키가 관찰기에서 사라지는 focused 실패를 확인했다.
+- GREEN: 공통 이벤트 파이프라인 4/4, Windows 실제 등록·즉시 해제/재등록·포그라운드 식별·키 매핑 5/5, 실제 observer 중복 거부와 stop 후 재시작 1/1이 통과했다. 플랫폼 종료가 오류를 반환해도 상태기계 worker를 join하고 handle을 비우는 회귀 시험을 포함한다.
+- 전체 Rust 회귀 196/196이 통과했다.
+- 전체 대상·전체 기능 엄격 Clippy, Rust 포맷, 프런트엔드 59/59, 프로덕션 빌드와 자동 기록 16/16이 통과했다.
+- Windows 명시 대상 `cargo check --target x86_64-pc-windows-msvc`가 통과했다. macOS 두 아키텍처의 compile/test는 CI 행렬에 실패 폐쇄 관문으로 추가했으며 이 Windows 호스트에는 Apple 표준 라이브러리 대상이 없어 로컬 통과를 주장하지 않는다.
+- 키 입력, 창 제목, 전체 실행 경로, 프로세스 식별자, 원문·번역문과 인증 정보는 기록하지 않았다.

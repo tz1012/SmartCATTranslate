@@ -1,4 +1,5 @@
 mod conflicts;
+mod native;
 mod parser;
 mod sequence;
 mod types;
@@ -8,6 +9,10 @@ pub use conflicts::{
     ConflictCause, ConflictLevel, ConflictReport, ConflictSeverity, Platform, RegistrationProbe,
     RegistrationProbeStatus, ShortcutCatalog, MAX_CATALOG_BYTES, MAX_CATALOG_ENTRIES,
     SHORTCUT_CATALOG_SCHEMA_VERSION,
+};
+pub use native::{
+    ForegroundAppProvider, HotkeyObserver, KeyEventSource, NativeController, NativeControllerError,
+    NativeEventReceiver, ObserverAvailability, PlatformError,
 };
 pub use parser::parse_trigger;
 pub use sequence::{
