@@ -93,3 +93,11 @@ Fix-round commit: the commit containing this report (`fix: harden release public
 - No new failure, negative updater/LKG, E2E, Playwright, or full regression tests were added or run per the latest user instruction. Existing tests remain unchanged; the missing new tests remain a ledger verification gap.
 
 Round-2 commit: the commit containing this report (`fix: close updater and acceptance publication gaps`).
+
+## Publication fix round 3
+
+- Corrected the acceptance cleanup ownership boundary. Windows initializes `appDataOwned` and `installedByThisRun` false before preconditions; macOS does the same for app data and copied app. Existing exact app-data, OS credential, and installed-app state is checked before mutation. CI/GitHub runner markers do not grant permission to delete pre-existing data.
+- App data becomes owned only when this run observes a newly created path after the clean precondition. Cleanup re-derives the canonical exact `com.smartcat.translate` child from the OS-reported runner user data directory, rejects links/reparse points, and removes it only when owned. MSI uninstall and macOS app-copy removal are likewise guarded by successful this-run ownership.
+- Round-3 positive gates: PowerShell parser PASS; Bash syntax PASS; workflow semantic policy including ownership ordering PASS; records tests PASS (16/16); records check PASS; `git diff --check` PASS. Per instruction, no failure/E2E/full test was added or run.
+
+Round-3 commit: the commit containing this report (`fix: guard acceptance cleanup ownership`).

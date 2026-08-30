@@ -932,3 +932,9 @@ TDD 및 검증
 
 검증 범위
 - 사용자 지시에 따라 새 failure/E2E/full regression은 추가하거나 실행하지 않는다. 실제 signed archive/OS secure-store acceptance는 protected GitHub Actions 실행 전까지 publication blocker로 남긴다.
+
+[2026-08-31] Tasks 5–7 publication fix round 3 — acceptance cleanup 소유권
+
+- Windows/macOS acceptance는 cleanup 등록 전 appData/install/app-copy ownership을 false로 초기화한다. 기존 exact app data, SmartCAT OS credential과 설치 흔적을 먼저 검사하고, 이번 실행이 새 app data를 실제 관찰하거나 설치/copy를 성공한 뒤에만 해당 flag를 true로 만든다.
+- cleanup은 운영체제 API/Directory Service로 얻은 runner user app-data의 exact canonical child를 다시 검증한다. Windows uninstall은 installedByThisRun, mac app copy 삭제는 copiedByThisRun일 때만 수행한다. precondition 실패와 CI 표시는 기존 데이터 삭제 권한이 아니다.
+- 사용자 지시에 따라 failure/E2E/full regression은 추가하지 않고 PowerShell/Bash parse, positive workflow policy, records와 diff만 확인한다.
