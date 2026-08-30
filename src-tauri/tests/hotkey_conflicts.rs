@@ -274,7 +274,7 @@ fn matches_macos_deepl_bundle_for_translation_and_improvement_shortcuts() {
 
     for (trigger, status, feature) in [
         (
-            "Meta+C, C",
+            "Meta+C, Meta+C",
             RegistrationProbeStatus::AvailableViaObserver,
             "선택한 텍스트 번역",
         ),
@@ -299,6 +299,17 @@ fn matches_macos_deepl_bundle_for_translation_and_improvement_shortcuts() {
                 && cause.verified_at.as_deref() == Some(AS_OF)
         }));
     }
+
+    let released_modifier = analyzer(
+        Platform::Macos,
+        &catalog,
+        &SelectiveProbe::with_status("Meta+C, C", RegistrationProbeStatus::AvailableViaObserver),
+        &deepl,
+    )
+    .analyze(&parse_trigger("Meta+C, C").unwrap());
+    assert_eq!(released_modifier.level, ConflictLevel::None);
+    assert!(released_modifier.registration_allowed(false));
+    assert!(released_modifier.causes.is_empty());
 }
 
 #[test]
@@ -319,9 +330,9 @@ fn sequence_catalog_blocks_only_full_containment_and_advises_on_a_strict_prefix(
 
     let deep_l = RunningApps(vec![executable("DeepL.exe")]);
     for trigger in [
-        "Ctrl+C, C",
-        "Ctrl+C, C, Ctrl+X",
-        "Ctrl+X, Ctrl+C, C, Ctrl+V",
+        "Ctrl+C, Ctrl+C",
+        "Ctrl+C, Ctrl+C, Ctrl+X",
+        "Ctrl+X, Ctrl+C, Ctrl+C, Ctrl+V",
     ] {
         let probe =
             SelectiveProbe::with_status(trigger, RegistrationProbeStatus::AvailableViaObserver);
@@ -330,6 +341,19 @@ fn sequence_catalog_blocks_only_full_containment_and_advises_on_a_strict_prefix(
         assert_eq!(report.level, ConflictLevel::Possible, "{trigger}");
         assert!(!report.registration_allowed(false), "{trigger}");
     }
+
+    let released_modifier_probe =
+        SelectiveProbe::with_status("Ctrl+C, C", RegistrationProbeStatus::AvailableViaObserver);
+    let released_modifier = analyzer(
+        Platform::Windows,
+        &catalog,
+        &released_modifier_probe,
+        &deep_l,
+    )
+    .analyze(&parse_trigger("Ctrl+C, C").unwrap());
+    assert_eq!(released_modifier.level, ConflictLevel::None);
+    assert!(released_modifier.registration_allowed(false));
+    assert!(released_modifier.causes.is_empty());
 
     let strict_prefix = analyzer(
         Platform::Windows,
@@ -621,7 +645,7 @@ fn embedded_catalog_has_a_bounded_schema_version_and_verified_hash() {
 
     let catalog = ShortcutCatalog::from_embedded(date()).unwrap();
     assert_eq!(catalog.schema_version(), 1);
-    assert_eq!(catalog.catalog_version(), "2026.08.30.4");
+    assert_eq!(catalog.catalog_version(), "2026.08.30.5");
     assert_eq!(catalog.sha256(), format!("{:x}", Sha256::digest(bytes)));
     assert!(catalog.entries().len() >= 13);
     let powerpoint = catalog

@@ -179,5 +179,5 @@ SmartCAT Translate 설계 결정 기록
 [D-030] macOS DeepL 앱 식별과 개선 단축키 근거
 상태: 확정 — D-029의 bundle identifier 권위 규칙에 필요한 DeepL 식별 정보를 보완함
 앱 식별: DeepL 공식 macOS 페이지가 제공한 `https://www.deepl.com/en/macos/download/DeepL.dmg`의 `DeepL.app/Contents/Info.plist`에서 `CFBundleIdentifier`가 `com.linguee.DeepLCopyTranslator`임을 2026-08-30에 확인했다. 확인한 공식 DMG의 앱 버전은 `26.6.14916780`, SHA-256은 `e5507b544654795fc06d6a73090b3c15421913f6acba0bcbf81f6066bb50917c`이다. 모바일 앱 식별자나 추측한 값을 데스크톱 행에 사용하지 않는다.
-단축키 근거: 현재 DeepL 공식 데스크톱 단축키 문서 `https://support.deepl.com/hc/en-us/articles/360020613059-Use-DeepL-shortcuts-for-desktop-apps`에서 macOS 선택 번역은 Command+C+C, 선택한 텍스트 개선은 Ctrl+Command+C임을 2026-08-30에 확인했다. 내부 정규형은 각각 `Meta+C, C`와 `Ctrl+Meta+C`이다.
-카탈로그 결정: 두 macOS DeepL 행 모두 권위 있는 bundle identifier를 포함한다. 카탈로그 버전을 `2026.08.30.4`로 올리고 검토된 SHA-256 `7daf4ea4702fce04bc6ed2cff426fa3c6fddd09e3c81852f754a1ee107bd6059`로 묶는다. 기존 크기·스키마·출처·freshness 제한은 유지한다.
+단축키 근거: 현재 DeepL 공식 데스크톱 단축키 문서 `https://support.deepl.com/hc/en-us/articles/360020613059-Use-DeepL-shortcuts-for-desktop-apps`에서 Windows 선택 번역은 Ctrl을 유지한 채 C를 두 번, macOS 선택 번역은 Command를 유지한 채 C를 두 번, macOS 선택한 텍스트 개선은 Ctrl+Command+C임을 2026-08-30에 확인했다. 내부 정규형은 각각 `Ctrl+C, Ctrl+C`, `Meta+C, Meta+C`와 `Ctrl+Meta+C`이다. 두 번째 C 전에 수정 키를 놓는 `Ctrl+C, C`와 `Meta+C, C`는 다른 입력이므로 DeepL 충돌로 간주하지 않는다.
+카탈로그 결정: 두 macOS DeepL 행 모두 권위 있는 bundle identifier를 포함한다. 카탈로그 버전을 `2026.08.30.5`로 올리고 검토된 SHA-256 `5d14b12e9bb1aeb7bf665aaec1a0868a3173e482ada0089e897b2d5e975b75e4`로 묶는다. 기존 크기·스키마·출처·freshness 제한은 유지한다.

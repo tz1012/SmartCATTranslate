@@ -29,7 +29,7 @@ const PRIMARY_SOURCE_HOSTS: [&str; 6] = [
 // This is the SHA-256 of resources/shortcut-catalog.json. Updating the reviewed
 // catalog therefore requires an explicit source change as well as new data.
 const SHORTCUT_CATALOG_SHA256: &str =
-    "7daf4ea4702fce04bc6ed2cff426fa3c6fddd09e3c81852f754a1ee107bd6059";
+    "5d14b12e9bb1aeb7bf665aaec1a0868a3173e482ada0089e897b2d5e975b75e4";
 const EMBEDDED_CATALOG: &[u8] = include_bytes!("../../resources/shortcut-catalog.json");
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
