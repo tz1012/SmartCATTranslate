@@ -628,7 +628,9 @@ mod tests {
         is_tap_disabled_event, mac_keycode, recover_disabled_tap, trigger_is_representable,
         CFRetain, CFRunLoopGetCurrent, MacObserver, RetainedRunLoop, OBSERVER_FAILURES,
     };
-    use crate::hotkeys::{parse_trigger, HotkeyObserver, KeyCode, PhysicalKey};
+    use crate::hotkeys::{
+        parse_trigger, HotkeyObserver, KeyCode, ObserverExitHandshake, PhysicalKey,
+    };
 
     #[test]
     fn maps_physical_c_key_without_observing_text() {

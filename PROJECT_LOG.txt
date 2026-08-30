@@ -620,5 +620,6 @@ TDD 및 검증
 - RED: 등록 API/RAII helper, scan-code 키 표현과 finally-style 종료 helper가 없어 Windows 집중 시험이 컴파일 실패했다.
 - GREEN: Windows 실제 등록·즉시 해제/재등록, observer 중복 거부·종료·재시작, 해제 재시도·영구 오류, 종료 신호 실패 뒤 worker 회수, extended/scan-code·Num Lock 키 구분을 포함한 집중 시험 10/10이 통과했다. 공통 종료·rollback·종료 경합 집중 시험 7/7도 통과했다.
 - 전체 Rust 209개 통과, 2개 환경 의존 시험 제외, 실패 0개였다. 전체 대상·전체 기능 엄격 Clippy와 자동 기록 16/16이 통과했다.
-- Windows 호스트의 macOS 교차 검사는 Objective-C 컴파일러가 없어 의존성 빌드 단계에서 중단됐으며 로컬 macOS 통과를 주장하지 않는다. macOS arm64와 x86_64의 실제 check/test 실패 폐쇄 관문은 CI 행렬에 유지했다.
+- Windows 호스트의 전체 Tauri macOS 교차 검사는 Objective-C 컴파일러가 없어 의존성 빌드 단계에서 중단됐다. 대신 D 드라이브의 최소 검증 하네스가 실제 hotkeys와 macOS adapter 소스를 그대로 포함해 `aarch64-apple-darwin --tests` 타입 검사를 통과했다. 실제 macOS 실행 통과를 주장하지 않으며 arm64와 x86_64의 check/test 실패 폐쇄 관문은 CI 행렬에 유지했다.
+- 독립 최종 재검토는 Windows/macOS native resource 소유권, 선종료, 시작·종료 제한시간과 CAS 종료 handshake를 확인한 뒤 `READY — Critical 0 / Important 0`으로 승인했다.
 - 키 입력, 키 조합, 창 제목, 전체 실행 경로, 프로세스 식별자, 원문·번역문, 계정·인증 정보는 기록하지 않았다.
