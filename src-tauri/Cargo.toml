@@ -1,5 +1,6 @@
 [package]
 name = "smartcat-translate"
+default-run = "smartcat-translate"
 version = "0.1.0"
 description = "SmartCAT Translate"
 authors = ["SmartCAT Translate"]

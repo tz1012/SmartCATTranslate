@@ -938,3 +938,9 @@ TDD 및 검증
 - Windows/macOS acceptance는 cleanup 등록 전 appData/install/app-copy ownership을 false로 초기화한다. 기존 exact app data, SmartCAT OS credential과 설치 흔적을 먼저 검사하고, 이번 실행이 새 app data를 실제 관찰하거나 설치/copy를 성공한 뒤에만 해당 flag를 true로 만든다.
 - cleanup은 운영체제 API/Directory Service로 얻은 runner user app-data의 exact canonical child를 다시 검증한다. Windows uninstall은 installedByThisRun, mac app copy 삭제는 copiedByThisRun일 때만 수행한다. precondition 실패와 CI 표시는 기존 데이터 삭제 권한이 아니다.
 - 사용자 지시에 따라 failure/E2E/full regression은 추가하지 않고 PowerShell/Bash parse, positive workflow policy, records와 diff만 확인한다.
+
+[2026-08-31] Tasks 5–7 packaging blocker — desktop default binary 선택
+
+- updater 공개키 verifier helper가 두 번째 Cargo binary를 추가한 뒤 Tauri가 `failed to find main binary, make sure you have package > default-run`으로 Cargo 실행 전에 패키징을 중단했다.
+- `src-tauri/Cargo.toml`의 package default-run을 실제 desktop binary `smartcat-translate`로 고정하고 `verify-updater-key` binary는 유지했다. workflow policy는 두 항목이 모두 존재해야 통과한다.
+- direct Cargo metadata는 `default_run=smartcat-translate`와 세 binary를 확인했다. Tauri config parse, workflow policy, records 16/16, records check와 diff가 PASS했다. 실제 package build는 packaging agent의 재시도 대상으로 남긴다.

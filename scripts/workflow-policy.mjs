@@ -4,6 +4,7 @@ import { parseDocument } from 'yaml';
 const ci = await readFile('.github/workflows/ci.yml', 'utf8');
 const release = await readFile('.github/workflows/release.yml', 'utf8');
 const config = JSON.parse(await readFile('src-tauri/tauri.conf.json', 'utf8'));
+const cargoManifest = await readFile('src-tauri/Cargo.toml', 'utf8');
 const updaterConfigurator = await readFile('scripts/configure-updater.mjs', 'utf8');
 const releaseRefVerifier = await readFile('scripts/verify-release-ref.mjs', 'utf8');
 const updaterManifest = await readFile('scripts/generate-updater-manifest.mjs', 'utf8');
@@ -13,6 +14,8 @@ const windowsAcceptance = await readFile('tests/release/acceptance.ps1', 'utf8')
 const macAcceptance = await readFile('tests/release/acceptance.sh', 'utf8');
 const appSource = await readFile('src/app/App.tsx', 'utf8');
 const rustRuntime = `${await readFile('src-tauri/src/lib.rs', 'utf8')}\n${await readFile('src-tauri/src/commands/update.rs', 'utf8')}`;
+requireText(cargoManifest, 'default-run = "smartcat-translate"', 'cargo_default_run_missing');
+requireText(cargoManifest, 'name = "verify-updater-key"', 'updater_verifier_binary_missing');
 for (const [name, source] of [['ci', ci], ['release', release]]) {
   const document = parseDocument(source, { prettyErrors: true });
   if (document.errors.length) fail(`${name}_yaml_invalid:${document.errors[0].message}`);

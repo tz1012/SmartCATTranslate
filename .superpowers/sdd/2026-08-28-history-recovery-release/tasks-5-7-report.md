@@ -101,3 +101,11 @@ Round-2 commit: the commit containing this report (`fix: close updater and accep
 - Round-3 positive gates: PowerShell parser PASS; Bash syntax PASS; workflow semantic policy including ownership ordering PASS; records tests PASS (16/16); records check PASS; `git diff --check` PASS. Per instruction, no failure/E2E/full test was added or run.
 
 Round-3 commit: the commit containing this report (`fix: guard acceptance cleanup ownership`).
+
+## Packaging blocker follow-up
+
+- The packaging retry failed before Cargo compilation with `failed to find main binary, make sure you have package > default-run`. The cause was the release updater public-key verifier adding a second Cargo binary while the package did not identify the desktop binary.
+- `[package] default-run = "smartcat-translate"` now selects the actual `src/main.rs` desktop target and preserves the `verify-updater-key` helper. Workflow policy statically requires both so helper maintenance cannot make Tauri packaging ambiguous again.
+- Direct Cargo metadata reports `default_run=smartcat-translate` and binaries `smartcat-fake-codex,smartcat-translate,verify-updater-key`; Tauri JSON parse, workflow policy, records tests (16/16), records check, and `git diff --check` PASS. The package build itself is deliberately left to the packaging agent's retry, so this follow-up does not claim a successful package artifact.
+
+Packaging-blocker commit: the commit containing this report (`fix: select the desktop binary for packaging`).
