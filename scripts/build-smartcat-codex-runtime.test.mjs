@@ -209,11 +209,12 @@ test("release workflow verifies dependency and artifact evidence before attestin
   assert.match(workflow, /src-tauri\/target\/\$\{\{ matrix\.target \}\}\/release\/bundle/);
 });
 
-test("ordinary CI runs the offline runtime supply-chain contract without building Codex", async () => {
+test("frontend CI runs the offline runtime supply-chain contract without building Codex", async () => {
   const workflow = await readFile(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+  const frontendJob = workflow.slice(workflow.indexOf("  frontend:"), workflow.indexOf("  rust:"));
 
-  assert.match(workflow, /pnpm runtime:build:test/);
-  assert.doesNotMatch(workflow, /pnpm runtime:build -- --target/);
+  assert.match(frontendJob, /pnpm runtime:build:test/);
+  assert.doesNotMatch(frontendJob, /pnpm runtime:build -- --target/);
 });
 
 test("runtime bundle overlay contains only the patched sidecar and tracked notices", async () => {

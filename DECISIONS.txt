@@ -381,3 +381,7 @@ XLSX 위치: workbook relationship으로 worksheet part와 실제 sheet name을 
 [D-068] 비저장 Codex 번역 thread와 붙여넣기 즉시 실행
 상태: 확정
 결정: Codex history persistence는 개인정보 보호를 위해 `none`을 유지한다. disk-backed base thread의 fork가 실패하면 이를 인증 실패로 오인하지 않고 작업별 `ephemeral` thread를 새로 시작하되 read-only sandbox, approval never, 빈 instructionSources 관문을 동일하게 적용한다. 텍스트 원문 paste는 완성된 전체 입력을 즉시 번역하며 버튼은 재시도·명시 실행 수단으로 유지한다.
+
+[D-069] macOS 투명 capture overlay와 CI 작업 범위
+상태: 확정
+결정: macOS 화면 선택 overlay는 기존 투명 배경 동작을 유지하기 위해 Tauri `macos-private-api` feature와 `app.macOSPrivateApi` config를 명시적으로 함께 사용한다. 앱스토어 배포를 주장하지 않으며 서명·공증된 직접 배포 정책을 유지한다. 일반 frontend job은 offline runtime 계약만 검사하고 Codex를 빌드하지 않으며, PR 전용 package job은 실제 unsigned 설치본 검증을 위해 고정·감사된 runtime을 빌드할 수 있다.

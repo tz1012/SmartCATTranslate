@@ -995,3 +995,18 @@ TDD 및 검증
 - TextWorkspace focused test 26/26 PASS, Rust format check PASS, production frontend build PASS(68 modules).
 - Windows x64 NSIS를 다시 만들고 `%LOCALAPPDATA%\SmartCAT Translate`에 exit 0으로 설치했다. 설치 뒤 main app과 bundled Codex가 함께 실행되고 앱 창은 유지됐다. 배포 복사본은 9,037,362 bytes, SHA-256 `D4C5FFBB4E5309CC66FC0247404617D532A7819ECA42DBB246E7E9CF4874D81D`이다.
 - Windows UI Automation의 ValuePattern은 WebView 표시값만 바꾸고 React 입력 이벤트를 만들지 않았으며 운영체제 SendInput도 전경 WebView 값을 갱신하지 못했다. 따라서 실제 계정 GUI 번역 완료는 자동화로 통과 처리하지 않고 사용자 직접 재확인 항목으로 남긴다. 이 과정에서 앱 프로세스 종료·크래시는 관찰되지 않았다.
+
+[2026-08-31] CI macOS·frontend 실패 수정
+
+원인
+- `frontend` CI가 실행하는 runtime supply-chain 테스트는 CI YAML 전체에서 실제 Codex build 명령을 금지했다. 이후 추가된 PR 전용 `package_unsigned` 작업은 설치본 생성을 위해 해당 명령을 의도적으로 포함하므로 오래된 검사 범위와 충돌했다.
+- macOS Rust check는 Tauri의 `WebviewWindowBuilder::transparent`가 macOS private API feature 없이 제공되지 않아 실패했다. 공통 hotkey command가 Windows와 동일하게 `NativeProbe::new()`를 호출하지만 `MacRegistrationProbe`에는 해당 생성자가 없었다.
+
+구현
+- offline runtime 계약 검사를 전체 workflow가 아니라 실제 `frontend` job 범위에 적용한다. PR 전용 unsigned packaging의 고정·감사된 runtime build는 계속 유지한다.
+- Tauri dependency와 `tauri.conf.json`에 macOS private API를 함께 명시해 투명 capture overlay API 계약을 맞춘다. `MacRegistrationProbe`에는 Windows probe와 동일한 기본 생성자를 추가한다.
+
+검증
+- `pnpm runtime:build:test`는 수정 전 18/19 실패를 재현했고 수정 후 19/19 PASS했다.
+- Tauri feature만 추가했을 때 config allowlist 불일치 실패를 재현한 뒤 `app.macOSPrivateApi: true`를 함께 설정했고, Windows x64 `cargo check --locked`가 PASS했다.
+- 실제 macOS Intel/Apple Silicon compile 결과는 다음 GitHub CI run에서 확인한다.

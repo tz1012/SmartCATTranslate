@@ -87,7 +87,14 @@ extern "C" {
     fn CFRelease(value: *const c_void);
 }
 
+#[derive(Default)]
 pub struct MacRegistrationProbe;
+
+impl MacRegistrationProbe {
+    pub fn new() -> Self {
+        Self
+    }
+}
 
 impl RegistrationProbe for MacRegistrationProbe {
     fn probe_and_restore(&self, trigger: &Trigger) -> RegistrationProbeStatus {
