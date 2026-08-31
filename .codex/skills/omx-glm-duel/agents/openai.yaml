@@ -1,0 +1,4 @@
+interface:
+  display_name: "OMX GLM Duel"
+  short_description: "OMX와 GLM 구현안을 Codex가 비교·통합합니다"
+  default_prompt: "Use $omx-glm-duel to run OMX and GLM candidates, then have Codex review and integrate the best result."
