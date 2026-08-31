@@ -1,5 +1,6 @@
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Runtime, State};
+use tauri_plugin_opener::OpenerExt;
 
 use crate::app_state::AppState;
 use crate::codex::auth::{
@@ -41,9 +42,12 @@ pub async fn get_rate_limits(state: State<'_, AppState>) -> Result<RateLimitStat
 }
 
 #[tauri::command]
-pub async fn start_chatgpt_login(state: State<'_, AppState>) -> Result<StartLoginResult, String> {
+pub async fn start_chatgpt_login<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+) -> Result<StartLoginResult, String> {
     let service = state.account_service().await.ok_or(SERVICE_UNAVAILABLE)?;
-    start_login_and_open(service.as_ref(), &TauriBrowserOpener)
+    start_login_and_open(service.as_ref(), &TauriBrowserOpener { app })
         .await
         .map_err(|error| error_code(&error))?;
     Ok(StartLoginResult::BrowserOpened)
@@ -63,11 +67,16 @@ pub async fn cancel_chatgpt_login(state: State<'_, AppState>) -> Result<CancelLo
     })
 }
 
-struct TauriBrowserOpener;
+struct TauriBrowserOpener<R: Runtime> {
+    app: AppHandle<R>,
+}
 
-impl BrowserOpener for TauriBrowserOpener {
+impl<R: Runtime> BrowserOpener for TauriBrowserOpener<R> {
     fn open(&self, url: &url::Url) -> Result<(), BrowserOpenError> {
-        tauri_plugin_opener::open_url(url.as_str(), None::<&str>).map_err(|_| BrowserOpenError)
+        self.app
+            .opener()
+            .open_url(url.as_str(), None::<&str>)
+            .map_err(|_| BrowserOpenError)
     }
 }
 
