@@ -961,3 +961,4 @@ TDD 및 검증
 - ChatGPT 로그인은 관리형 로그인 요청 뒤 `browser_open_failed`로 돌아와 운영체제 브라우저 handoff에서 중단됨을 확인했다. 캡처 오버레이는 각 webview의 DOM keydown과 순차 focus에 의존해 multi-monitor/비활성 overlay에서 Enter/Escape가 보장되지 않는다.
 - 사용자가 제공한 DeepL 화면을 기준으로 한 줄 상단바, hamburger drawer, contextual status, category 기반 compact settings로 개편하고 Windows GUI subsystem·Tauri AppHandle opener·native capture key fallback을 함께 수정하는 설계를 승인했다.
 - 설계와 안전/검증 범위는 `docs/superpowers/specs/2026-08-31-compact-shell-runtime-fixes-design.md`에 고정했다. 장시간 전체 회귀와 새 failure injection은 수행하지 않고 focused test, production build, installed happy-path smoke를 적용한다.
+- 메뉴 목업 검토에서 사용자는 좌측에서 밀려 나오는 drawer 대신 hamburger 아래에 떠서 현재 content 위를 덮는 anchored overlay를 선택했다. workspace는 이동·축소하지 않으며 outside click, Escape, destination 선택과 hamburger 재클릭으로 닫고 새 실행에서는 닫힌 상태로 시작한다.

@@ -11,7 +11,7 @@ Make the installed desktop app behave like a compact translation tool: no consol
 
 - A release Windows build starts as a GUI process without opening or attaching a console window. Content-free diagnostics remain available through redirected logs and development builds.
 - The main window uses one compact top bar containing a hamburger button, Text, Image & screen, Documents, History, and a compact account control. The separate product-title row, permanent account banner, duplicate Text workspace tabs, and permanent metadata row are removed.
-- The hamburger drawer owns account details, Settings, update access, help/about information, and quit. Temporary warnings remain contextual and do not reserve an empty row.
+- The hamburger button opens an anchored overlay menu above the current content; it does not push or resize the workspace. The overlay owns account details, Settings, update access, help/about information, and quit. Temporary warnings remain contextual and do not reserve an empty row.
 - Settings use a compact category rail and dense content panel. Categories are General, Translation, Shortcuts, Privacy & history, and Updates. Existing controls and data behavior remain intact.
 - ChatGPT sign-in opens only the validated official `https://chatgpt.com` host family in the user's default browser and keeps the existing managed Codex account flow. Failure messages remain sanitized.
 - Screen-capture Enter confirms a valid selection and Escape cancels from any capture overlay, including multi-monitor sessions. Pointer selection and arrow-key adjustment continue to work.
@@ -21,12 +21,12 @@ Make the installed desktop app behave like a compact translation tool: no consol
 `App` remains the single view owner. A new compact shell splits presentation into three focused components:
 
 1. `AppTopBar` renders primary modes and the hamburger/account controls.
-2. `AppDrawer` renders account state and secondary commands without consuming permanent vertical space.
+2. `AppMenuOverlay` renders account state and secondary commands as a floating panel anchored below the hamburger button without consuming permanent space.
 3. `SettingsView` keeps settings persistence but adds an internal category selection and compact grouped layout.
 
-The Text workspace will render only the language controls, translation panes, actions, and contextual status. Its duplicate navigation tabs and hidden placeholder panels are removed. Account status becomes a small top-bar indicator; detailed status and login actions live in the drawer. Privacy and recovery warnings continue to appear above the active work area only while relevant.
+The Text workspace will render only the language controls, translation panes, actions, and contextual status. Its duplicate navigation tabs and hidden placeholder panels are removed. Account status becomes a small top-bar indicator; detailed status and login actions live in the menu overlay. The overlay closes on outside click, Escape, selecting a destination, or toggling the hamburger button, and always starts closed on a new app launch. Privacy and recovery warnings continue to appear above the active work area only while relevant.
 
-At narrow widths, the primary mode bar scrolls horizontally and the drawer covers a bounded portion of the window. All controls keep semantic buttons, tab selection state, accessible names, focus visibility, and Escape-to-close behavior.
+At narrow widths, the primary mode bar scrolls horizontally and the overlay uses the available viewport width without changing the workspace layout. All controls keep semantic buttons, tab selection state, accessible names, focus visibility, focus containment while open, focus restoration to the hamburger button, and Escape-to-close behavior.
 
 ## Runtime fixes
 
@@ -53,7 +53,7 @@ Each overlay will explicitly take focus when interacted with and its web handler
 Speed remains the priority. No new failure-injection suite or long full regression is added. Verification consists of focused component tests for the changed UI/key behavior, Rust formatting and focused compile/tests for entry point/opener/capture changes, one production package build, and short installed-app smoke checks:
 
 1. launch without a console window;
-2. compact navigation/drawer/settings visual inspection against the supplied DeepL references;
+2. compact navigation/menu-overlay/settings visual inspection against the supplied DeepL references;
 3. ChatGPT login opens the default browser;
 4. capture selection confirms with Enter and cancels with Escape;
 5. installer and installed sidecar still launch.
