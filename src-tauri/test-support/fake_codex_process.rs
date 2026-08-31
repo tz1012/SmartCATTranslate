@@ -88,6 +88,12 @@ fn main() {
             write_line(&format!(
                 r#"{{"id":{id},"result":{{"account":{{"type":"chatgpt","email":"person@example.com","planType":"plus"}},"requiresOpenaiAuth":true}}}}"#,
             ));
+        } else if line.contains("\"method\":\"account/login/start\"") {
+            write_line(&format!(
+                r#"{{"id":{id},"result":{{"type":"chatgpt","loginId":"runtime-login","authUrl":"https://chatgpt.com/auth/login"}}}}"#,
+            ));
+        } else if line.contains("\"method\":\"account/login/cancel\"") {
+            write_line(&format!(r#"{{"id":{id},"result":{{}}}}"#));
         } else if line.contains("\"method\":\"thread/start\"") {
             write_line(&format!(
                 r#"{{"id":{id},"result":{{"thread":{{"id":"smartcat-base"}},"instructionSources":[]}}}}"#,
