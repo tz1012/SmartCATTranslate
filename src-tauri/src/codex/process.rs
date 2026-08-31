@@ -80,6 +80,8 @@ impl RuntimeSandboxPolicy {
 #[serde(deny_unknown_fields)]
 struct ImportedChatGptAuth {
     auth_mode: ChatGptAuthMode,
+    #[serde(rename = "OPENAI_API_KEY", default, skip_serializing)]
+    openai_api_key: Option<String>,
     tokens: ImportedChatGptTokens,
     #[serde(skip_serializing_if = "Option::is_none")]
     last_refresh: Option<String>,
@@ -104,6 +106,9 @@ struct ImportedChatGptTokens {
 fn canonicalize_chatgpt_auth(bytes: &[u8]) -> Result<Vec<u8>, RuntimeError> {
     let auth: ImportedChatGptAuth =
         serde_json::from_slice(bytes).map_err(|_| RuntimeError::FilesystemFailed)?;
+    if auth.openai_api_key.is_some() {
+        return Err(RuntimeError::FilesystemFailed);
+    }
     for token in [
         auth.tokens.id_token.as_str(),
         auth.tokens.access_token.as_str(),
@@ -1139,6 +1144,7 @@ mod security_tests {
     fn chatgpt_credential_import_accepts_only_documented_fields_and_canonicalizes() {
         let source = json!({
             "auth_mode": "chatgpt",
+            "OPENAI_API_KEY": null,
             "tokens": {
                 "id_token": "header.payload.signature",
                 "access_token": "access-token",
@@ -1150,10 +1156,10 @@ mod security_tests {
 
         let canonical = canonicalize_chatgpt_auth(&serde_json::to_vec(&source).unwrap()).unwrap();
 
-        assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(&canonical).unwrap(),
-            source
-        );
+        let canonical: serde_json::Value = serde_json::from_slice(&canonical).unwrap();
+        assert!(canonical.get("OPENAI_API_KEY").is_none());
+        assert_eq!(canonical["auth_mode"], "chatgpt");
+        assert_eq!(canonical["tokens"]["account_id"], "account-1");
     }
 
     #[test]
