@@ -415,6 +415,11 @@ impl RuntimeLauncher for ProcessRuntimeLauncher {
                 .kill_on_drop(true)
                 .env_clear()
                 .envs(isolated_environment(&launcher.codex_home, &process_temp)?);
+            #[cfg(windows)]
+            {
+                const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+                command.creation_flags(CREATE_NO_WINDOW);
+            }
             let mut spawned = command.spawn().map_err(|_| RuntimeError::SpawnFailed)?;
             let writer = spawned.stdin.take().ok_or(RuntimeError::SpawnFailed)?;
             let reader = spawned.stdout.take().ok_or(RuntimeError::SpawnFailed)?;
