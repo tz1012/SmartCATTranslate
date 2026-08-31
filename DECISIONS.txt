@@ -361,3 +361,11 @@ XLSX 위치: workbook relationship으로 worksheet part와 실제 sheet name을 
 [D-063] 로컬 updater의 역직렬화 가능한 비활성 상태
 상태: 확정
 결정: updater plugin은 항상 등록되므로 committed local/dev config도 역직렬화 가능한 object를 제공하되 `pubkey`는 빈 문자열, `endpoints`는 빈 배열, updater artifact 생성은 false/absent로 유지한다. 이 상태의 update check는 fail closed이고 네트워크 요청이나 설치를 시작하지 않는다. protected release configurator만 실제 Minisign 공개키와 GitHub HTTPS endpoint를 넣을 수 있으며 workflow policy는 그 외 committed updater 값을 거부한다.
+
+[D-064] DeepL 참조 compact shell과 설정 정보 구조
+상태: 확정
+결정: main window의 제품명 전용 행, 영구 account banner, 중복 workspace tabs와 영구 metadata 행을 제거한다. 한 줄 top bar에 hamburger, Text, Image & screen, Documents, History, compact account control을 두고 계정 상세·Settings·Updates·About·Quit은 drawer로 옮긴다. Settings는 General, Translation, Shortcuts, Privacy & history, Updates category rail과 조밀한 content panel을 사용하며 기존 저장 의미와 접근성을 유지한다.
+
+[D-065] Windows GUI entry, 관리형 browser handoff와 capture key 이중 경로
+상태: 확정
+결정: non-debug Windows desktop binary는 GUI subsystem으로 빌드해 console 생성을 막는다. ChatGPT auth URL은 기존 official-host validator를 통과한 뒤 initialized Tauri AppHandle opener로 전달하며 민감 URL/identifier를 기록하지 않는다. capture Enter/Escape는 focused overlay DOM 처리에 더해 active native capture session에서도 idempotent confirm/cancel이 가능하게 해 multi-monitor focus에 의존하지 않는다.

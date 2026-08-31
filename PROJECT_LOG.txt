@@ -954,3 +954,10 @@ TDD 및 검증
 - committed local config에 빈 공개키와 빈 endpoint 배열의 inert updater object를 두고, workflow policy가 이 정확한 fail-closed 상태만 허용하도록 수정했다. protected release configurator는 기존대로 실제 public key와 HTTPS endpoint로 덮어쓴다.
 - 수정 빌드는 frontend 64 modules, workflow policy, built-runtime asset gate, Windows x64 Release, MSI와 NSIS 생성에 통과했다. NSIS로 0.1.0을 `%LOCALAPPDATA%\SmartCAT Translate`에 설치했고, 앱은 12초 readiness smoke 뒤에도 창 제목 `SmartCAT Translate`로 실행 중이었다. 설치된 sidecar `--version`은 `codex-cli 0.144.4`와 exit 0을 반환했다.
 - 최종 unsigned MSI SHA-256은 `e0c6d54b090ecb007e894f82bf91aabbc9399ea44dc727a98c129c4c9eae061e`, NSIS SHA-256은 `998ec96c4f66ffe154ba54b2d7337d17b7663789422cf8149b44dcb9b2b1c1dc`이다. 둘 다 의도한 로컬 prerelease `NotSigned`이며 실제 공개·자동 업데이트는 보호된 서명 환경 전까지 차단된다.
+
+[2026-08-31] 설치판 사용자 검토 — compact shell 및 런타임 결함 수정 설계
+
+- 설치판에서 release 실행 파일이 콘솔 창과 content-free JSON 진단을 표시하고, 현재 화면은 제품명·계정 배너·주 메뉴·중복 workspace 탭/상태가 각각 행을 차지함을 사용자 화면으로 확인했다.
+- ChatGPT 로그인은 관리형 로그인 요청 뒤 `browser_open_failed`로 돌아와 운영체제 브라우저 handoff에서 중단됨을 확인했다. 캡처 오버레이는 각 webview의 DOM keydown과 순차 focus에 의존해 multi-monitor/비활성 overlay에서 Enter/Escape가 보장되지 않는다.
+- 사용자가 제공한 DeepL 화면을 기준으로 한 줄 상단바, hamburger drawer, contextual status, category 기반 compact settings로 개편하고 Windows GUI subsystem·Tauri AppHandle opener·native capture key fallback을 함께 수정하는 설계를 승인했다.
+- 설계와 안전/검증 범위는 `docs/superpowers/specs/2026-08-31-compact-shell-runtime-fixes-design.md`에 고정했다. 장시간 전체 회귀와 새 failure injection은 수행하지 않고 focused test, production build, installed happy-path smoke를 적용한다.
