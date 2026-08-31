@@ -1,7 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { AccountPanel } from '../features/account/AccountPanel';
 import { SettingsView, type Theme } from '../features/settings/SettingsView';
 import { TextWorkspace } from '../features/translation/TextWorkspace';
 import { CaptureWorkspace } from '../features/capture/CaptureWorkspace';
@@ -9,6 +8,8 @@ import { DocumentWorkspace } from '../features/documents/DocumentWorkspace';
 import { HistoryView } from '../features/history/HistoryView';
 import { RecoveryPrompt } from '../features/history/RecoveryPrompt';
 import type { PreparedDocumentRecovery } from '../features/history/historyApi';
+import { AppTopBar, type AppView } from './AppTopBar';
+import { AppMenuOverlay, type SettingsDestination } from './AppMenuOverlay';
 
 export type AppLocale = 'ko' | 'en';
 type PrivacyStatus = { cleanupPending: boolean; retentionPending: boolean };
@@ -16,7 +17,10 @@ type PrivacyStatus = { cleanupPending: boolean; retentionPending: boolean };
 export function App({ locale }: { locale?: AppLocale }) {
   const [savedLocale, setSavedLocale] = useState<AppLocale>('ko');
   const [savedTheme, setSavedTheme] = useState<Theme>('system');
-  const [activeView, setActiveView] = useState<'translate' | 'capture' | 'documents' | 'history' | 'settings'>('translate');
+  const [activeView, setActiveView] = useState<AppView>('translate');
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [, setSettingsDestination] = useState<SettingsDestination>('general');
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
   const [recovery, setRecovery] = useState<PreparedDocumentRecovery>();
   const [privacyStatus, setPrivacyStatus] = useState<PrivacyStatus>();
   const [translationActive, setTranslationActive] = useState(false);
@@ -51,7 +55,10 @@ export function App({ locale }: { locale?: AppLocale }) {
     let disposed = false;
     let stopSettings: (() => void) | undefined;
     let stopPrivacy: (() => void) | undefined;
-    void listen('open-settings', () => setActiveView('settings')).then((unlisten) => {
+    void listen('open-settings', () => {
+      setMenuOpen(false);
+      setActiveView('settings');
+    }).then((unlisten) => {
       if (disposed) unlisten();
       else stopSettings = unlisten;
     });
@@ -71,15 +78,39 @@ export function App({ locale }: { locale?: AppLocale }) {
     setSavedTheme(loadedTheme);
   }, [locale]);
   const labels = accountLocale === 'ko'
-    ? { navigation: '주요 화면', translate: '텍스트', capture: '이미지·화면', documents: '문서', history:'기록', settings: '설정', settingsLocked: '번역 또는 취소 처리 중에는 설정을 열 수 없습니다.' }
-    : { navigation: 'Main views', translate: 'Text', capture: 'Image & screen', documents: 'Documents', history:'History', settings: 'Settings', settingsLocked: 'Settings are unavailable while translation or cancellation is in progress.' };
+    ? { navigation: '주요 화면', translate: '텍스트', capture: '이미지·화면', documents: '문서', history:'기록', settings: '설정', openMenu: '메뉴 열기', closeMenu: '메뉴 닫기', accountMenu: '계정 메뉴', settingsLocked: '번역 또는 취소 처리 중에는 설정을 열 수 없습니다.' }
+    : { navigation: 'Main views', translate: 'Text', capture: 'Image & screen', documents: 'Documents', history:'History', settings: 'Settings', openMenu: 'Open menu', closeMenu: 'Close menu', accountMenu: 'Account menu', settingsLocked: 'Settings are unavailable while translation or cancellation is in progress.' };
+
+  const closeMenu = useCallback(() => {
+    menuButtonRef.current?.focus();
+    setMenuOpen(false);
+  }, []);
+  const navigate = useCallback((view: AppView, destination?: SettingsDestination) => {
+    if (view === 'settings' && translationActive) return;
+    if (destination) setSettingsDestination(destination);
+    setActiveView(view);
+  }, [translationActive]);
 
   return (
     <main data-theme={savedTheme}>
-      <header className="app-header">
-        <h1>SmartCAT Translate</h1>
-      </header>
-      <AccountPanel locale={accountLocale} />
+      <div className="app-shell-navigation">
+        <AppTopBar
+          activeView={activeView}
+          labels={labels}
+          menuOpen={menuOpen}
+          menuButtonRef={menuButtonRef}
+          onNavigate={navigate}
+          onToggleMenu={() => setMenuOpen((open) => !open)}
+        />
+        {menuOpen && (
+          <AppMenuOverlay
+            locale={accountLocale}
+            settingsLocked={translationActive}
+            onClose={closeMenu}
+            onNavigate={navigate}
+          />
+        )}
+      </div>
       {(privacyStatus?.cleanupPending || privacyStatus?.retentionPending) && (
         <aside className="privacy-warning" role="alert">
           {privacyStatus.cleanupPending
@@ -98,15 +129,6 @@ export function App({ locale }: { locale?: AppLocale }) {
           setActiveView('documents');
         }}
       />
-      <nav className="app-navigation" role="tablist" aria-label={labels.navigation} aria-busy={translationActive}>
-        <button id="app-tab-translate" type="button" role="tab" aria-selected={activeView === 'translate'} aria-controls="app-panel-translate" onClick={() => setActiveView('translate')}>{labels.translate}</button>
-        <button id="app-tab-capture" type="button" role="tab" aria-selected={activeView === 'capture'} aria-controls="app-panel-capture" onClick={() => setActiveView('capture')}>{labels.capture}</button>
-        <button id="app-tab-documents" type="button" role="tab" aria-selected={activeView === 'documents'} aria-controls="app-panel-documents" onClick={() => setActiveView('documents')}>{labels.documents}</button>
-        <button id="app-tab-history" type="button" role="tab" aria-selected={activeView === 'history'} aria-controls="app-panel-history" onClick={() => setActiveView('history')}>{labels.history}</button>
-        <button id="app-tab-settings" type="button" role="tab" aria-selected={activeView === 'settings'} aria-controls="app-panel-settings" aria-describedby={translationActive ? 'settings-navigation-status' : undefined} disabled={translationActive} onClick={() => {
-          if (!translationActive) setActiveView('settings');
-        }}>{labels.settings}</button>
-      </nav>
       {translationActive && <p id="settings-navigation-status" className="navigation-note" role="status">{labels.settingsLocked}</p>}
       {activeView === 'translate' ? (
         <div id="app-panel-translate" role="tabpanel" aria-labelledby="app-tab-translate">

@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
@@ -33,10 +33,11 @@ describe('App', () => {
       throw new Error(`unexpected command: ${command}`);
     });
     render(<App />);
-    expect(screen.getByRole('heading', { name: 'SmartCAT Translate' })).toBeVisible();
+    expect(screen.queryByRole('heading', { name: 'SmartCAT Translate' })).not.toBeInTheDocument();
     expect(await screen.findByLabelText('원문')).toBeVisible();
     expect(screen.getByLabelText('번역문')).toBeVisible();
-    expect(screen.getByRole('tab', { name: '텍스트' })).toHaveAttribute('aria-selected', 'true');
+    const navigation = screen.getByRole('tablist', { name: '주요 화면' });
+    expect(within(navigation).getByRole('tab', { name: '텍스트' })).toHaveAttribute('aria-selected', 'true');
   });
 
   it('shows the text translation workspace in English', async () => {
@@ -53,6 +54,8 @@ describe('App', () => {
     expect(await screen.findByRole('region', { name: 'Text translation' })).toBeVisible();
     expect(screen.getByLabelText('Source text')).toBeVisible();
     expect(screen.getByLabelText('Translation')).toBeVisible();
+    expect(screen.queryByRole('complementary', { name: 'ChatGPT account' })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Open menu' }));
     expect(screen.getByRole('complementary', { name: 'ChatGPT account' })).toBeVisible();
     expect(container.textContent).not.toMatch(/[\u3131-\u318E\uAC00-\uD7A3]/u);
     for (const element of container.querySelectorAll('[aria-label]')) {
@@ -74,7 +77,7 @@ describe('App', () => {
     render(<App />);
 
     expect(await screen.findByRole('region', { name: 'Text translation' })).toBeVisible();
-    expect(screen.getByRole('complementary', { name: 'ChatGPT account' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Open menu' })).toBeVisible();
   });
 
   it('mounts the settings screen through nontechnical accessible navigation', async () => {
@@ -90,14 +93,14 @@ describe('App', () => {
       throw new Error(`unexpected command: ${command}`);
     });
     const { container } = render(<App />);
-    const translateTab = await screen.findByRole('tab', { name: '번역' });
-    const settingsTab = screen.getByRole('tab', { name: '설정' });
+    const navigation = await screen.findByRole('tablist', { name: '주요 화면' });
+    const translateTab = within(navigation).getByRole('tab', { name: '텍스트' });
     expect(translateTab).toHaveAttribute('aria-controls', 'app-panel-translate');
-    expect(settingsTab).toHaveAttribute('aria-controls', 'app-panel-settings');
     expect(container.querySelector('main')).toHaveAttribute('data-theme', 'dark');
 
-    await userEvent.click(settingsTab);
-    expect(screen.getByRole('tabpanel', { name: '설정' })).toBeVisible();
+    await userEvent.click(screen.getByRole('button', { name: '메뉴 열기' }));
+    await userEvent.click(screen.getByRole('button', { name: '일반 설정' }));
+    expect(screen.getByRole('tabpanel')).toBeVisible();
     expect(screen.getByRole('heading', { name: '설정' })).toBeVisible();
     expect(screen.getByLabelText('번역 프로필')).toBeVisible();
   });
@@ -121,19 +124,19 @@ describe('App', () => {
     await user.type(source, 'Hello');
     await user.click(screen.getByRole('button', { name: '번역' }));
 
-    const settingsTab = screen.getByRole('tab', { name: '설정' });
-    await waitFor(() => expect(settingsTab).toBeDisabled());
+    await user.click(screen.getByRole('button', { name: '메뉴 열기' }));
+    const settingsButton = screen.getByRole('button', { name: '일반 설정' });
+    await waitFor(() => expect(settingsButton).toBeDisabled());
     expect(screen.getByText('번역 또는 취소 처리 중에는 설정을 열 수 없습니다.')).toBeVisible();
-    fireEvent.click(settingsTab);
-    fireEvent.keyDown(settingsTab, { key: 'Enter' });
+    await user.click(settingsButton);
     expect(source).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: '설정' })).not.toBeInTheDocument();
 
     act(() => eventBridge.translation?.({ payload: {
       type: 'completed', jobId: 'job-1', result: { translatedText: '안녕하세요', detectedLanguage: 'en' },
     } }));
-    await waitFor(() => expect(settingsTab).toBeEnabled());
-    await user.click(settingsTab);
+    await waitFor(() => expect(settingsButton).toBeEnabled());
+    await user.click(settingsButton);
     expect(await screen.findByRole('heading', { name: '설정' })).toBeVisible();
   });
 
@@ -154,6 +157,7 @@ describe('App', () => {
     await user.click(screen.getByRole('button', { name: 'Translate' }));
 
     expect(await screen.findByText('Settings are unavailable while translation or cancellation is in progress.')).toBeVisible();
-    expect(screen.getByRole('tab', { name: 'Settings' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Open menu' }));
+    expect(screen.getByRole('button', { name: 'General settings' })).toBeDisabled();
   });
 });
