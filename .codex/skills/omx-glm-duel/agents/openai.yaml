@@ -1,4 +1,4 @@
 interface:
   display_name: "OMX GLM Duel"
-  short_description: "OMX¿Í GLM ±¸Çö¾ÈÀ» Codex°¡ ºñ±³¡¤ÅëÇÕÇÕ´Ï´Ù"
-  default_prompt: "Use $omx-glm-duel to run OMX and GLM candidates, then have Codex review and integrate the best result."
+  short_description: "CLI OMXì™€ GLM êµ¬í˜„ì•ˆì„ Codex ì•±ì´ ë¹„êµÂ·í†µí•©í•©ë‹ˆë‹¤"
+  default_prompt: "Use $omx-glm-duel to run CLI OMX and GLM in isolated Paseo workspaces, then have Codex App review and integrate the best result."
