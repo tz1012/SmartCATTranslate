@@ -148,22 +148,26 @@ export function TextWorkspace({
     || (effectiveProfile.sourceLanguage === null && detectedLanguage?.toLowerCase() === effectiveProfile.targetLanguage.toLowerCase())
   ));
 
-  const run = (mode: TranslationMode = 'translate') => {
+  const runText = (text: string, mode: TranslationMode = 'translate', useDetectedLanguage = true) => {
     setNotice('');
-    if (!source.trim()) {
+    if (!text.trim()) {
       setValidationError(labels.empty);
       return;
     }
-    if (!sourceWithinBounds(source)) {
+    if (!sourceWithinBounds(text)) {
       setValidationError(labels.tooLarge);
       return;
     }
     if (!effectiveProfile || accountPhase !== 'signedIn') return;
-    if (mode === 'translate' && sameLanguage) return;
+    const sourceMatchesTarget = effectiveProfile.sourceLanguage?.toLowerCase() === effectiveProfile.targetLanguage.toLowerCase()
+      || (useDetectedLanguage && effectiveProfile.sourceLanguage === null && detectedLanguage?.toLowerCase() === effectiveProfile.targetLanguage.toLowerCase());
+    if (mode === 'translate' && sourceMatchesTarget) return;
     setValidationError('');
     activeSecret.current=secret;
-    void start({ text: source, profile: effectiveProfile, field, glossary, mode, secret });
+    void start({ text, profile: effectiveProfile, field, glossary, mode, secret });
   };
+
+  const run = (mode: TranslationMode = 'translate') => runText(source, mode);
 
   const clearBoundResult = () => {
     if (state.status === 'completed' || (state.status === 'failed' && !state.pendingCleanup)) reset();
@@ -289,6 +293,17 @@ export function TextWorkspace({
               if (activityActive) return;
               clearBoundResult();
               setSource(event.target.value);
+            }}
+            onPaste={(event) => {
+              if (activityActive) return;
+              event.preventDefault();
+              const pasted = event.clipboardData.getData('text');
+              const start = event.currentTarget.selectionStart;
+              const end = event.currentTarget.selectionEnd;
+              const nextSource = source.slice(0, start) + pasted + source.slice(end);
+              clearBoundResult();
+              setSource(nextSource);
+              runText(nextSource, 'translate', false);
             }}
             onKeyDown={(event) => {
               if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') { event.preventDefault(); run(); }

@@ -979,3 +979,19 @@ TDD 및 검증
 - visible top-level window 열거에서 SmartCAT Translate만 확인했으며 Windows Terminal/OpenConsole/visible conhost는 없었다. 숨은 conhost에는 제목과 visible window가 없다.
 - 최소 창 실제 DPI capture에서 상단 종 badge, 두 칸 번역 영역과 하단 번역·복사·저장·지우기 영역이 동시에 보임을 확인했다.
 - D 드라이브 공간 부족으로 무거운 debug test link는 중단했다. 빌드 프로세스 0개와 정확한 경로를 확인한 뒤 Cargo 공식 `clean --profile dev`로 재생성 가능한 `D:\SmartCATTranslateData\cargo-target\debug`만 정리해 10.76GB를 확보했고 release cache와 사용자 자료는 보존했다.
+
+[2026-08-31] 텍스트 붙여넣기 즉시 번역 및 비저장 Codex 세션 복구
+
+원인
+- 설치 앱의 Codex 설정은 개인정보 보호를 위해 history persistence를 `none`으로 유지하지만, 번역 시작은 디스크에 저장된 base thread를 요구하는 `thread/fork`만 사용했다. 계정·모델 조회는 성공해도 fork가 실패해 `turn/start`가 전송되지 않았고 UI에는 일반 번역 실패만 표시됐다.
+
+구현
+- 텍스트 원문 입력란의 paste 이벤트에서 붙여넣기 후 전체 문자열을 계산해 버튼 없이 즉시 번역 작업을 시작한다. 기존 입력값과 선택 영역도 보존하며, 감지 언어 상태 갱신을 기다리느라 첫 요청이 누락되지 않게 했다.
+- `thread/fork`가 불가능하면 같은 작업 기한 안에서 `ephemeral: true`, `approvalPolicy: never`, `sandbox: read-only`인 새 thread를 시작한다. instruction source가 없음을 다시 확인한 뒤에만 원문이 포함된 번역 turn을 시작한다.
+- 사용자에게는 임의의 내부 오류 문자열 대신 허용된 안전 오류 코드만 표시하고 그 외에는 일반 서비스 오류로 처리한다.
+
+검증
+- 신규 Rust 회귀 테스트는 수정 전 `ProtocolViolation`을 재현했고 수정 후 1/1 PASS했다.
+- TextWorkspace focused test 26/26 PASS, Rust format check PASS, production frontend build PASS(68 modules).
+- Windows x64 NSIS를 다시 만들고 `%LOCALAPPDATA%\SmartCAT Translate`에 exit 0으로 설치했다. 설치 뒤 main app과 bundled Codex가 함께 실행되고 앱 창은 유지됐다. 배포 복사본은 9,037,362 bytes, SHA-256 `D4C5FFBB4E5309CC66FC0247404617D532A7819ECA42DBB246E7E9CF4874D81D`이다.
+- Windows UI Automation의 ValuePattern은 WebView 표시값만 바꾸고 React 입력 이벤트를 만들지 않았으며 운영체제 SendInput도 전경 WebView 값을 갱신하지 못했다. 따라서 실제 계정 GUI 번역 완료는 자동화로 통과 처리하지 않고 사용자 직접 재확인 항목으로 남긴다. 이 과정에서 앱 프로세스 종료·크래시는 관찰되지 않았다.

@@ -475,6 +475,94 @@ async fn malicious_source_cannot_trigger_tools_or_escape_the_ephemeral_turn() {
 }
 
 #[tokio::test]
+async fn starts_an_ephemeral_thread_when_the_base_thread_cannot_be_forked() {
+    let harness = spawn_fake_transport(|mut reader, mut writer| async move {
+        let base = read_request(&mut reader).await;
+        write_json_line(
+            &mut writer,
+            &json!({"id": base["id"], "result": {"thread": {"id": "base"}, "instructionSources": []}}),
+        )
+        .await;
+
+        let fork = read_request(&mut reader).await;
+        assert_eq!(fork["method"], "thread/fork");
+        write_json_line(
+            &mut writer,
+            &json!({"id": fork["id"], "error": {"code": -32001, "message": "thread not found"}}),
+        )
+        .await;
+
+        let fallback = read_request(&mut reader).await;
+        assert_eq!(fallback["method"], "thread/start");
+        assert_eq!(fallback["params"]["ephemeral"], true);
+        assert_eq!(fallback["params"]["approvalPolicy"], "never");
+        assert_eq!(fallback["params"]["sandbox"], "read-only");
+        assert!(!fallback.to_string().contains("hello"));
+        write_json_line(
+            &mut writer,
+            &json!({"id": fallback["id"], "result": {"thread": {"id": "ephemeral"}, "instructionSources": []}}),
+        )
+        .await;
+
+        let turn = read_request(&mut reader).await;
+        assert_eq!(turn["method"], "turn/start");
+        assert_eq!(turn["params"]["threadId"], "ephemeral");
+        write_json_line(
+            &mut writer,
+            &json!({"id": turn["id"], "result": {"turn": {"id": "turn-1"}}}),
+        )
+        .await;
+        write_json_line(
+            &mut writer,
+            &json!({
+                "method": "item/completed",
+                "params": {
+                    "threadId": "ephemeral",
+                    "turnId": "turn-1",
+                    "item": {
+                        "id": "agent-1",
+                        "type": "agentMessage",
+                        "text": "{\"translation\":\"안녕하세요\"}"
+                    }
+                }
+            }),
+        )
+        .await;
+        write_json_line(
+            &mut writer,
+            &json!({
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "ephemeral",
+                    "turnId": "turn-1",
+                    "turn": {"id": "turn-1", "status": "completed", "items": []}
+                }
+            }),
+        )
+        .await;
+
+        let unsubscribe = read_request(&mut reader).await;
+        assert_eq!(unsubscribe["method"], "thread/unsubscribe");
+        write_json_line(
+            &mut writer,
+            &json!({"id": unsubscribe["id"], "result": {"status": "unsubscribed"}}),
+        )
+        .await;
+    })
+    .await;
+    let root = tempdir().unwrap();
+    let workspace = prepare_owned_empty_workspace(root.path()).unwrap();
+    let backend = CodexTranslationBackend::new(Arc::new(harness.transport), &workspace)
+        .await
+        .unwrap();
+
+    let result = backend.translate(request("hello")).await.unwrap();
+
+    assert_eq!(result.translated_text, "안녕하세요");
+    harness.server_task.await.unwrap();
+}
+
+#[tokio::test]
 async fn applies_the_resolved_model_and_streams_only_the_structured_translation() {
     let long_delta = "가".repeat(80);
     let server_delta = long_delta.clone();

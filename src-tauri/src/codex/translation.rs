@@ -245,15 +245,35 @@ impl CodexTranslationBackend {
             .await
             .clone()
             .ok_or(TranslationError::ShuttingDown)?;
-        let fork = request_before_cancel(
+        let thread = match request_before_cancel(
             &self.transport,
             deadline,
             "thread/fork",
-            json!({ "threadId": base_thread_id, "ephemeral": true }),
+            json!({ "threadId": &base_thread_id, "ephemeral": true }),
             cancelled,
         )
-        .await?;
-        let thread_id = response_id(&fork, "thread")?.to_owned();
+        .await
+        {
+            Ok(thread) => thread,
+            Err(_) => {
+                let thread = request_before_cancel(
+                    &self.transport,
+                    deadline,
+                    "thread/start",
+                    json!({
+                        "cwd": &self.workspace,
+                        "approvalPolicy": "never",
+                        "sandbox": "read-only",
+                        "ephemeral": true
+                    }),
+                    cancelled,
+                )
+                .await?;
+                require_empty_instruction_sources(&thread)?;
+                thread
+            }
+        };
+        let thread_id = response_id(&thread, "thread")?.to_owned();
         if *cancelled.borrow() {
             let _ =
                 unsubscribe_with_timeout(&self.transport, &thread_id, self.cleanup_timeout()).await;

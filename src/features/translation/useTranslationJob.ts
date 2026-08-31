@@ -112,13 +112,16 @@ export function useTranslationJob() {
       const earlyEvents = pendingEvents.current;
       pendingEvents.current = [];
       for (const event of earlyEvents) applyEvent(event, thisGeneration);
-    } catch {
+    } catch (error) {
       if (mounted.current && thisGeneration === generation.current) {
         if (activeJobId.current) {
           cancelSent.current = false;
           setState({ status: 'failed', jobId: activeJobId.current, text: '', message: 'translation_cancel_failed', pendingCleanup: true });
         } else {
-          setState({ status: 'failed', text: '', message: 'translation_start_failed' });
+          const code = typeof error === 'string' && /^[a-z][a-z0-9_]{0,95}$/.test(error)
+            ? error
+            : 'translation_start_failed';
+          setState({ status: 'failed', text: '', message: code });
         }
       }
     } finally {

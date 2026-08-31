@@ -139,6 +139,33 @@ describe('TextWorkspace', () => {
     });
   });
 
+  it('starts translation immediately when text is pasted into the source pane', async () => {
+    render(<TextWorkspace />);
+    const source = await screen.findByLabelText('원문');
+
+    fireEvent.paste(source, { clipboardData: { getData: () => 'Hello from paste' } });
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('translate_text', {
+      request: expect.objectContaining({ text: 'Hello from paste', mode: 'translate' }),
+    }));
+    expect(source).toHaveValue('Hello from paste');
+  });
+
+  it('shows a safe service error when translation cannot start', async () => {
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'get_settings') return structuredClone(settings);
+      if (command === 'get_account') return { account: { state: 'signedIn' }, loginPending: false };
+      if (command === 'translate_text') throw 'translation_service_unavailable';
+      throw new Error(`unexpected command: ${command}`);
+    });
+    render(<TextWorkspace />);
+    await userEvent.type(await screen.findByLabelText('원문'), 'Hello');
+
+    await userEvent.click(screen.getByRole('button', { name: '번역' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('번역 서비스를 시작할 수 없습니다.');
+  });
+
   it('streams only the active job and replaces deltas with the completed result', async () => {
     render(<TextWorkspace />);
     await userEvent.type(await screen.findByLabelText('원문'), 'Hello');
