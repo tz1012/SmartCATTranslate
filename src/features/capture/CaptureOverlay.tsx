@@ -20,6 +20,7 @@ export function CaptureOverlay() {
   const [selection, setSelection] = useState<CaptureSelection>();
   const [error, setError] = useState<string>();
   const dragStart = useRef<[number, number] | undefined>(undefined);
+  const overlayRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     void getCaptureOverlay(sessionId, monitorId).then(setDescriptor).catch(() => setError('capture_overlay_unavailable'));
@@ -52,9 +53,14 @@ export function CaptureOverlay() {
   }, [selection, sessionId]);
 
   useEffect(() => {
+    if (descriptor) overlayRef.current?.focus({ preventScroll: true });
+  }, [descriptor]);
+
+  useEffect(() => {
     const key = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') { event.preventDefault(); cancel(); return; }
-      if (event.key === 'Enter') { event.preventDefault(); confirm(); return; }
+      if (event.repeat) return;
+      if (event.key === 'Escape' || event.key === 'Esc') { event.preventDefault(); cancel(); return; }
+      if (event.key === 'Enter' || event.code === 'NumpadEnter') { event.preventDefault(); confirm(); return; }
       if (!selection || !['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
       event.preventDefault();
       const step = event.shiftKey ? 10 : 1;
@@ -67,8 +73,8 @@ export function CaptureOverlay() {
       } else { rect.x += deltaX; rect.y += deltaY; }
       publish({ globalPhysical: rect });
     };
-    window.addEventListener('keydown', key);
-    return () => window.removeEventListener('keydown', key);
+    document.addEventListener('keydown', key, true);
+    return () => document.removeEventListener('keydown', key, true);
   }, [cancel, confirm, publish, selection]);
 
   if (error) return <div className="capture-overlay-error" role="alert">{ko ? '화면 캡처를 시작할 수 없습니다.' : 'Screen capture could not start.'}</div>;
@@ -83,10 +89,16 @@ export function CaptureOverlay() {
 
   return (
     <main
+      ref={overlayRef}
+      tabIndex={-1}
       className="capture-overlay"
       aria-label={ko ? '번역할 화면 영역 선택' : 'Select screen region to translate'}
       style={{ backgroundImage: `url(${descriptor.backgroundDataUrl})` }}
-      onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); dragStart.current = physicalPoint(event.clientX, event.clientY); }}
+      onPointerDown={(event) => {
+        event.currentTarget.focus({ preventScroll: true });
+        event.currentTarget.setPointerCapture(event.pointerId);
+        dragStart.current = physicalPoint(event.clientX, event.clientY);
+      }}
       onPointerMove={(event) => {
         if (!dragStart.current || !event.currentTarget.hasPointerCapture(event.pointerId)) return;
         publish({ globalPhysical: rectFromPoints(dragStart.current, physicalPoint(event.clientX, event.clientY)) });
