@@ -16,6 +16,7 @@ function deferred<T>() {
 }
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
+vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async () => vi.fn()) }));
 vi.mock('../account/accountApi', () => ({
   onAccountStateChanged: vi.fn(async (handler: typeof accountEvents.handler) => {
     accountEvents.handler = handler;
@@ -64,11 +65,13 @@ afterEach(() => {
 });
 
 describe('SettingsView', () => {
-  it('shows approved Korean defaults and all settings groups', async () => {
+  it('shows approved Korean defaults in compact settings categories', async () => {
     mockCommands();
+    const user = userEvent.setup();
     render(<SettingsView />);
 
     expect(await screen.findByRole('heading', { name: '설정' })).toBeVisible();
+    expect(screen.getByRole('tablist', { name: '설정 분류' })).toBeVisible();
     const profiles = screen.getByRole('group', { name: '번역 프로필' });
     expect(within(profiles).getByLabelText('원문 언어')).toHaveValue('auto');
     expect(within(profiles).getByLabelText('대상 언어')).toHaveValue('ko');
@@ -77,9 +80,16 @@ describe('SettingsView', () => {
     expect(within(profiles).getByLabelText('분야')).toHaveValue('general');
     expect(screen.getByRole('group', { name: '용어집' })).toBeVisible();
     expect(screen.getByRole('group', { name: '모델' })).toBeVisible();
+
+    await user.click(screen.getByRole('tab', { name: '일반' }));
     expect(screen.getByLabelText('로그인할 때 실행')).not.toBeChecked();
-    expect(screen.getByLabelText('닫기 동작')).toHaveValue('keepInTray');
     expect(screen.getByLabelText('빠른 번역 위치')).toHaveValue('popup');
+
+    await user.click(screen.getByRole('tab', { name: '개인정보·기록' }));
+    expect(screen.getByLabelText('닫기 동작')).toHaveValue('keepInTray');
+
+    await user.click(screen.getByRole('tab', { name: '단축키' }));
+    expect(screen.getByLabelText('단축키 일시 중지')).not.toBeChecked();
   });
 
   it('creates, renames and deletes a profile before saving', async () => {
@@ -275,7 +285,7 @@ describe('SettingsView', () => {
       throw new Error(`unexpected command: ${command} ${String(args)}`);
     });
     const user = userEvent.setup();
-    render(<SettingsView />);
+    render(<SettingsView initialCategory="general" />);
     await screen.findByRole('heading', { name: '설정' });
 
     await user.click(screen.getByRole('button', { name: '설정 저장' }));

@@ -19,7 +19,7 @@ export function App({ locale }: { locale?: AppLocale }) {
   const [savedTheme, setSavedTheme] = useState<Theme>('system');
   const [activeView, setActiveView] = useState<AppView>('translate');
   const [menuOpen, setMenuOpen] = useState(false);
-  const [, setSettingsDestination] = useState<SettingsDestination>('general');
+  const [settingsDestination, setSettingsDestination] = useState<SettingsDestination>('general');
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const [recovery, setRecovery] = useState<PreparedDocumentRecovery>();
   const [privacyStatus, setPrivacyStatus] = useState<PrivacyStatus>();
@@ -145,8 +145,8 @@ export function App({ locale }: { locale?: AppLocale }) {
       ) : activeView === 'history' ? (
         <div id="app-panel-history" role="tabpanel" aria-labelledby="app-tab-history"><HistoryView locale={accountLocale}/></div>
       ) : (
-        <div id="app-panel-settings" role="tabpanel" aria-labelledby="app-tab-settings">
-          <SettingsView locale={locale} onPreferencesLoaded={acceptPreferences} onPreferencesSaved={acceptPreferences} />
+        <div id="app-panel-settings" role="tabpanel" aria-label={labels.settings}>
+          <SettingsView locale={locale} initialCategory={settingsDestination} onPreferencesLoaded={acceptPreferences} onPreferencesSaved={acceptPreferences} />
         </div>
       )}
     </main>

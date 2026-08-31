@@ -100,9 +100,9 @@ describe('App', () => {
 
     await userEvent.click(screen.getByRole('button', { name: '메뉴 열기' }));
     await userEvent.click(screen.getByRole('button', { name: '일반 설정' }));
-    expect(screen.getByRole('tabpanel')).toBeVisible();
+    expect(screen.getByRole('tabpanel', { name: '설정' })).toBeVisible();
     expect(screen.getByRole('heading', { name: '설정' })).toBeVisible();
-    expect(screen.getByLabelText('번역 프로필')).toBeVisible();
+    expect(screen.getByLabelText('화면 언어')).toBeVisible();
   });
 
   it('keeps the translation workspace mounted and locks settings navigation until the active job terminates', async () => {

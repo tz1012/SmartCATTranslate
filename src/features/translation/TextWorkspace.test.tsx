@@ -105,6 +105,14 @@ afterEach(() => {
 });
 
 describe('TextWorkspace', () => {
+  it('uses the app top bar as the only workspace navigation', async () => {
+    render(<TextWorkspace />);
+
+    await screen.findByLabelText('원문');
+    expect(screen.queryByRole('tablist', { name: '텍스트 번역' })).not.toBeInTheDocument();
+    expect(screen.queryByText('단축키: 설정되지 않음')).not.toBeInTheDocument();
+  });
+
   it('translates with the approved saved default profile', async () => {
     const user = userEvent.setup();
     render(<TextWorkspace />);
@@ -511,10 +519,9 @@ describe('TextWorkspace', () => {
     });
     const { container } = render(<TextWorkspace locale="en" />);
     expect(await screen.findByRole('region', { name: 'Text translation' })).toBeVisible();
-    expect(screen.getByRole('tab', { name: 'Text' })).toHaveAttribute('aria-selected', 'true');
-    expect(screen.getByRole('tab', { name: 'Text' })).toHaveAttribute('aria-controls', 'workspace-panel-text');
-    expect(screen.getByRole('tabpanel', { name: 'Text' })).toHaveAttribute('id', 'workspace-panel-text');
-    expect(screen.getByText('Shortcut: Not set')).toBeVisible();
+    expect(screen.queryByRole('tablist', { name: 'Text translation' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Shortcut: Not set')).not.toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('Ready to translate.');
     expect(container.textContent).not.toMatch(/[\u3131-\u318E\uAC00-\uD7A3]/u);
   });
 });

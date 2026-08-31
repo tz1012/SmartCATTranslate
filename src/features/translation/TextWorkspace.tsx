@@ -216,7 +216,8 @@ export function TextWorkspace({
   const jobError = state.status === 'failed' ? errorMessage(state.message, locale) : '';
   const status = notice || (state.status === 'running' ? labels.running
     : state.status === 'completed' ? labels.completed
-      : accountPhase === 'signedIn' ? labels.ready : '');
+      : accountPhase === 'signedIn' ? labels.ready
+        : accountPhase === 'signedOut' ? labels.signedOut : labels.checking);
   const pendingCleanup = state.status === 'failed' && Boolean(state.pendingCleanup);
   const activityActive = state.status === 'running' || pendingCleanup;
   const disabled = loadError || !effectiveProfile || accountPhase !== 'signedIn' || listenerState !== 'ready' || pendingCleanup;
@@ -236,26 +237,6 @@ export function TextWorkspace({
         void cancel();
       }
     }}>
-      <nav className="workspace-tabs" role="tablist" aria-label={labels.workspace}>
-        <button id="workspace-tab-text" aria-controls="workspace-panel-text" type="button" role="tab" aria-selected="true">{labels.text}</button>
-        {([
-          ['image', labels.image],
-          ['document', labels.document],
-          ['capture', labels.capture],
-          ['history', labels.history],
-        ] as const).map(([id, label]) => (
-          <button key={id} id={`workspace-tab-${id}`} aria-controls={`workspace-panel-${id}`} type="button" role="tab" aria-selected="false" disabled>{label}</button>
-        ))}
-      </nav>
-
-      <div id="workspace-panel-text" role="tabpanel" aria-labelledby="workspace-tab-text">
-      <div className="workspace-meta">
-        <span className={accountPhase === 'signedIn' ? 'connected' : ''}>
-          {accountPhase === 'checking' ? labels.checking : accountPhase === 'signedIn' ? labels.signedIn : labels.signedOut}
-        </span>
-        <span>{labels.shortcut}</span>
-      </div>
-
       {loadError && <p role="alert">{labels.loadError}</p>}
       <SecretModeSwitch locale={locale} value={secret} onChange={setSecret}/>
       <div className="language-bar">
@@ -338,15 +319,6 @@ export function TextWorkspace({
       <div className="workspace-status" aria-live="polite" role="status">{status}</div>
       {(validationError || jobError) && <p role="alert" aria-live="polite">{validationError || jobError}</p>}
       {state.status === 'failed' && <button type="button" onClick={retry} disabled={state.pendingCleanup ? false : disabled}>{labels.retry}</button>}
-      </div>
-      {([
-        ['image', labels.image],
-        ['document', labels.document],
-        ['capture', labels.capture],
-        ['history', labels.history],
-      ] as const).map(([id]) => (
-        <div key={id} id={`workspace-panel-${id}`} role="tabpanel" aria-labelledby={`workspace-tab-${id}`} hidden />
-      ))}
     </section>
   );
 }

@@ -10,6 +10,7 @@ import { ModelSelector, modelChoiceValue } from './ModelSelector';
 import { UpdatePanel } from './UpdatePanel';
 import { createUuidV4 } from './uuid';
 import { HotkeySettings } from '../hotkeys/HotkeySettings';
+import { SettingsCategories, type SettingsCategory } from './SettingsCategories';
 
 export type AppLocale = 'ko' | 'en';
 export type Theme = 'system' | 'light' | 'dark';
@@ -66,6 +67,7 @@ const copy = {
     modelListStatus: '모델 목록 상태', modelListError: '모델 목록을 불러올 수 없습니다. 저장된 선택을 유지합니다.', signedOutModels: 'ChatGPT 계정 연결 후 모델 목록을 확인할 수 있습니다.',
     retryModels: '다시 시도', installedOnly: '설치된 앱에서만 사용할 수 있습니다', lifecycleError: '운영체제 설정을 변경하지 못했습니다', pauseHotkeys: '단축키 일시 중지',
     rewritePrompt: '문장을 개선할까요?', rewrite: '문장 개선', changeTarget: '대상 언어 변경', defaultProfile: '기본 프로필', newProfile: '새 프로필',
+    retention: '번역 기록 보관 기간', retentionUnit: '일',
   },
   en: {
     title: 'Settings', loading: 'Loading settings', loadError: 'Could not load settings', profiles: 'Translation profiles',
@@ -78,6 +80,7 @@ const copy = {
     modelListStatus: 'Model list status', modelListError: 'Could not load the model list. The saved selection is preserved.', signedOutModels: 'Connect a ChatGPT account to view available models.',
     retryModels: 'Retry', installedOnly: 'Available in the installed app only', lifecycleError: 'Could not change the operating system setting', pauseHotkeys: 'Pause hotkeys',
     rewritePrompt: 'Improve the sentence?', rewrite: 'Improve writing', changeTarget: 'Change target language', defaultProfile: 'Default profile', newProfile: 'New profile',
+    retention: 'Keep translation history', retentionUnit: 'days',
   },
 } as const;
 
@@ -97,12 +100,14 @@ export function SettingsView({
   onRewrite,
   onPreferencesLoaded,
   onPreferencesSaved,
+  initialCategory = 'translation',
 }: {
   locale?: AppLocale;
   detectedSourceLanguage?: string;
   onRewrite?: () => void;
   onPreferencesLoaded?: (locale: AppLocale, theme: Theme) => void;
   onPreferencesSaved?: (locale: AppLocale, theme: Theme) => void;
+  initialCategory?: SettingsCategory;
 }) {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [models, setModels] = useState<AvailableModel[]>([]);
@@ -112,10 +117,13 @@ export function SettingsView({
   const [loadFailed, setLoadFailed] = useState(false);
   const [launchAtLoginAvailable, setLaunchAtLoginAvailable] = useState(true);
   const [hotkeysPaused, setHotkeysPaused] = useState(false);
+  const [category, setCategory] = useState<SettingsCategory>(initialCategory);
   const settingsRevision = useRef(0);
   const saveGeneration = useRef(0);
   const mounted = useRef(false);
   const modelRefreshGeneration = useRef(0);
+
+  useEffect(() => setCategory(initialCategory), [initialCategory]);
 
   const refreshModels = useCallback(async () => {
     if (!mounted.current) return;
@@ -256,64 +264,80 @@ export function SettingsView({
     && effectiveSourceLanguage.toLowerCase() === selectedProfile.profile.targetLanguage.toLowerCase());
 
   return (
-    <section aria-labelledby="settings-title">
+    <section className="settings-view" aria-labelledby="settings-title">
       <h2 id="settings-title">{labels.title}</h2>
-      <label>{labels.locale}<select value={settings.locale} onChange={(event) => editSettings((current) => ({ ...current, locale: event.target.value as AppLocale }))}>
-        <option value="ko">{locale === 'ko' ? '한국어' : 'Korean'}</option><option value="en">English</option>
-      </select></label>
-      <label>{labels.theme}<select value={settings.theme} onChange={(event) => editSettings((current) => ({ ...current, theme: event.target.value as Theme }))}>
-        <option value="system">{labels.system}</option><option value="light">{labels.light}</option><option value="dark">{labels.dark}</option>
-      </select></label>
+      <div className="settings-shell">
+        <SettingsCategories locale={locale} value={category} onChange={setCategory} />
+        <div id={`settings-panel-${category}`} className="settings-content" role="tabpanel" aria-labelledby={`settings-tab-${category}`}>
+          {category === 'general' && <div className="settings-form-grid">
+            <label>{labels.locale}<select value={settings.locale} onChange={(event) => editSettings((current) => ({ ...current, locale: event.target.value as AppLocale }))}>
+              <option value="ko">{locale === 'ko' ? '한국어' : 'Korean'}</option><option value="en">English</option>
+            </select></label>
+            <label>{labels.theme}<select value={settings.theme} onChange={(event) => editSettings((current) => ({ ...current, theme: event.target.value as Theme }))}>
+              <option value="system">{labels.system}</option><option value="light">{labels.light}</option><option value="dark">{labels.dark}</option>
+            </select></label>
+            <label className="settings-check"><input type="checkbox" checked={settings.launchAtLogin} disabled={!launchAtLoginAvailable} onChange={(event) => void updateLifecycle('set_launch_at_login', { enabled: event.target.checked })} />{labels.launch}</label>
+            {!launchAtLoginAvailable && <p className="settings-help">{labels.installedOnly}</p>}
+            <label>{labels.quickPosition}<select value={settings.quickAccessPosition} onChange={(event) => void updateLifecycle('set_quick_access_position', { quickAccessPosition: event.target.value as QuickAccessPosition })}>
+              <option value="popup">{labels.popup}</option><option value="mainWindow">{labels.mainWindow}</option>
+            </select></label>
+          </div>}
 
-      <fieldset>
-        <legend>{labels.profiles}</legend>
-        <select aria-label={labels.profiles} value={selectedProfile.id} onChange={(event) => setSelectedProfileId(event.target.value)}>
-          {settings.profiles.map((profile) => <option key={profile.id} value={profile.id}>{displayProfileName(profile, settings, locale)}</option>)}
-        </select>
-        <button type="button" onClick={addProfile}>{labels.addProfile}</button>
-        <button type="button" disabled={selectedProfile.id === settings.defaultProfileId} onClick={deleteProfile}>{labels.deleteProfile}</button>
-        <label>{labels.profileName}<input value={displayProfileName(selectedProfile, settings, locale)} onChange={(event) => updateProfile((profile) => ({ ...profile, name: event.target.value }))} /></label>
-        <label>{labels.source}<select value={selectedProfile.profile.sourceLanguage ?? 'auto'} onChange={(event) => updateTranslationProfile({ sourceLanguage: event.target.value === 'auto' ? null : event.target.value })}>
-          <option value="auto">{labels.auto}</option>
-          {SUPPORTED_LANGUAGES.map((language) => <option key={language.code} value={language.code}>{languageLabel(language, locale)}</option>)}
-        </select></label>
-        <label>{labels.target}<select value={selectedProfile.profile.targetLanguage} onChange={(event) => updateTranslationProfile({ targetLanguage: event.target.value })}>
-          {SUPPORTED_LANGUAGES.map((language) => <option key={language.code} value={language.code}>{languageLabel(language, locale)}</option>)}
-        </select></label>
-        <label>{labels.quality}<select value={selectedProfile.profile.quality} onChange={(event) => updateTranslationProfile({ quality: event.target.value as Quality })}>
-          <option value="fast">{labels.fast}</option><option value="balanced">{labels.balanced}</option><option value="precise">{labels.precise}</option>
-        </select></label>
-        <label>{labels.tone}<select value={selectedProfile.profile.tone} onChange={(event) => updateTranslationProfile({ tone: event.target.value as Tone })}>
-          <option value="natural">{labels.natural}</option><option value="literal">{labels.literal}</option><option value="formal">{labels.formal}</option><option value="casual">{labels.casual}</option>
-        </select></label>
-        <label>{labels.field}<select value={selectedProfile.field} onChange={(event) => updateProfile((profile) => ({ ...profile, field: event.target.value as Field }))}>
-          <option value="general">{labels.general}</option><option value="technical">{labels.technical}</option><option value="legal">{labels.legal}</option><option value="medical">{labels.medical}</option><option value="business">{labels.business}</option>
-        </select></label>
-      </fieldset>
+          {category === 'translation' && <>
+            <fieldset className="profile-settings-grid">
+              <legend>{labels.profiles}</legend>
+              <div className="profile-picker">
+                <select aria-label={labels.profiles} value={selectedProfile.id} onChange={(event) => setSelectedProfileId(event.target.value)}>
+                  {settings.profiles.map((profile) => <option key={profile.id} value={profile.id}>{displayProfileName(profile, settings, locale)}</option>)}
+                </select>
+                <button type="button" onClick={addProfile}>{labels.addProfile}</button>
+                <button type="button" disabled={selectedProfile.id === settings.defaultProfileId} onClick={deleteProfile}>{labels.deleteProfile}</button>
+              </div>
+              <label>{labels.profileName}<input value={displayProfileName(selectedProfile, settings, locale)} onChange={(event) => updateProfile((profile) => ({ ...profile, name: event.target.value }))} /></label>
+              <label>{labels.source}<select value={selectedProfile.profile.sourceLanguage ?? 'auto'} onChange={(event) => updateTranslationProfile({ sourceLanguage: event.target.value === 'auto' ? null : event.target.value })}>
+                <option value="auto">{labels.auto}</option>
+                {SUPPORTED_LANGUAGES.map((language) => <option key={language.code} value={language.code}>{languageLabel(language, locale)}</option>)}
+              </select></label>
+              <label>{labels.target}<select value={selectedProfile.profile.targetLanguage} onChange={(event) => updateTranslationProfile({ targetLanguage: event.target.value })}>
+                {SUPPORTED_LANGUAGES.map((language) => <option key={language.code} value={language.code}>{languageLabel(language, locale)}</option>)}
+              </select></label>
+              <label>{labels.quality}<select value={selectedProfile.profile.quality} onChange={(event) => updateTranslationProfile({ quality: event.target.value as Quality })}>
+                <option value="fast">{labels.fast}</option><option value="balanced">{labels.balanced}</option><option value="precise">{labels.precise}</option>
+              </select></label>
+              <label>{labels.tone}<select value={selectedProfile.profile.tone} onChange={(event) => updateTranslationProfile({ tone: event.target.value as Tone })}>
+                <option value="natural">{labels.natural}</option><option value="literal">{labels.literal}</option><option value="formal">{labels.formal}</option><option value="casual">{labels.casual}</option>
+              </select></label>
+              <label>{labels.field}<select value={selectedProfile.field} onChange={(event) => updateProfile((profile) => ({ ...profile, field: event.target.value as Field }))}>
+                <option value="general">{labels.general}</option><option value="technical">{labels.technical}</option><option value="legal">{labels.legal}</option><option value="medical">{labels.medical}</option><option value="business">{labels.business}</option>
+              </select></label>
+            </fieldset>
+            {rewriteSuggested && <aside aria-live="polite"><p>{labels.rewritePrompt}</p><button type="button" onClick={onRewrite}>{labels.rewrite}</button><button type="button" onClick={() => updateTranslationProfile({ targetLanguage: selectedProfile.profile.targetLanguage === 'ko' ? 'en' : 'ko' })}>{labels.changeTarget}</button></aside>}
+            <GlossaryEditor locale={locale} entries={settings.glossary} onChange={(glossary) => editSettings((current) => ({ ...current, glossary }))} />
+            <ModelSelector locale={locale} choice={settings.selectedModel} models={models} catalogStatus={modelCatalogStatus} onChange={(selectedModel) => editSettings((current) => ({ ...current, selectedModel }))} />
+            {modelCatalogStatus === 'unavailable' && <div><p role="status" aria-label={labels.modelListStatus}>{labels.modelListError}</p><button type="button" onClick={() => void refreshModels()}>{labels.retryModels}</button></div>}
+            {modelCatalogStatus === 'signedOut' && <div><p role="status" aria-label={labels.modelListStatus}>{labels.signedOutModels}</p><button type="button" onClick={() => void refreshModels()}>{labels.retryModels}</button></div>}
+          </>}
 
-      {rewriteSuggested && <aside aria-live="polite"><p>{labels.rewritePrompt}</p><button type="button" onClick={onRewrite}>{labels.rewrite}</button><button type="button" onClick={() => updateTranslationProfile({ targetLanguage: selectedProfile.profile.targetLanguage === 'ko' ? 'en' : 'ko' })}>{labels.changeTarget}</button></aside>}
-      <GlossaryEditor locale={locale} entries={settings.glossary} onChange={(glossary) => editSettings((current) => ({ ...current, glossary }))} />
-      <HotkeySettings locale={locale} defaultProfileId={settings.defaultProfileId} />
-      <ModelSelector locale={locale} choice={settings.selectedModel} models={models} catalogStatus={modelCatalogStatus} onChange={(selectedModel) => editSettings((current) => ({ ...current, selectedModel }))} />
-      <UpdatePanel locale={locale} />
-      {modelCatalogStatus === 'unavailable' && <div><p role="status" aria-label={labels.modelListStatus}>{labels.modelListError}</p><button type="button" onClick={() => void refreshModels()}>{labels.retryModels}</button></div>}
-      {modelCatalogStatus === 'signedOut' && <div><p role="status" aria-label={labels.modelListStatus}>{labels.signedOutModels}</p><button type="button" onClick={() => void refreshModels()}>{labels.retryModels}</button></div>}
+          {category === 'shortcuts' && <>
+            <HotkeySettings locale={locale} defaultProfileId={settings.defaultProfileId} />
+            <label className="settings-check"><input type="checkbox" checked={hotkeysPaused} onChange={(event) => {
+              const paused = event.target.checked;
+              setHotkeysPaused(paused);
+              void invoke('set_hotkeys_paused', { paused }).catch(() => setHotkeysPaused(!paused));
+            }} />{labels.pauseHotkeys}</label>
+          </>}
 
-      <label><input type="checkbox" checked={settings.launchAtLogin} disabled={!launchAtLoginAvailable} onChange={(event) => void updateLifecycle('set_launch_at_login', { enabled: event.target.checked })} />{labels.launch}</label>
-      {!launchAtLoginAvailable && <p className="settings-help">{labels.installedOnly}</p>}
-      <label><input type="checkbox" checked={hotkeysPaused} onChange={(event) => {
-        const paused = event.target.checked;
-        setHotkeysPaused(paused);
-        void invoke('set_hotkeys_paused', { paused }).catch(() => setHotkeysPaused(!paused));
-      }} />{labels.pauseHotkeys}</label>
-      <label>{labels.close}<select value={settings.closeBehavior} onChange={(event) => void updateLifecycle('set_close_behavior', { closeBehavior: event.target.value as CloseBehavior })}>
-        <option value="keepInTray">{labels.keepInTray}</option><option value="quit">{labels.quit}</option><option value="askEveryTime">{labels.askEveryTime}</option>
-      </select></label>
-      <label>{labels.quickPosition}<select value={settings.quickAccessPosition} onChange={(event) => void updateLifecycle('set_quick_access_position', { quickAccessPosition: event.target.value as QuickAccessPosition })}>
-        <option value="popup">{labels.popup}</option><option value="mainWindow">{labels.mainWindow}</option>
-      </select></label>
-      <button type="button" onClick={() => void save()}>{labels.save}</button>
-      <p role="status" aria-live="polite">{status}</p>
+          {category === 'privacy' && <div className="settings-form-grid">
+            <label>{labels.retention}<span className="settings-inline-input"><input type="number" min="1" max="365" value={settings.historyRetentionDays} onChange={(event) => editSettings((current) => ({ ...current, historyRetentionDays: Math.min(365, Math.max(1, Number(event.target.value) || 1)) }))} /><span>{labels.retentionUnit}</span></span></label>
+            <label>{labels.close}<select value={settings.closeBehavior} onChange={(event) => void updateLifecycle('set_close_behavior', { closeBehavior: event.target.value as CloseBehavior })}>
+              <option value="keepInTray">{labels.keepInTray}</option><option value="quit">{labels.quit}</option><option value="askEveryTime">{labels.askEveryTime}</option>
+            </select></label>
+          </div>}
+
+          {category === 'updates' && <UpdatePanel locale={locale} />}
+        </div>
+      </div>
+      <div className="settings-footer"><button type="button" onClick={() => void save()}>{labels.save}</button><p role="status" aria-live="polite">{status}</p></div>
     </section>
   );
 }
