@@ -102,7 +102,7 @@ impl CodexTranslationBackend {
                 json!({
                     "cwd": workspace,
                     "approvalPolicy": "never",
-                    "sandbox": "readOnly"
+                    "sandbox": "read-only"
                 }),
             ),
         )

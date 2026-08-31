@@ -400,6 +400,7 @@ async fn malicious_source_cannot_trigger_tools_or_escape_the_ephemeral_turn() {
     let harness = spawn_fake_transport(|mut reader, mut writer| async move {
         let base = read_request(&mut reader).await;
         assert_eq!(base["method"], "thread/start");
+        assert_eq!(base["params"]["sandbox"], "read-only");
         assert!(!base.to_string().contains(MALICIOUS_SOURCE));
         write_json_line(
             &mut writer,
