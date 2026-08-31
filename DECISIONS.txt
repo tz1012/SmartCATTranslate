@@ -373,3 +373,7 @@ XLSX 위치: workbook relationship으로 worksheet part와 실제 sheet name을 
 [D-065] Windows GUI entry, 관리형 browser handoff와 capture key 이중 경로
 상태: 확정
 결정: non-debug Windows desktop binary는 GUI subsystem으로 빌드해 console 생성을 막는다. ChatGPT auth URL은 기존 official-host validator를 통과한 뒤 initialized Tauri AppHandle opener로 전달하며 민감 URL/identifier를 기록하지 않는다. capture Enter/Escape는 focused overlay DOM 처리에 더해 active native capture session에서도 idempotent confirm/cancel이 가능하게 해 multi-monitor focus에 의존하지 않는다.
+
+[D-067] 현재 Codex 프로토콜 호환성과 보조 프로세스 비표시
+상태: 확정
+결정: 기존 ChatGPT 계정은 앱 전용 private Codex home으로 canonical 복사하되 `OPENAI_API_KEY: null`만 호환 필드로 허용하고 실제 API key 값은 거부한다. base thread는 현재 App Server enum `read-only`를 사용한다. Windows bundled Codex는 `CREATE_NO_WINDOW`로 시작해 사용자에게 terminal/console을 표시하지 않는다. 화면 캡처 overlay는 현재 Tauri 창 focus와 DOM focus를 함께 요청하고 확인·취소 버튼을 항상 제공한다.

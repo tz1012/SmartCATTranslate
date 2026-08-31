@@ -963,3 +963,19 @@ TDD 및 검증
 - 설계와 안전/검증 범위는 `docs/superpowers/specs/2026-08-31-compact-shell-runtime-fixes-design.md`에 고정했다. 장시간 전체 회귀와 새 failure injection은 수행하지 않고 focused test, production build, installed happy-path smoke를 적용한다.
 - 메뉴 목업 검토에서 사용자는 좌측에서 밀려 나오는 drawer 대신 hamburger 아래에 떠서 현재 content 위를 덮는 anchored overlay를 선택했다. workspace는 이동·축소하지 않으며 outside click, Escape, destination 선택과 hamburger 재클릭으로 닫고 새 실행에서는 닫힌 상태로 시작한다.
 - main window는 1000×700 기본, 760×520 최소, aspect ratio 비고정의 자유 resize로 확정했다. 최소 viewport의 navigation/settings/overlay responsive 규칙과 quick popup/capture의 별도 size 정책을 설계에 추가했다.
+
+[2026-08-31] 설치판 사용자 검토 후속 — ChatGPT 연결·compact 알림·캡처 포커스·콘솔 제거
+
+구현
+- 현재 Codex 인증 파일의 정상적인 `OPENAI_API_KEY: null` 필드를 허용하되 실제 API key 값은 계속 거부하고, 앱 전용 인증 사본에서는 해당 필드를 제거한다.
+- Codex App Server의 현재 `thread/start` sandbox enum인 `read-only`를 사용해 인증 완료 뒤 번역용 base thread가 정상 생성되도록 수정했다.
+- 임시 정리·보존 안내를 본문 배너에서 상단 종 아이콘과 클릭형 알림 popover로 옮기고, 번역 작업 버튼/상태와 hamburger 하단 항목을 작은 창에서도 sticky footer로 유지한다.
+- 캡처 overlay가 준비되거나 드래그를 시작할 때 DOM뿐 아니라 현재 Tauri 창에도 명시적으로 focus를 요청한다. Enter/Escape/방향키 경로를 유지하고 확인·취소 버튼을 키보드 차단 시 fallback으로 제공한다.
+- Windows에서 bundled `smartcat-codex.exe`를 `CREATE_NO_WINDOW`로 실행해 빈 Windows Terminal/console 창이 나타나지 않게 했다.
+
+검증
+- frontend focused tests 52/52 PASS, capture overlay focused tests 4/4 PASS, `pnpm build` PASS(68 modules), Rust formatter와 release compile PASS.
+- Windows x64 NSIS를 다시 만들고 `%LOCALAPPDATA%\SmartCAT Translate`에 exit 0으로 설치했다. 설치 앱은 `smartcat-codex.exe`를 직접 자식으로 유지하고 UI가 `번역할 준비가 되었습니다`를 표시했다.
+- visible top-level window 열거에서 SmartCAT Translate만 확인했으며 Windows Terminal/OpenConsole/visible conhost는 없었다. 숨은 conhost에는 제목과 visible window가 없다.
+- 최소 창 실제 DPI capture에서 상단 종 badge, 두 칸 번역 영역과 하단 번역·복사·저장·지우기 영역이 동시에 보임을 확인했다.
+- D 드라이브 공간 부족으로 무거운 debug test link는 중단했다. 빌드 프로세스 0개와 정확한 경로를 확인한 뒤 Cargo 공식 `clean --profile dev`로 재생성 가능한 `D:\SmartCATTranslateData\cargo-target\debug`만 정리해 10.76GB를 확보했고 release cache와 사용자 자료는 보존했다.
