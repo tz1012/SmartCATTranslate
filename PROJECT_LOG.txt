@@ -944,3 +944,13 @@ TDD 및 검증
 - updater 공개키 verifier helper가 두 번째 Cargo binary를 추가한 뒤 Tauri가 `failed to find main binary, make sure you have package > default-run`으로 Cargo 실행 전에 패키징을 중단했다.
 - `src-tauri/Cargo.toml`의 package default-run을 실제 desktop binary `smartcat-translate`로 고정하고 `verify-updater-key` binary는 유지했다. workflow policy는 두 항목이 모두 존재해야 통과한다.
 - direct Cargo metadata는 `default_run=smartcat-translate`와 세 binary를 확인했다. Tauri config parse, workflow policy, records 16/16, records check와 diff가 PASS했다. 실제 package build는 packaging agent의 재시도 대상으로 남긴다.
+
+[2026-08-31] Windows 0.1.0 실제 패키징·설치·시작 smoke
+
+- 고정 OpenAI Codex `rust-v0.144.4`에 SmartCAT 번역 전용 패치를 적용한 Windows x64 sidecar를 Release로 생성했다. 빌드된 342,911,488-byte runtime의 SHA-256은 `e4db53e141020cbb70d0cbddc4be796fcc12cfe027a6a1f7deac70b959599d53`이다.
+- 고정 `cargo-cyclonedx` 0.5.9를 D 드라이브 도구 폴더에 설치하고 runtime dependency SBOM, manifest와 provenance를 생성했다. `REQUIRE_BUILT_RUNTIME=1 pnpm release:assets:verify`와 checksum/CycloneDX evidence 검증이 통과했다.
+- runtime asset verifier가 생성기의 canonical `binary` 필드가 아닌 존재하지 않는 `fileName`을 읽던 통합 오류를 수정하고 basename 검증을 추가했다.
+- 최초 unsigned MSI/NSIS를 C 드라이브 사용자 앱 폴더에 실제 설치한 뒤 실행 코드 101을 재현했다. 원인은 항상 등록되는 Tauri updater plugin이 생략된 local config를 `null`로 받아 시작 전 역직렬화에 실패한 것이었다.
+- committed local config에 빈 공개키와 빈 endpoint 배열의 inert updater object를 두고, workflow policy가 이 정확한 fail-closed 상태만 허용하도록 수정했다. protected release configurator는 기존대로 실제 public key와 HTTPS endpoint로 덮어쓴다.
+- 수정 빌드는 frontend 64 modules, workflow policy, built-runtime asset gate, Windows x64 Release, MSI와 NSIS 생성에 통과했다. NSIS로 0.1.0을 `%LOCALAPPDATA%\SmartCAT Translate`에 설치했고, 앱은 12초 readiness smoke 뒤에도 창 제목 `SmartCAT Translate`로 실행 중이었다. 설치된 sidecar `--version`은 `codex-cli 0.144.4`와 exit 0을 반환했다.
+- 최종 unsigned MSI SHA-256은 `e0c6d54b090ecb007e894f82bf91aabbc9399ea44dc727a98c129c4c9eae061e`, NSIS SHA-256은 `998ec96c4f66ffe154ba54b2d7337d17b7663789422cf8149b44dcb9b2b1c1dc`이다. 둘 다 의도한 로컬 prerelease `NotSigned`이며 실제 공개·자동 업데이트는 보호된 서명 환경 전까지 차단된다.

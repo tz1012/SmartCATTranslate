@@ -23,6 +23,7 @@ target/
 .runtime-cache/
 .local-data/
 artifacts/
+dist-installers/
 test-results/
 .worktrees/
 .superpowers/

@@ -88,7 +88,14 @@ if (/SMARTCAT_ACCEPTANCE|\[0xA5; 32\]/.test(`${rustRuntime}\n${windowsAcceptance
 for (const command of ['get_lifecycle_status', 'get_account', 'get_settings', 'get_privacy_status', 'list_history', 'list_recoverable_jobs', 'await delay(1_500)', 'mark_app_healthy']) requireText(appSource, command, `healthy_gate_missing:${command}`);
 for (const value of ['spdx-expression-parse', 'JsonValidator', 'Version.v1dot6']) requireText(licensePolicy, value, `license_validator_missing:${value}`);
 requireText(sbomGenerator, 'validateCycloneDx16(jsonText)', 'cyclonedx_structural_validation_missing');
-if (config.plugins?.updater || config.bundle?.createUpdaterArtifacts) fail('local_updater_must_remain_disabled');
+const localUpdater = config.plugins?.updater;
+if (
+  config.bundle?.createUpdaterArtifacts ||
+  !localUpdater ||
+  localUpdater.pubkey !== '' ||
+  !Array.isArray(localUpdater.endpoints) ||
+  localUpdater.endpoints.length !== 0
+) fail('local_updater_must_remain_disabled');
 requireText(updaterConfigurator, 'https://github.com/${repository}/releases/latest/download/latest.json', 'github_updater_endpoint_missing');
 requireText(updaterConfigurator, 'TAURI_UPDATER_PUBLIC_KEY', 'updater_public_key_environment_missing');
 for (const value of ['refs/tags/${tag}', 'package.json', 'src-tauri/Cargo.toml', 'src-tauri/tauri.conf.json']) requireText(releaseRefVerifier, value, `release_ref_verifier_missing:${value}`);

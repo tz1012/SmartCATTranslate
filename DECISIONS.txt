@@ -357,3 +357,7 @@ XLSX 위치: workbook relationship으로 worksheet part와 실제 sheet name을 
 [D-062] acceptance cleanup의 관찰 기반 소유권
 상태: 확정
 결정: CI/GITHUB_ACTIONS 표시는 기존 데이터 삭제 권한이 아니다. cleanup handler보다 먼저 appDataOwned, installedByThisRun, copiedByThisRun을 false로 만들고 기존 exact app data, OS credential item과 설치 흔적을 확인한다. precondition 뒤 이 실행이 새 exact canonical app data를 실제 관찰한 때만 소유하며, uninstall과 app-copy 삭제도 각 실행이 성공적으로 만든 경우만 허용한다. 기존 항목이 하나라도 있으면 소유권은 false인 채 실패하고 아무 기존 app/key/install data도 삭제하지 않는다.
+
+[D-063] 로컬 updater의 역직렬화 가능한 비활성 상태
+상태: 확정
+결정: updater plugin은 항상 등록되므로 committed local/dev config도 역직렬화 가능한 object를 제공하되 `pubkey`는 빈 문자열, `endpoints`는 빈 배열, updater artifact 생성은 false/absent로 유지한다. 이 상태의 update check는 fail closed이고 네트워크 요청이나 설치를 시작하지 않는다. protected release configurator만 실제 Minisign 공개키와 GitHub HTTPS endpoint를 넣을 수 있으며 workflow policy는 그 외 committed updater 값을 거부한다.

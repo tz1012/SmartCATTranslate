@@ -102,6 +102,12 @@
 - Tauri 화면에 IPC와 앱 자산만 허용하고 실행 객체·프레임·폼 전송을 막는 콘텐츠 보안 정책을 적용했습니다.
 - 명시적 릴리스 작업은 고정된 표준 도구로 Codex와 앱의 잠금 의존성 그래프, 전체 작업공간, sidecar와 모든 설치 파일의 SBOM·SHA-256을 검증한 뒤에만 동일 산출물의 GitHub provenance를 만들고 업로드합니다.
 - 문서 재개 plaintext와 retention token/ACK를 공개 IPC에서 제거했습니다. 재시도 payload의 일회용 token과 내용 없는 checkpoint는 backend-only consumer에만 전달하고, consumer가 없으면 즉시, 그 밖에는 최대 60초 또는 begin/완료/취소 시 번역문을 zeroize한 뒤 제거합니다.
+- 로컬·개발 빌드의 업데이트 플러그인은 빈 공개키와 빈 주소 목록으로 안전하게 초기화되어 앱 시작 오류 없이 실패 폐쇄되며, 실제 업데이트 주소와 공개키는 보호된 서명 릴리스에서만 주입됩니다.
+
+### 배포
+
+- Windows x64용 unsigned MSI와 NSIS 설치 파일을 실제 생성하고 C 드라이브 사용자 앱 폴더 설치·실행을 확인했습니다. 설치된 Codex 0.144.4 sidecar 버전, runtime/installer SHA-256, CycloneDX SBOM과 산출물 증빙을 검증했습니다.
+- 런타임 자산 검사가 생성 매니페스트의 canonical `binary` 필드를 사용하고 단순 파일명만 허용하도록 수정했습니다.
 
 ### 설계
 

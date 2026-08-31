@@ -26,7 +26,8 @@ if (resources.some((path) => /pdfium/i.test(basename(path)))) fail('pdfium_must_
 const builtManifestPath = join(root, 'src-tauri/resources/smartcat-codex-runtime.json');
 try {
   const built = JSON.parse(await readFile(builtManifestPath, 'utf8'));
-  const binary = join(root, 'src-tauri/binaries', built.fileName);
+  if (typeof built.binary !== 'string' || basename(built.binary) !== built.binary) fail('built_runtime_binary_invalid');
+  const binary = join(root, 'src-tauri/binaries', built.binary);
   if (!/^[0-9a-f]{64}$/.test(built.sha256) || sha(await readFile(binary)) !== built.sha256) fail('built_runtime_checksum_invalid');
 } catch (error) {
   if (error?.code !== 'ENOENT') throw error;
