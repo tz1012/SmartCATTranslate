@@ -28,6 +28,8 @@ The Text workspace will render only the language controls, translation panes, ac
 
 At narrow widths, the primary mode bar scrolls horizontally and the overlay uses the available viewport width without changing the workspace layout. All controls keep semantic buttons, tab selection state, accessible names, focus visibility, focus containment while open, focus restoration to the hamburger button, and Escape-to-close behavior.
 
+The main window opens at 1000×700, remains freely resizable without an enforced aspect ratio, and has a fixed minimum size of 760×520. Responsive layout handles the minimum viewport: primary modes can scroll horizontally, settings collapse to one content column, and the menu overlay clamps to the available window bounds. The fixed quick popup and monitor-sized capture overlays retain their separate sizing policies.
+
 ## Runtime fixes
 
 ### Windows console

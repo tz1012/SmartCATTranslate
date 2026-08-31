@@ -366,6 +366,10 @@ XLSX 위치: workbook relationship으로 worksheet part와 실제 sheet name을 
 상태: 확정
 결정: main window의 제품명 전용 행, 영구 account banner, 중복 workspace tabs와 영구 metadata 행을 제거한다. 한 줄 top bar에 hamburger, Text, Image & screen, Documents, History, compact account control을 둔다. 계정 상세·Settings·Updates·About·Quit은 hamburger 아래에 anchored overlay로 띄우며 workspace를 이동·축소하지 않는다. outside click, Escape, destination 선택과 toggle로 닫고 새 실행에서는 닫힌다. Settings는 General, Translation, Shortcuts, Privacy & history, Updates category rail과 조밀한 content panel을 사용하며 기존 저장 의미와 접근성을 유지한다.
 
+[D-066] main window 자유 resize와 최소 viewport
+상태: 확정
+결정: main window는 1000×700으로 시작하고 aspect ratio를 강제하지 않으며 760×520 아래로 축소되지 않는다. 최소 viewport에서 primary mode는 horizontal overflow, settings는 single content column, menu overlay는 window bounds clamp로 대응한다. quick popup의 fixed size와 capture overlay의 monitor size는 별도 정책을 유지한다.
+
 [D-065] Windows GUI entry, 관리형 browser handoff와 capture key 이중 경로
 상태: 확정
 결정: non-debug Windows desktop binary는 GUI subsystem으로 빌드해 console 생성을 막는다. ChatGPT auth URL은 기존 official-host validator를 통과한 뒤 initialized Tauri AppHandle opener로 전달하며 민감 URL/identifier를 기록하지 않는다. capture Enter/Escape는 focused overlay DOM 처리에 더해 active native capture session에서도 idempotent confirm/cancel이 가능하게 해 multi-monitor focus에 의존하지 않는다.
