@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import type { CaptureJobResult, CaptureSelection, MonitorInfo, OverlayDescriptor } from './types';
 
 export type StartCaptureResult = { sessionId: string; monitors: MonitorInfo[] };
@@ -12,6 +13,7 @@ export const completeScreenCapture = (sessionId: string, selection: CaptureSelec
   invoke<CaptureJobResult>('complete_screen_capture', { sessionId, selection });
 export const cancelScreenCapture = (sessionId: string) =>
   invoke<void>('cancel_screen_capture', { sessionId });
+export const focusCaptureWindow = () => getCurrentWindow().setFocus();
 export const chooseImage = () => invoke<CaptureJobResult | null>('choose_image');
 export const translateImage = (jobId: string, languageHints: string[], secret: boolean) => invoke<CaptureJobResult>('translate_image', { jobId, languageHints, secret });
 export const cancelImageTranslation = (jobId: string) => invoke<void>('cancel_image_translation', { jobId });

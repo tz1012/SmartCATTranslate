@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { cancelScreenCapture, completeScreenCapture, getCaptureOverlay, updateScreenSelection } from './captureApi';
+import { cancelScreenCapture, completeScreenCapture, focusCaptureWindow, getCaptureOverlay, updateScreenSelection } from './captureApi';
 import type { CaptureSelection, OverlayDescriptor, PixelRect } from './types';
 
 const MIN_SIZE = 8;
@@ -53,7 +53,10 @@ export function CaptureOverlay() {
   }, [selection, sessionId]);
 
   useEffect(() => {
-    if (descriptor) overlayRef.current?.focus({ preventScroll: true });
+    if (descriptor) {
+      void focusCaptureWindow().catch(() => undefined);
+      overlayRef.current?.focus({ preventScroll: true });
+    }
   }, [descriptor]);
 
   useEffect(() => {
@@ -95,6 +98,7 @@ export function CaptureOverlay() {
       aria-label={ko ? '번역할 화면 영역 선택' : 'Select screen region to translate'}
       style={{ backgroundImage: `url(${descriptor.backgroundDataUrl})` }}
       onPointerDown={(event) => {
+        void focusCaptureWindow().catch(() => undefined);
         event.currentTarget.focus({ preventScroll: true });
         event.currentTarget.setPointerCapture(event.pointerId);
         dragStart.current = physicalPoint(event.clientX, event.clientY);
@@ -113,6 +117,10 @@ export function CaptureOverlay() {
       <section className="capture-overlay-help" role="status">
         <strong>{ko ? '번역할 영역을 드래그하세요' : 'Drag the region to translate'}</strong>
         <span>{ko ? 'Enter 확인 · Esc 취소 · 방향키 이동 · Alt+방향키 크기 조절' : 'Enter confirm · Esc cancel · Arrow keys move · Alt+Arrow keys resize'}</span>
+        <div className="capture-overlay-actions">
+          <button type="button" onPointerDown={(event) => event.stopPropagation()} onClick={confirm} disabled={!selection || selection.globalPhysical.width < MIN_SIZE || selection.globalPhysical.height < MIN_SIZE}>{ko ? '확인' : 'Confirm'}</button>
+          <button type="button" onPointerDown={(event) => event.stopPropagation()} onClick={cancel}>{ko ? '취소' : 'Cancel'}</button>
+        </div>
       </section>
     </main>
   );

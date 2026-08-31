@@ -8,6 +8,7 @@ const bridge = vi.hoisted(() => ({
   selectionHandler: undefined as ((event: { payload: { sessionId: string; selection: CaptureSelection } }) => void) | undefined,
   cancel: vi.fn(),
   complete: vi.fn(),
+  focus: vi.fn(),
   getOverlay: vi.fn(),
   update: vi.fn(),
 }));
@@ -22,6 +23,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 vi.mock('./captureApi', () => ({
   cancelScreenCapture: bridge.cancel,
   completeScreenCapture: bridge.complete,
+  focusCaptureWindow: bridge.focus,
   getCaptureOverlay: bridge.getOverlay,
   updateScreenSelection: bridge.update,
 }));
@@ -48,6 +50,7 @@ beforeEach(() => {
   bridge.getOverlay.mockResolvedValue(descriptor);
   bridge.cancel.mockResolvedValue(undefined);
   bridge.complete.mockResolvedValue(undefined);
+  bridge.focus.mockResolvedValue(undefined);
   bridge.update.mockResolvedValue(undefined);
 });
 
@@ -68,6 +71,7 @@ describe('CaptureOverlay keyboard controls', () => {
   it('owns keyboard focus as soon as the overlay is ready', async () => {
     const overlay = await renderReadyOverlay();
     expect(overlay).toHaveFocus();
+    expect(bridge.focus).toHaveBeenCalled();
   });
 
   it('confirms a valid selection with Enter', async () => {
@@ -84,6 +88,16 @@ describe('CaptureOverlay keyboard controls', () => {
 
     fireEvent.keyDown(document, { key: 'Escape', code: 'Escape' });
 
+    expect(bridge.cancel).toHaveBeenCalledWith('session-1');
+  });
+
+  it('provides clickable confirm and cancel fallbacks', async () => {
+    await renderReadyOverlay();
+    expect(screen.getByRole('button', { name: '확인' })).toBeDisabled();
+    act(() => bridge.selectionHandler?.({ payload: { sessionId: 'session-1', selection: validSelection } }));
+    fireEvent.click(screen.getByRole('button', { name: '확인' }));
+    expect(bridge.complete).toHaveBeenCalledWith('session-1', validSelection);
+    fireEvent.click(screen.getByRole('button', { name: '취소' }));
     expect(bridge.cancel).toHaveBeenCalledWith('session-1');
   });
 });
