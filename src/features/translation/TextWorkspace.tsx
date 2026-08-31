@@ -302,23 +302,25 @@ export function TextWorkspace({
         </div>
       </div>
 
-      <div className="workspace-actions">
-        <button
-          type="button"
-          className="primary-action"
-          disabled={state.status === 'running' ? false : disabled || sameLanguage}
-          onClick={state.status === 'running' ? () => void cancel() : () => run()}
-        >
-          {state.status === 'running' ? labels.cancel : labels.translate}
-        </button>
-        <button type="button" onClick={() => void copyResult()} disabled={!state.text}>{labels.copyResult}</button>
-        <button type="button" onClick={() => void saveResult()} disabled={!state.text}>{labels.saveResult}</button>
-        <button type="button" onClick={clearAll} disabled={state.status === 'running' || pendingCleanup || (!source && !state.text)}>{labels.clear}</button>
-      </div>
+      <footer className="workspace-footer">
+        <div className="workspace-actions">
+          <button
+            type="button"
+            className="primary-action"
+            disabled={state.status === 'running' ? false : disabled || sameLanguage}
+            onClick={state.status === 'running' ? () => void cancel() : () => run()}
+          >
+            {state.status === 'running' ? labels.cancel : labels.translate}
+          </button>
+          <button type="button" onClick={() => void copyResult()} disabled={!state.text}>{labels.copyResult}</button>
+          <button type="button" onClick={() => void saveResult()} disabled={!state.text}>{labels.saveResult}</button>
+          <button type="button" onClick={clearAll} disabled={state.status === 'running' || pendingCleanup || (!source && !state.text)}>{labels.clear}</button>
+        </div>
 
-      <div className="workspace-status" aria-live="polite" role="status">{status}</div>
-      {(validationError || jobError) && <p role="alert" aria-live="polite">{validationError || jobError}</p>}
-      {state.status === 'failed' && <button type="button" onClick={retry} disabled={state.pendingCleanup ? false : disabled}>{labels.retry}</button>}
+        <div className="workspace-status" aria-live="polite" role="status">{status}</div>
+        {(validationError || jobError) && <p role="alert" aria-live="polite">{validationError || jobError}</p>}
+        {state.status === 'failed' && <button type="button" onClick={retry} disabled={state.pendingCleanup ? false : disabled}>{labels.retry}</button>}
+      </footer>
     </section>
   );
 }

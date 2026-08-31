@@ -10,6 +10,7 @@ import { RecoveryPrompt } from '../features/history/RecoveryPrompt';
 import type { PreparedDocumentRecovery } from '../features/history/historyApi';
 import { AppTopBar, type AppView } from './AppTopBar';
 import { AppMenuOverlay, type SettingsDestination } from './AppMenuOverlay';
+import { AppNotificationPopover } from './AppNotificationPopover';
 
 export type AppLocale = 'ko' | 'en';
 type PrivacyStatus = { cleanupPending: boolean; retentionPending: boolean };
@@ -19,6 +20,7 @@ export function App({ locale }: { locale?: AppLocale }) {
   const [savedTheme, setSavedTheme] = useState<Theme>('system');
   const [activeView, setActiveView] = useState<AppView>('translate');
   const [menuOpen, setMenuOpen] = useState(false);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [settingsDestination, setSettingsDestination] = useState<SettingsDestination>('general');
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const [recovery, setRecovery] = useState<PreparedDocumentRecovery>();
@@ -78,8 +80,13 @@ export function App({ locale }: { locale?: AppLocale }) {
     setSavedTheme(loadedTheme);
   }, [locale]);
   const labels = accountLocale === 'ko'
-    ? { navigation: '주요 화면', translate: '텍스트', capture: '이미지·화면', documents: '문서', history:'기록', settings: '설정', openMenu: '메뉴 열기', closeMenu: '메뉴 닫기', accountMenu: '계정 메뉴', settingsLocked: '번역 또는 취소 처리 중에는 설정을 열 수 없습니다.' }
-    : { navigation: 'Main views', translate: 'Text', capture: 'Image & screen', documents: 'Documents', history:'History', settings: 'Settings', openMenu: 'Open menu', closeMenu: 'Close menu', accountMenu: 'Account menu', settingsLocked: 'Settings are unavailable while translation or cancellation is in progress.' };
+    ? { navigation: '주요 화면', translate: '텍스트', capture: '이미지·화면', documents: '문서', history:'기록', settings: '설정', openMenu: '메뉴 열기', closeMenu: '메뉴 닫기', accountMenu: '계정 메뉴', notificationPanel: '알림', notifications: (count: number) => `알림 ${count}개`, cleanupNotice: '임시 파일 정리가 보류되었습니다. 앱이 시작될 때 안전하게 다시 시도합니다.', retentionNotice: '기록 보관 설정을 확인하는 중입니다. 확인 전에는 기록을 자동 삭제하지 않습니다.', settingsLocked: '번역 또는 취소 처리 중에는 설정을 열 수 없습니다.' }
+    : { navigation: 'Main views', translate: 'Text', capture: 'Image & screen', documents: 'Documents', history:'History', settings: 'Settings', openMenu: 'Open menu', closeMenu: 'Close menu', accountMenu: 'Account menu', notificationPanel: 'Notifications', notifications: (count: number) => `${count} notifications`, cleanupNotice: 'Temporary-file cleanup is pending and will be retried safely at startup.', retentionNotice: 'History retention is being verified. No history is automatically deleted until then.', settingsLocked: 'Settings are unavailable while translation or cancellation is in progress.' };
+
+  const notifications = [
+    ...(privacyStatus?.cleanupPending ? [labels.cleanupNotice] : []),
+    ...(privacyStatus?.retentionPending ? [labels.retentionNotice] : []),
+  ];
 
   const closeMenu = useCallback(() => {
     menuButtonRef.current?.focus();
@@ -99,8 +106,17 @@ export function App({ locale }: { locale?: AppLocale }) {
           labels={labels}
           menuOpen={menuOpen}
           menuButtonRef={menuButtonRef}
+          notificationCount={notifications.length}
+          notificationsOpen={notificationsOpen}
           onNavigate={navigate}
-          onToggleMenu={() => setMenuOpen((open) => !open)}
+          onToggleNotifications={() => {
+            setMenuOpen(false);
+            setNotificationsOpen((open) => !open);
+          }}
+          onToggleMenu={() => {
+            setNotificationsOpen(false);
+            setMenuOpen((open) => !open);
+          }}
         />
         {menuOpen && (
           <AppMenuOverlay
@@ -110,18 +126,10 @@ export function App({ locale }: { locale?: AppLocale }) {
             onNavigate={navigate}
           />
         )}
+        {notificationsOpen && notifications.length > 0 && (
+          <AppNotificationPopover label={labels.notificationPanel} notifications={notifications} onClose={() => setNotificationsOpen(false)} />
+        )}
       </div>
-      {(privacyStatus?.cleanupPending || privacyStatus?.retentionPending) && (
-        <aside className="privacy-warning" role="alert">
-          {privacyStatus.cleanupPending
-            ? accountLocale === 'ko'
-              ? '임시 파일 정리가 보류되었습니다. 앱이 시작될 때 안전하게 다시 시도합니다.'
-              : 'Temporary-file cleanup is pending and will be retried safely at startup.'
-            : accountLocale === 'ko'
-              ? '기록 보관 설정을 확인하는 중입니다. 확인 전에는 기록을 자동 삭제하지 않습니다.'
-              : 'History retention is being verified. No history is automatically deleted until then.'}
-        </aside>
-      )}
       <RecoveryPrompt
         locale={accountLocale}
         onContinue={(value) => {

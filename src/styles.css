@@ -32,19 +32,24 @@ button:focus-visible, select:focus-visible, textarea:focus-visible {
 button:disabled { cursor: default; opacity: 0.5; }
 
 main {
+  display: flex;
+  flex-direction: column;
   width: min(100%, 72rem);
-  min-height: 100vh;
+  height: 100vh;
   margin: 0 auto;
   padding: 1rem;
+  overflow: hidden;
   color: #172033;
   background: #eef3f8;
 }
 
 .app-shell-navigation { position: relative; margin: -1rem -1rem 0.65rem; }
-.app-shell-header { position: relative; z-index: 40; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: stretch; min-height: 3.4rem; border-bottom: 1px solid #d7e0ea; background: #fff; }
-.app-menu-trigger, .app-account-trigger { min-width: 3.4rem; min-height: 3.4rem; padding: 0; border: 0; border-radius: 0; background: transparent; font-size: 1.25rem; }
+.app-shell-header { position: relative; z-index: 40; display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: stretch; min-height: 3.4rem; border-bottom: 1px solid #d7e0ea; background: #fff; }
+.app-menu-trigger, .app-notification-trigger, .app-account-trigger { min-width: 3.4rem; min-height: 3.4rem; padding: 0; border: 0; border-radius: 0; background: transparent; font-size: 1.25rem; }
 .app-menu-trigger { border-right: 1px solid #e4eaf1; }
 .app-account-trigger { position: relative; border-left: 1px solid #e4eaf1; }
+.app-notification-trigger { position: relative; border-left: 1px solid #e4eaf1; }
+.app-notification-trigger i { position: absolute; inset-block-start: .42rem; inset-inline-end: .38rem; display: grid; min-width: 1.1rem; height: 1.1rem; padding: 0 .2rem; place-items: center; border-radius: 1rem; background: #d43b32; color: #fff; font-size: .65rem; font-style: normal; font-weight: 800; }
 .app-account-trigger span { display: grid; width: 2rem; height: 2rem; margin: auto; place-items: center; border-radius: 50%; background: #e9f3ff; color: #0967c6; font-size: .82rem; font-weight: 750; }
 .app-account-trigger i { position: absolute; right: .55rem; bottom: .55rem; width: .48rem; height: .48rem; border: 2px solid #fff; border-radius: 50%; background: #d43b32; }
 .app-primary-tabs { display: flex; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
@@ -52,9 +57,15 @@ main {
 .app-primary-tabs button[aria-selected="true"] { color: #0967c6; box-shadow: inset 0 -3px #1477d4; font-weight: 700; }
 .app-primary-tabs button span { font-size: 1.05rem; }
 .app-menu-overlay { position: absolute; z-index: 60; inset-block-start: calc(100% + .35rem); inset-inline-start: .35rem; width: min(21rem, calc(100vw - .7rem)); max-height: calc(100vh - 4.4rem); overflow: auto; padding: .65rem; border: 1px solid #ced8e4; border-radius: .75rem; background: #fff; box-shadow: 0 18px 48px rgb(20 38 64 / 24%); }
+.app-notification-popover { position: absolute; z-index: 60; inset-block-start: calc(100% + .35rem); inset-inline-end: 3.75rem; width: min(23rem, calc(100vw - .7rem)); max-height: calc(100vh - 4.4rem); overflow: auto; padding: .8rem .9rem; border: 1px solid #ced8e4; border-radius: .75rem; background: #fff; box-shadow: 0 18px 48px rgb(20 38 64 / 24%); }
+.app-notification-popover:focus { outline: none; }
+.app-notification-popover h2 { margin: 0 0 .55rem; font-size: 1rem; }
+.app-notification-popover ul { display: grid; gap: .55rem; margin: 0; padding-left: 1.25rem; }
+.app-notification-popover li { color: #526175; font-size: .86rem; line-height: 1.45; }
 .app-menu-overlay:focus { outline: none; }
 .app-menu-overlay .account-panel { display: grid; margin: 0 0 .55rem; border: 0; border-bottom: 1px solid #e4eaf1; border-radius: 0; padding: .7rem .55rem 1rem; }
 .app-menu-overlay nav, .app-menu-secondary { display: grid; gap: .15rem; }
+.app-menu-secondary { position: sticky; bottom: -.65rem; margin: .35rem -.65rem -.65rem; padding: .5rem .65rem .65rem; border-top: 1px solid #e4eaf1; background: #fff; }
 .app-menu-overlay nav button, .app-menu-secondary button { display: grid; grid-template-columns: 1.6rem 1fr; align-items: center; width: 100%; min-height: 2.65rem; padding: .45rem .65rem; border: 0; background: transparent; text-align: left; }
 .app-menu-secondary { margin-top: .55rem; padding-top: .55rem; border-top: 1px solid #e4eaf1; }
 .app-menu-secondary p, .app-menu-note { margin: .3rem .65rem; color: #64748b; font-size: .78rem; }
@@ -101,12 +112,18 @@ main {
 .account-panel section { display: inline-flex; gap: 0.35rem; align-items: center; }
 
 .text-workspace {
+  flex: 1;
+  min-height: 0;
   overflow: hidden;
   border: 1px solid #d7e0ea;
   border-radius: 0.9rem;
   background: #fff;
   box-shadow: 0 12px 34px rgb(23 32 51 / 8%);
 }
+
+main > [role="tabpanel"] { flex: 1; min-height: 0; overflow: auto; }
+#app-panel-translate { display: flex; overflow: hidden; }
+#app-panel-translate .text-workspace { overflow: auto; }
 
 .language-bar {
   display: grid;
@@ -185,6 +202,10 @@ textarea {
   padding: 0.75rem 0.9rem;
   border-top: 1px solid #e4eaf1;
 }
+.workspace-footer { position: sticky; z-index: 15; bottom: 0; display: grid; border-top: 1px solid #e4eaf1; background: #fff; box-shadow: 0 -8px 18px rgb(23 32 51 / 5%); }
+.workspace-footer .workspace-actions { border-top: 0; }
+.workspace-footer > [role="alert"] { margin: 0; padding: 0 0.9rem 0.65rem; color: #b42318; }
+.workspace-footer > [role="alert"] + button { justify-self: start; margin: 0 0.9rem 0.75rem; }
 
 .primary-action { border-color: #0967c6; background: #0967c6; color: #fff; font-weight: 700; }
 .primary-action:hover:not(:disabled) { background: #075aae; color: #fff; }
@@ -215,7 +236,7 @@ textarea {
 }
 
 main[data-theme="dark"] { color: #e7edf5; background: #111827; color-scheme: dark; }
-main[data-theme="dark"] :is(.text-workspace, .account-panel, #app-panel-settings > section, button, select, input) { color: #e7edf5; background: #182233; border-color: #344258; }
+main[data-theme="dark"] :is(.text-workspace, .workspace-footer, .account-panel, .app-menu-secondary, .app-notification-popover, #app-panel-settings > section, button, select, input) { color: #e7edf5; background: #182233; border-color: #344258; }
 main[data-theme="dark"] .result-pane textarea { background: #141e2c; }
 main[data-theme="dark"] :is(.settings-shell, .settings-categories, .settings-footer, .language-bar, .translation-pane + .translation-pane, .workspace-actions, #app-panel-settings fieldset) { border-color: #344258; }
 main[data-theme="dark"] .settings-categories button[aria-selected="true"] { background: #223b5d; }
@@ -228,7 +249,7 @@ main[data-theme="dark"] :is(.conflict-cause, .force-warning, .permission-note) {
 @media (prefers-color-scheme: dark) {
   :root { color: #e7edf5; background: #111827; }
   main[data-theme="system"] { color: #e7edf5; background: #111827; color-scheme: dark; }
-  main[data-theme="system"] :is(.text-workspace, .account-panel, #app-panel-settings > section, button, select, input) { color: #e7edf5; background: #182233; border-color: #344258; }
+  main[data-theme="system"] :is(.text-workspace, .workspace-footer, .account-panel, .app-menu-secondary, .app-notification-popover, #app-panel-settings > section, button, select, input) { color: #e7edf5; background: #182233; border-color: #344258; }
   main[data-theme="system"] .result-pane textarea { background: #141e2c; }
   main[data-theme="system"] :is(.settings-shell, .settings-categories, .settings-footer, .language-bar, .translation-pane + .translation-pane, .workspace-actions, #app-panel-settings fieldset) { border-color: #344258; }
   main[data-theme="system"] .settings-categories button[aria-selected="true"] { background: #223b5d; }

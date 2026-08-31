@@ -106,11 +106,12 @@ afterEach(() => {
 
 describe('TextWorkspace', () => {
   it('uses the app top bar as the only workspace navigation', async () => {
-    render(<TextWorkspace />);
+    const { container } = render(<TextWorkspace />);
 
     await screen.findByLabelText('원문');
     expect(screen.queryByRole('tablist', { name: '텍스트 번역' })).not.toBeInTheDocument();
     expect(screen.queryByText('단축키: 설정되지 않음')).not.toBeInTheDocument();
+    expect(container.querySelector('.workspace-footer')).toContainElement(screen.getByRole('button', { name: '번역' }));
   });
 
   it('translates with the approved saved default profile', async () => {

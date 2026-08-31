@@ -11,6 +11,7 @@ export type AppTopBarLabels = {
   openMenu: string;
   closeMenu: string;
   accountMenu: string;
+  notifications: (count: number) => string;
 };
 
 export function AppTopBar({
@@ -18,14 +19,20 @@ export function AppTopBar({
   labels,
   menuOpen,
   menuButtonRef,
+  notificationCount,
+  notificationsOpen,
   onNavigate,
+  onToggleNotifications,
   onToggleMenu,
 }: {
   activeView: AppView;
   labels: AppTopBarLabels;
   menuOpen: boolean;
   menuButtonRef: RefObject<HTMLButtonElement | null>;
+  notificationCount: number;
+  notificationsOpen: boolean;
   onNavigate: (view: AppView) => void;
+  onToggleNotifications: () => void;
   onToggleMenu: () => void;
 }) {
   const tabs: Array<[Exclude<AppView, 'settings'>, string, string]> = [
@@ -64,6 +71,19 @@ export function AppTopBar({
           </button>
         ))}
       </nav>
+      <button
+        type="button"
+        className="app-notification-trigger"
+        aria-label={labels.notifications(notificationCount)}
+        aria-controls="app-notification-popover"
+        aria-expanded={notificationsOpen}
+        onClick={onToggleNotifications}
+      >
+        <svg aria-hidden="true" viewBox="0 0 24 24" width="21" height="21">
+          <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+        {notificationCount > 0 && <i aria-hidden="true">{notificationCount}</i>}
+      </button>
       <button
         type="button"
         className="app-account-trigger"

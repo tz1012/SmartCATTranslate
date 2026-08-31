@@ -22,6 +22,32 @@ afterEach(() => {
 });
 
 describe('App', () => {
+  it('keeps privacy maintenance notices behind a top-bar notification button', async () => {
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'get_settings') return {
+        schemaVersion: 1, locale: 'ko', theme: 'system', defaultProfileId: 'default-profile',
+        profiles: [{ id: 'default-profile', name: '기본 프로필', field: 'general', profile: { sourceLanguage: null, targetLanguage: 'ko', quality: 'balanced', tone: 'natural', protectedTerms: [] } }],
+        glossary: [], selectedModel: { type: 'automatic' }, launchAtLogin: false, closeBehavior: 'keepInTray', quickAccessPosition: 'popup', historyRetentionDays: 30,
+      };
+      if (command === 'get_account') return { account: { state: 'signedOut' }, loginPending: false };
+      if (command === 'get_privacy_status') return { cleanupPending: true, retentionPending: false };
+      if (command === 'get_lifecycle_status') return { launchAtLoginAvailable: true, launchAtLoginEnabled: false, hotkeysPaused: false };
+      if (command === 'list_history' || command === 'list_recoverable_jobs') return [];
+      if (command === 'mark_app_healthy') return true;
+      throw new Error(`unexpected command: ${command}`);
+    });
+    render(<App />);
+
+    const notice = '임시 파일 정리가 보류되었습니다. 앱이 시작될 때 안전하게 다시 시도합니다.';
+    await screen.findByLabelText('원문');
+    expect(screen.queryByText(notice)).not.toBeInTheDocument();
+    const button = screen.getByRole('button', { name: '알림 1개' });
+    expect(button).toHaveAttribute('aria-expanded', 'false');
+
+    await userEvent.click(button);
+    expect(screen.getByRole('dialog', { name: '알림' })).toHaveTextContent(notice);
+  });
+
   it('mounts the complete text translation workspace', async () => {
     vi.mocked(invoke).mockImplementation(async (command) => {
       if (command === 'get_settings') return {
