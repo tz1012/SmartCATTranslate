@@ -979,3 +979,22 @@ TDD 및 검증
 - visible top-level window 열거에서 SmartCAT Translate만 확인했으며 Windows Terminal/OpenConsole/visible conhost는 없었다. 숨은 conhost에는 제목과 visible window가 없다.
 - 최소 창 실제 DPI capture에서 상단 종 badge, 두 칸 번역 영역과 하단 번역·복사·저장·지우기 영역이 동시에 보임을 확인했다.
 - D 드라이브 공간 부족으로 무거운 debug test link는 중단했다. 빌드 프로세스 0개와 정확한 경로를 확인한 뒤 Cargo 공식 `clean --profile dev`로 재생성 가능한 `D:\SmartCATTranslateData\cargo-target\debug`만 정리해 10.76GB를 확보했고 release cache와 사용자 자료는 보존했다.
+
+[2026-09-01] ChatGPT 로그인 런타임 준비 수정 · Windows 재설치
+
+구현
+- immutable base `a933936d7bdb1b646dae635ccfe08506593a9924`에서 OMX `355ac23`과 GLM `bd8538b`를 독립 검토했다. GLM 구현을 기반으로 OMX의 설치 성공 시점 알림 배치와 동시 종료 대기 회귀 테스트를 결합했다.
+- 계정 명령은 Codex 계정 런타임 설치를 최대 30초 기다린다. 설치 성공, 부트스트랩 실패, 앱 종료가 모든 대기 요청을 깨우며 실패와 종료는 URL·로그인 ID·토큰을 노출하지 않는 기존 오류 코드로 종료한다.
+- 최종 구현 커밋은 `70d12283105cc7b9357c031913f9a3c3f5c12cea`이다.
+
+검증
+- `AccountPanel.test.tsx` 15/15, `codex_auth` 23/23, `codex_bootstrap` 4 passed/2 environment-gated ignored, Rust lib 84/84, 추가 shutdown waiter 1/1을 통과했다.
+- `pnpm build`, `cargo check`, `cargo fmt -- --check`, `git diff --check`를 통과했다.
+- 기존 설치본과 동일한 SHA-256 `e4db53e141020cbb70d0cbddc4be796fcc12cfe027a6a1f7deac70b959599d53`의 검증된 Codex 0.144.4 sidecar를 재사용했고 `REQUIRE_BUILT_RUNTIME=1 pnpm release:assets:verify`를 통과했다.
+
+패키징·설치
+- Windows x64 unsigned NSIS `SmartCAT Translate_0.1.0_x64-setup.exe`를 최종 소스에서 생성했다. 크기는 84,520,939 bytes, SHA-256은 `57dba199c4d6c772ac6fdf44cfcde942da03c328923453f288e023a516c03fea`, Authenticode 상태는 의도한 로컬 prerelease `NotSigned`이다.
+- 같은 `0.1.0` 위에 최초 silent install은 exit 0이었지만 본체 해시가 바뀌지 않아 성공으로 간주하지 않았다. 기존 NSIS를 silent uninstall한 뒤 `D:\Apps\SmartCATTranslate`에 새 설치기를 다시 적용했다.
+- 설치된 본체 SHA-256은 `c0977933d690c875eb2b16fe9ba550550d93516aa4065916aed29cf2f414e941`로 이전 설치본 `d8a9219983eebbcae0e28017b997602709040190156d47256a42fd1bddbd1e2c`에서 교체됐다.
+- 설치 앱이 `SmartCAT Translate` 창으로 실행되고 설치 경로의 `smartcat-codex.exe`를 자식 프로세스로 시작했으며, sidecar `--version`은 `codex-cli 0.144.4`를 반환했다.
+- GitHub Release와 자동 업데이트 피드는 발행하지 않는다. 변경 기록과 소스는 `duel/final-chatgpt-login-20260831-2209` 브랜치에 게시한다.
