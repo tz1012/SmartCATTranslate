@@ -215,6 +215,7 @@ pub fn run() {
                 if app_handle
                     .state::<lifecycle::LifecycleState>()
                     .should_intercept_close()
+                    && lifecycle::should_intercept_window_close(label)
                 {
                     api.prevent_close();
                     lifecycle::handle_window_close(app_handle, label);

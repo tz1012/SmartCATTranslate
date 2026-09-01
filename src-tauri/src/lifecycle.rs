@@ -35,6 +35,10 @@ pub struct LifecycleState {
     quit_item: MenuItem<Wry>,
 }
 
+pub(crate) fn should_intercept_window_close(label: &str) -> bool {
+    matches!(label, "main" | "quick-popup")
+}
+
 impl LifecycleState {
     fn new(
         quick_item: MenuItem<Wry>,
@@ -319,4 +323,16 @@ pub fn request_quit<R: Runtime>(app: AppHandle<R>) {
         let _ = app_state.shutdown().await;
         shutdown_app.exit(0);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_intercept_window_close;
+
+    #[test]
+    fn close_interception_excludes_capture_overlay_windows() {
+        assert!(should_intercept_window_close("main"));
+        assert!(should_intercept_window_close("quick-popup"));
+        assert!(!should_intercept_window_close("capture-overlay-primary"));
+    }
 }

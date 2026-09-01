@@ -1150,3 +1150,19 @@ TDD와 검증
 
 개인정보 경계
 - URL, token, 계정 식별자, 이메일, 원문, 번역 결과, 인증 정보 또는 사용자 콘텐츠를 기록하지 않았다.
+
+[2026-09-02] SmartCAT 0.1.2 화면 캡처 및 OCR 번역 복구
+- 전역 `CloseRequested` 가로채기는 메인 창과 빠른 팝업에만 적용하도록 제한해 캡처 오버레이가 정상적으로 닫히게 했다.
+- OCR JSON은 번역 데이터로만 취급하며, 도구가 없을 때 실패로 닫히는(fail-closed) 경계는 그대로 유지했다.
+- 오류는 단계별로 정제된 지원 코드만 노출하고, `sourceReady` 상태에서는 계속 재시도할 수 있다.
+- 테스트 결과: 프런트엔드 83/83, Rust lib 87/87, `codex_auth` 23/23, `codex_bootstrap` 4 passed 2 ignored, `translation_coordinator` 39/39. build/check/fmt/diff도 모두 통과했다.
+- 설치 파일 SHA256은 `F8A60D86FDEC216ECD295D25A59C67BDD985309969F6EC1B01C836F01DAE887D`이고 서명 상태는 `NotSigned`다. 설치 종료 코드는 0이며 등록된 버전은 0.1.2다.
+- 설치된 앱 SHA256은 `0D854415AD3443265F58D20206411D5D0FC80E84683314A547DFA8AD88D09F78`, 사이드카 SHA256은 `E4DB53E141020CBB70D0CBDDC4BE796FCC12CFE027A6A1F7DEAC70B959599D53`이며 매니페스트와 일치한다.
+- 앱 프로세스 실행은 확인했지만, 도우미가 두 차례 `accessibility window-opened handler did not become ready`를 반환해 라이브 UI 자동화는 완료하지 못했다. 따라서 라이브 OCR 성공으로 기록하지 않는다.
+- Actions는 실행하지 않았으며 `[skip ci]`를 사용한다.
+- URL, 비밀정보, 사용자 콘텐츠, 원문/OCR/번역 텍스트 또는 사용자의 절대 경로는 로그에 남기지 않았다.
+
+[2026-09-02 00:53 Asia/Seoul] 변경 기록
+- 요약: fix: capture-ocr-recovery
+- 변경 파일: CHANGELOG.md, package.json, PROJECT_LOG.txt, src-tauri/Cargo.lock, src-tauri/Cargo.toml, src-tauri/src/codex/translation.rs, src-tauri/src/lib.rs, src-tauri/src/lifecycle.rs, src-tauri/tauri.conf.json, src-tauri/tests/translation_coordinator.rs, src/features/capture/CaptureOverlay.test.tsx, src/features/capture/CaptureWorkspace.test.tsx, src/features/capture/CaptureWorkspace.tsx, src/styles.css, vite.config.ts
+- 검증: pnpm test && 83/83 passed; cargo test && 153/153 passed; pnpm build && passed; cargo check && passed

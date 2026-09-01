@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { listen } from '@tauri-apps/api/event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import '../../styles.css';
 import { CaptureOverlay } from './CaptureOverlay';
 import type { CaptureSelection, OverlayDescriptor } from './types';
 
@@ -68,6 +69,16 @@ async function renderReadyOverlay() {
 }
 
 describe('CaptureOverlay keyboard controls', () => {
+  it('uses readable dark labels for the confirm and cancel buttons', async () => {
+    await renderReadyOverlay();
+
+    const buttons = screen.getAllByRole('button');
+    expect(buttons.map((button) => getComputedStyle(button).color)).toEqual([
+      'rgb(21, 34, 56)',
+      'rgb(21, 34, 56)',
+    ]);
+  });
+
   it('owns keyboard focus as soon as the overlay is ready', async () => {
     const overlay = await renderReadyOverlay();
     expect(overlay).toHaveFocus();

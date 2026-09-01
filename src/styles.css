@@ -291,7 +291,7 @@ body:has(.capture-overlay) { overflow: hidden; background: #000; }
 .capture-overlay-help { position: fixed; left: 50%; bottom: 2rem; translate: -50%; display: grid; gap: .35rem; width: max-content; max-width: calc(100vw - 2rem); padding: .7rem 1rem; border: 1px solid rgb(255 255 255 / 45%); border-radius: .65rem; color: #fff; background: rgb(12 24 42 / 88%); text-align: center; pointer-events: none; }
 .capture-overlay-help span { font-size: .78rem; }
 .capture-overlay-actions { display: flex; justify-content: center; gap: .45rem; margin-top: .2rem; pointer-events: auto; }
-.capture-overlay-actions button { min-height: 2rem; padding: .25rem .8rem; }
+.capture-overlay-actions button { min-height: 2rem; padding: .25rem .8rem; color: #152238; }
 .capture-overlay-loading, .capture-overlay-error { min-height: 100vh; display: grid; place-items: center; color: #fff; background: #111827; }
 .capture-progress { display: flex; align-items: center; gap: .65rem; padding: .7rem; border-radius: .6rem; background: #eef5fc; }
 .capture-progress progress { flex: 1; min-width: 6rem; }

@@ -4,6 +4,16 @@
 
 ## 미출시
 
+### SmartCAT Translate 0.1.2 화면 캡처 복구
+
+- 트레이 수명주기의 닫기 가로채기를 `main`과 `quick-popup`에만 적용해 캡처 오버레이가 확인 또는 취소 뒤 정상적으로 닫히며, 회귀 테스트로 이 label 경계를 고정했습니다.
+- 확인·취소 버튼 label에 읽기 쉬운 명시적 대비를 적용하고 실제 CSS computed style 테스트로 검증했습니다.
+- 새 의존성을 추가하지 않았고 URL, 비밀정보, 사용자 콘텐츠를 로그에 기록하지 않습니다.
+- 사용자 요청에 따라 GitHub Actions는 의도적으로 실행하지 않으며, 로컬 검증과 설치를 릴리스 관문으로 사용합니다.
+- 캡처 형태의 JSON은 명시적으로 번역 데이터로 취급해 사람 언어 값만 번역하고 식별자와 구조는 보존하며, 사고 대응·CI·명령처럼 보이는 텍스트도 절대 실행하지 않습니다.
+- 도구를 사용할 수 없을 때 실패로 닫히는(no-tools fail-closed) 경계는 그대로 유지됩니다.
+- 캡처·가져오기·번역 오류는 단계별로 정제된 지원 코드로 표시하며, 원본 준비 완료 상태는 재시도할 수 있게 유지합니다.
+
 ### SmartCAT Translate 0.1.1 복구
 
 - 고정된 Codex 0.144.4 번역 프로토콜의 정상 진행 알림 `deprecationNotice`, `account/rateLimits/updated`, `thread/tokenUsage/updated`는 필수 공식 필드·타입·scope를 검증하면서 호환 가능한 추가 필드는 허용합니다. `modelContextWindow`는 선택 필드로서 생략, `null`, signed i64를 허용하고, 필수 token breakdown 정수는 signed i64 범위를 벗어나면 거부합니다. 같은 이름의 malformed payload와 알 수 없는 이벤트는 기존 thread/turn 범위 검증과 함께 실패 폐쇄합니다.

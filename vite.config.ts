@@ -8,6 +8,9 @@ export default defineConfig({
     strictPort: true,
   },
   test: {
+    css: {
+      include: /\.css$/,
+    },
     environment: 'jsdom',
     include: ['src/**/*.test.{ts,tsx}'],
     setupFiles: ['@testing-library/jest-dom/vitest'],
