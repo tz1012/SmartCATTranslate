@@ -83,16 +83,15 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 let state = app_handle.state::<app_state::AppState>();
                 let event_sink = Arc::new(TauriAccountEventSink(app_handle.clone()));
-                if bootstrap_account_service(
+                let bootstrap = bootstrap_account_service(
                     &state,
                     app_data_root,
                     resource_root,
                     executable_path,
                     event_sink.clone(),
                 )
-                .await
-                .is_ok()
-                {
+                .await;
+                if bootstrap.is_ok() {
                     event_sink.account_state_changed(AccountChangeReason::AccountUpdated);
                     let account_ready = match state.account_service().await {
                         Some(service) => {
@@ -103,6 +102,8 @@ pub fn run() {
                     app_handle
                         .state::<lifecycle::LifecycleState>()
                         .set_account_ready(account_ready);
+                } else {
+                    state.mark_account_runtime_failed();
                 }
                 let _ = commands::windows::restart_quick_hotkeys(app_handle.clone()).await;
                 match commands::settings::open_store(&app_handle) {

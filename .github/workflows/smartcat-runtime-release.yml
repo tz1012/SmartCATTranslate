@@ -24,8 +24,6 @@ jobs:
             target: aarch64-apple-darwin
             sidecar: smartcat-codex-aarch64-apple-darwin
     runs-on: ${{ matrix.os }}
-    env:
-      SMARTCAT_CODEX_CARGO_TARGET_DIR: ${{ runner.temp }}/smartcat-codex-target
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -45,6 +43,8 @@ jobs:
       - name: Verify pinned source and patch build contract
         run: pnpm runtime:build:test
       - name: Build and test audited patched runtime
+        env:
+          SMARTCAT_CODEX_CARGO_TARGET_DIR: ${{ runner.temp }}/smartcat-codex-target
         run: pnpm runtime:build -- --target ${{ matrix.target }}
       - name: Verify the app accepts the exact patched live session
         env:

@@ -1010,3 +1010,123 @@ TDD 및 검증
 - `pnpm runtime:build:test`는 수정 전 18/19 실패를 재현했고 수정 후 19/19 PASS했다.
 - Tauri feature만 추가했을 때 config allowlist 불일치 실패를 재현한 뒤 `app.macOSPrivateApi: true`를 함께 설정했고, Windows x64 `cargo check --locked`가 PASS했다.
 - 실제 macOS Intel/Apple Silicon compile 결과는 다음 GitHub CI run에서 확인한다.
+
+[2026-09-01] CLI OMX 복구 · 번역/Windows/테마/로그인 최종 통합
+
+복구와 후보 평가
+- 기준은 `a794a28ff361dadf41763415bcecb02aa69e6a5d`이다. 이전 앱 서버 작업은 Rust 셸 호출 뒤 멈췄고 Cargo/rustc/link 자식 프로세스와 새 활동이 없음을 확인한 뒤 실패로 분류했다. 구현·검증·커밋은 현재 감독된 CLI OMX 최종화 작업에서만 수행했다.
+- OMX `f0be316`은 91/100(요구사항 27/30, 테스트 23/25, 정확성 18/20, 보안 15/15, 유지보수성 8/10)으로 평가했다. 자동 번역·Windows 안내·테마 마이그레이션·회귀 테스트가 가장 완전했으나 신규 `AppSettings` 기본값을 실제로 Light로 지정하지 않았고, Windows CRLF 카탈로그 해시와 CLI 최종화 계약은 다루지 않았다.
+- GLM `2879db3`은 66/100(요구사항 17/30, 테스트 14/25, 정확성 17/20, 보안 11/15, 유지보수성 7/10)으로 평가했다. 실제 Light 기본값은 올바르게 제안했으나 자동 번역과 중복 방지 테스트가 없고 자동 번역 요구사항을 충족하지 못했으며 작업 브리프를 포함했다. 생산 후보로 채택하지 않고 Light 기본값 비교 근거만 반영했다.
+
+구현
+- OMX 후보의 자동 번역, 임시 스레드 fallback, 플랫폼 중앙 판별, Windows/macOS 안내 분리, 스키마 2 테마 마이그레이션과 테스트를 통합했다. `a71aac7`의 붙여넣기 즉시 번역과 임시 스레드 동작은 중복 구현하지 않고 보존했다.
+- 편집 자동 번역은 500ms 디바운스, 편집 revision, IME 상태와 준비/정리 상태를 함께 검사한다. 수동 실행은 대기 타이머를 취소하고 같은 revision의 자동 실행을 막는다. 수동·자동 시작 오류는 제한된 소문자 오류 코드만 UI 상태로 전달한다.
+- `70d1228`의 계정 런타임 준비 대기와 종료/실패 해제를 통합했다. 공식 HTTPS ChatGPT 호스트 검증, 오류 코드 정리, URL·토큰·로그인 ID·원문 비기록 계약을 유지했다.
+- 신규 설정과 스키마 1의 암묵적 system은 Light로 이동하고, 명시적 Light/Dark 및 스키마 2의 System은 유지한다. 앱 초기 state와 CSS도 Light 우선으로 맞췄다.
+- Windows 체크아웃의 CRLF 변환으로 검증된 단축키 카탈로그 SHA-256이 달라지던 전체 Cargo 실패를 재현하고 `.gitattributes`에서 해당 파일을 LF로 고정했다.
+- repo-local OMX duel 절차에는 구현과 최종 합성 모두 감독된 `omx exec` 터미널에서만 수행하고 앱/Paseo Codex는 오케스트레이션·읽기 전용 검토만 하도록 하는 계약, 자식 프로세스와 활동이 없는 빌드의 실패 판정, interrupt 실패의 오류 표면화를 정의했다. 무의존성 계약 테스트를 `records:test`에 연결했다.
+
+검증
+- `pnpm test -- src/features/translation/TextWorkspace.test.tsx src/features/settings/SettingsView.test.tsx src/app/App.test.tsx`: 7 files, 76/76 PASS. 자동 디바운스·수동 중복 방지·IME·동일 언어·Windows/macOS 안내·초기 Light/명시적 Dark를 포함한다.
+- `pnpm test -- AccountPanel.test.tsx`: 7 files, 76/76 PASS이며 AccountPanel 15/15를 포함한다. 테스트 스크립트는 이 관리형 경로의 esbuild 상위 디렉터리 접근 제한을 피하도록 Vite runner config loader를 사용한다.
+- `pnpm build`: TypeScript와 Vite production build PASS, 69 modules.
+- fallback 집중 테스트 1/1, 스키마 1/2 테마 마이그레이션 집중 테스트 2/2 PASS. `settings_store` 전체 17/17 PASS.
+- `cargo test --test codex_auth`: 23/23 PASS. `cargo test --features test-helper --test codex_bootstrap`: 4 PASS, 로컬 sidecar 필요 2 ignored. `cargo test --lib`: 84/84 PASS.
+- `cargo test`: 전체 PASS(라이브 sidecar 조건부 2 ignored 포함). `cargo check`와 `cargo fmt -- --check` PASS.
+- 최초 전체 Cargo 실행에서 Windows 줄바꿈 때문에 `hotkey_conflicts` 14개가 HashMismatch로 실패했고 LF 고정 뒤 해당 17/17 및 전체 Cargo를 다시 통과했다. 최초 기본 테마 테스트의 System/Light 불일치도 실제 Light 기본값 반영 뒤 17/17 및 전체 Cargo를 다시 통과했다.
+- `pnpm records:check`, `pnpm privacy:check`, CLI-only 계약 테스트 2/2, `git diff --check`가 모두 PASS했다.
+
+커밋·푸시 범위
+- 현재 기준 뒤 하나의 통합 구현 커밋만 생성한다. duel 브리프·보고서, 로컬 실행 상태, 디버그 로그와 Paseo 설정은 포함하지 않는다.
+- 이 CLI 작업은 푸시·병합·설치·릴리스·배포를 하지 않는다. 독립 검토와 푸시는 컨트롤러 범위다.
+
+[2026-09-01] 계정 런타임 준비 알림 유실 경합 최종 수정
+
+원인과 수정
+- `AppState::wait_for_account_service`가 `Notify::notified()`를 만들기만 하고 런타임·실패·종료 상태를 검사한 뒤 처음 poll했다. 최종 상태 확인과 `notified.await`의 첫 poll 사이의 `notify_waiters()`는 보존되지 않아, 이미 부트스트랩이 완료·실패했거나 종료가 시작됐어도 로그인 요청이 제한시간까지 잠들 수 있었다.
+- 각 반복에서 `Notified`를 pin한 뒤 Tokio의 `enable()`로 먼저 대기자 목록에 등록하고 그 다음 런타임·실패·종료 상태를 확인한다. 상태 확인 뒤 await 직전에 알림이 와도 등록된 permit이 보존되며, `notify_waiters()`는 등록된 모든 동시 대기자를 해제한다. 새 의존성은 추가하지 않았다.
+- 테스트 전용 결정적 경계는 대기자가 등록되고 최종 상태 확인을 마쳤지만 await하지 않은 정확한 지점에서 부트스트랩 실패 알림을 발생시킨다. 알림이 유실되던 구현은 1초 제한에 걸리고 수정 구현은 즉시 다음 반복에서 실패 상태를 반환한다. 다중 대기자, 부트스트랩 실패, 종료 반환, 종료 뒤 늦은 설치 거부, 정상적인 느린 최초 부트스트랩도 함께 유지한다.
+- 공식 HTTPS `chatgpt.com` URL 경계, 고정된 정리 오류 코드, URL·토큰·로그인 ID·비밀·원문 비기록 계약과 CLI-only OMX/무의존성 계약 테스트는 변경하지 않았다. OMX 91/100과 GLM 66/100 점수도 새 후보 평가 근거가 없어 유지한다.
+
+검증
+- 결정적 readiness 집중 검증은 알림 유실 경계, 다중 대기자, 부트스트랩 실패, 종료 전·후 반환을 각각 실행해 5/5 PASS했다. `app_state_readiness` 통합 테스트 1/1도 PASS했다.
+- `pnpm test -- src/features/translation/TextWorkspace.test.tsx src/features/settings/SettingsView.test.tsx src/app/App.test.tsx`와 `pnpm test -- AccountPanel.test.tsx`는 각각 7 files, 76/76 PASS했다. `pnpm build`는 69 modules로 PASS했다.
+- `cargo test --test codex_auth`는 23/23 PASS했다. `cargo test --features test-helper --test codex_bootstrap`은 4 PASS, 로컬 sidecar 조건부 2 ignored이며 느린 정상 부트스트랩과 종료 뒤 늦은 설치 거부를 포함한다. `cargo test --lib`는 86/86 PASS했다.
+- `cargo test` 전체는 222 PASS, 0 failed이고 기본 feature에서 조건부 bootstrap 테스트는 실행되지 않는다. `cargo check`와 `cargo fmt -- --check`도 PASS했다.
+- `pnpm records:test`는 CLI-only OMX/무의존성 계약을 포함해 18/18 PASS했다. `pnpm records:check`, `pnpm privacy:check`(5 files), `git diff --check`도 PASS했다.
+
+[2026-09-01] SmartCAT 런타임 릴리스 CI 구문 분석 수정
+
+원인과 수정
+- 런타임 릴리스 workflow의 작업 수준 `env`에서 단계 범위에서만 허용되는 `runner.temp` 컨텍스트를 사용해 GitHub Actions가 작업을 만들기 전에 workflow를 거부했다.
+- `SMARTCAT_CODEX_CARGO_TARGET_DIR`을 실제 런타임 빌드 단계의 `env`로 옮겼다. 의존성이나 다른 릴리스 동작은 변경하지 않았다.
+- runtime supply-chain 테스트가 작업 수준 `env` 구간의 `runner` 컨텍스트를 거부하도록 최소 회귀 검사를 추가했다.
+
+검증
+- 회귀 검사는 수정 전 작업 수준 환경 변수의 `${{ runner.temp }}`를 정확히 검출해 실패했다.
+- `pnpm runtime:build:test`는 19/19 PASS했고 actionlint 1.7.12 workflow 검증도 오류 없이 PASS했다.
+- 푸시·PR·릴리스·배포는 수행하지 않는다.
+
+[2026-09-01] 강제 푸시 CI 기록 기준 복구
+
+원인과 수정
+- 강제 푸시에서 이벤트의 이전 커밋이 모든 원격 참조에서 사라지면 전체 이력을 가져온 뒤에도 `records:check`가 해당 객체를 찾지 못해 변경 파일 비교 전에 실패했다. 기록 누락이 아니라 명시 기준 커밋의 비가용성 처리 누락이었다.
+- 명시한 0이 아닌 기준을 커밋 객체로 확인하고, 사용할 수 없을 때만 별도로 전달한 도달 가능한 대체 기준을 사용하도록 검사 인터페이스를 보완했다. 두 기준이 모두 유효하지 않으면 실패하며 0 SHA의 빈 트리 비교는 그대로 유지한다.
+- Ubuntu 기록 작업은 기존 PR·푸시 기준/대상 선택을 유지하면서 원격 기본 브랜치를 대체 기준으로 전달한다.
+
+회귀 검사
+- 명시 기준 객체가 없고 대체 기준은 유효한 임시 저장소에서 제품 변경 기록 의무가 계속 적용되는 명령 수준 회귀 검사를 먼저 추가했다. 구현 전에는 새 인자를 거부해 19개 중 해당 검사만 실패했고, 구현 뒤 `pnpm.cmd records:test` 19/19가 통과했다.
+- 현재 커밋을 기준과 대상으로 지정하고 `HEAD`를 대체 기준으로 전달한 `records:check`가 통과했다. actionlint 1.7.12로 CI와 런타임 릴리스 workflow를 함께 검사해 오류 없이 통과했다.
+
+[2026-09-01] 강제 푸시 CI 기록 대체 기준 강화
+
+원인과 수정
+- 기본 브랜치 자체를 강제 푸시하면 원격 기본 브랜치가 새 대상과 같아질 수 있어 대체 기준과 대상을 직접 비교할 경우 빈 차이로 기록 검사를 우회했다.
+- 기능 브랜치가 갈라진 뒤 기본 브랜치가 전진하면 기본 브랜치 최신 끝과 기능 브랜치 끝의 직접 비교에 양쪽 변경이 섞였다.
+- 명시한 0이 아닌 기준을 사용할 수 없을 때 대체 기준과 대상을 각각 커밋으로 검증하고 `git merge-base`를 계산한다. 병합 기준이 없거나 대상 커밋 자체이면 실패하고, 그 외에는 병합 기준부터 대상까지의 파일만 검사한다. 0 SHA 빈 트리와 유효한 명시 기준 동작은 유지한다.
+
+회귀 검사
+- 유효하지 않은 명시 기준과 대상과 같은 대체 기준은 빈 성공 대신 실패한다.
+- 유효하지 않은 명시 기준과 분기된 대체 기준은 두 끝의 병합 기준을 사용하므로 제품 변경과 함께 작성한 기록을 정상 인정한다.
+- 명시 기준과 대체 기준이 모두 유효하지 않으면 계속 실패하도록 명령 수준 검사를 고정했다.
+
+[2026-09-01] Windows SmartCAT 런타임 패치 바이트 고정
+
+근거
+- GitHub Actions PR 실행 `33469992956`, Windows package 작업 `99738140137`은 `pnpm runtime:build -- --target x86_64-pc-windows-msvc` 시작 직후 `build-smartcat-codex-runtime: patch_hash_mismatch`로 실패했다.
+- 감사된 Git blob SHA-256과 `pin.json`의 `patchSha256`은 `ffe6e77bea83a860259000332eb6d2c256bdc5def3375447319dc055c7f5bcaf`로 같았지만, Windows 작업 트리는 CRLF로 변환되어 `e63c838c41dc5320f7f63c0ff74c01ab621742ce6bfdced49d0d17a012dcdce0`가 되었다.
+
+원인과 수정
+- 빌드의 바이트 단위 핀 검증은 의도된 공급망 경계지만, `.gitattributes`가 감사 패치의 체크아웃 줄바꿈을 고정하지 않아 Windows Git 설정이 검증 입력을 변경했다.
+- `.gitattributes`에 `*.patch text eol=lf`를 추가하고 기존 인덱스 blob에서 감사 패치 하나만 다시 체크아웃했다. 패치 blob과 핀 값은 변경하지 않았다.
+
+회귀 검사
+- 런타임 빌드 테스트는 감사 패치 경로 또는 모든 `*.patch`에 `text eol=lf`가 적용되는지 확인한다.
+- 같은 테스트는 실제 체크아웃 패치 바이트의 SHA-256을 계산해 `pin.patchSha256`과 일치하는지 확인한다.
+
+[2026-09-01] PR unsigned 패키지 SBOM 도구 프로비저닝 회귀 수정
+
+근거
+- GitHub Actions PR 실행 `33471973155`의 macOS ARM `package_unsigned` 작업 `99743800112`는 감사 패치와 핀 해시 검증 및 Codex 릴리스 컴파일을 성공시켰고, 48분 17초 뒤 SBOM 생성에서 `error: no such command: cyclonedx`와 `build-smartcat-codex-runtime: sbom_command_failed`로 실패했다.
+- Windows와 macOS Intel 패키지 작업은 같은 누락된 도구에 도달할 예정이어서 취소되었다. 실패 지점은 패치, 핀, 해시 또는 Codex 릴리스 컴파일이 아니라 PR 패키지 workflow의 SBOM 도구 프로비저닝이었다.
+
+원인과 수정
+- 명시적 런타임 릴리스 workflow는 이미 `cargo-cyclonedx` 0.5.9를 `--locked`로 설치하지만, PR 전용 `package_unsigned` 작업은 그 단계를 재사용하지 않고 곧바로 비용이 큰 `pnpm runtime:build`를 실행했다.
+- `package_unsigned`가 런타임 빌드 전에 `cargo install cargo-cyclonedx --version 0.5.9 --locked`를 실행하도록 최소 수정하고, 작업 수준 `timeout-minutes: 120`을 추가했다. 런타임 감사 패치, 해시, 핀과 기존 제품·보안 변경은 수정하지 않았다.
+
+TDD와 검증
+- 회귀 검사를 먼저 추가해 PR 패키지 작업에 120분 제한이 없어서 정확히 실패하는 것을 확인했다. 검사는 해당 작업 범위에서 정확한 0.5.9 고정, `--locked`, 설치가 `pnpm runtime:build`보다 앞서는 순서와 제한 시간을 확인하며 workflow 전체 snapshot에는 의존하지 않는다.
+- 수정 뒤 `pnpm runtime:build:test`는 21/21 PASS, `pnpm records:test`는 22/22 PASS했다. `pnpm records:check`, actionlint 1.7.12로 `.github/workflows/ci.yml`과 `.github/workflows/smartcat-runtime-release.yml` 검사, `git diff --check`도 PASS했다.
+- 기준 커밋부터 `HEAD`까지의 `git diff --check`를 별도로 실행하고, 두 기록 파일의 명시적 LF 속성과 체크아웃 바이트를 검사해 CRLF 재발을 막는다.
+
+[2026-09-01] 최종 GitHub·로컬 설치 증거 정리
+
+검증 사실
+- 최종 커밋 `d2ea38b`의 GitHub Actions push run `33478909612`와 PR run `33478914106`은 어떤 job step도 시작하기 전에 거부되었다. 샘플링한 모든 annotation은 최근 계정 결제 실패 또는 Actions 지출 한도로 runner가 시작되지 않았다고 기록했다. 이는 코드·테스트 실패가 아닌 외부 GitHub billing 상태이며, 최종 GitHub CI 통과로 분류하지 않는다.
+- 이전 `ff9f114` push run `33471970202`는 privacy, records, Windows/macOS frontend, Windows/macOS Rust를 통과했다. PR package run은 감사된 patched Codex release build를 완료했고 48분 17초가 걸려 LF patch hash fix를 입증한 뒤 `cargo-cyclonedx` 누락을 노출했다. 최종 커밋은 pin/order/timeout 회귀 테스트와 함께 해당 provisioning을 수정했다.
+- `d2ea38b` 제품 트리는 OMX를 통해 manifest와 일치하는 이미 감사된 Windows sidecar로 로컬 패키징했다. MSI는 125063168 bytes, SHA256 `7677D1B188F5D594409DF768AB6502BF29B146C75D1ED2D48DB801654378ABDA`, NSIS는 84485776 bytes, SHA256 `5A3E157F172D8F3A36C353BAE452AA547AC48C7DB6DD2688DFE789AA4315BC16`이다. 둘 다 예상한 NotSigned prerelease다.
+- 기존 D 드라이브 설치 위치에 NSIS in-place reinstall을 수행했고 exit 0으로 반환되었으며 app data는 삭제되지 않았다. 설치 앱 SHA256은 `6F49CDCF5E8A509282F89E4F34E26169B82B0FDD1CFAC9723C6AD813105682AE`, 설치 sidecar SHA256은 `E4DB53E141020CBB70D0CBDDC4BE796FCC12CFE027A6A1F7DEAC70B959599D53`이다. sidecar는 `codex-cli 0.144.4`, exact manifest match, patch SHA `ffe6e77bea83a860259000332eb6d2c256bdc5def3375447319dc055c7f5bcaf`이며 launch 후 main window와 child sidecar가 안정적으로 유지되었다.
+- 설치 증거는 Git 외부 `C:\\Users\\cyary\\.paseo\\install-artifacts\\d2ea38bcdc736673532efe5e0c4658477ad5dadb`에 보존한다. auth URL, token, account data, source text, user document content는 포함하지 않는다.
+
+최종화 범위
+- 문서·증거 파일만 수정했으며 code, workflow, test, dependency, generated binary, runtime patch/pin, report, duel brief는 변경하지 않았다. push, merge, install, launch, deploy는 이 최종화 작업에서 수행하지 않는다.

@@ -1,10 +1,15 @@
 #![cfg(feature = "test-helper")]
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use semver::Version;
 use smartcat_translate::app_state::{AppState, AppStateError};
-use smartcat_translate::codex::auth::{AccountChangeReason, AccountEventSink, AccountState};
+use smartcat_translate::codex::auth::{
+    start_login_and_open, AccountChangeReason, AccountEventSink, AccountState, BrowserOpenError,
+    BrowserOpener,
+};
 use smartcat_translate::codex::bootstrap::{bootstrap_with_resolver, BootstrapError};
 use smartcat_translate::codex::process::{
     sandboxed_app_data_root, ProcessRuntimeLauncher, CODEX_APP_SERVER_PROTOCOL,
@@ -25,6 +30,20 @@ struct NoopRecorder;
 
 impl RuntimeFailureRecorder for NoopRecorder {
     fn record(&self, _record: RuntimeFailureRecord) {}
+}
+
+struct SafeRecordingOpener(AtomicUsize);
+
+impl BrowserOpener for SafeRecordingOpener {
+    fn open(&self, url: &url::Url) -> Result<(), BrowserOpenError> {
+        assert_eq!(url.scheme(), "https");
+        assert_eq!(url.host_str(), Some("chatgpt.com"));
+        assert!(url.username().is_empty());
+        assert!(url.password().is_none());
+        assert!(url.port().is_none());
+        self.0.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
 }
 
 async fn lock_process_integration() -> tokio::sync::MutexGuard<'static, ()> {
@@ -89,7 +108,7 @@ async fn actual_stock_codex_is_rejected_without_smartcat_attestation() {
 }
 
 #[tokio::test]
-async fn production_wiring_hands_the_initialized_process_to_account_commands_and_cleans_up() {
+async fn installed_runtime_bootstrap_waits_then_opens_a_validated_login_and_cleans_up() {
     let _serial = lock_process_integration().await;
     let app_data = tempdir().unwrap();
     let sandbox_root = sandboxed_app_data_root(app_data.path()).unwrap();
@@ -125,7 +144,14 @@ async fn production_wiring_hands_the_initialized_process_to_account_commands_and
         launcher,
         Arc::new(NoopRecorder),
     );
-    let state = AppState::default();
+    let state = Arc::new(AppState::default());
+    let waiting_state = state.clone();
+    let service_waiter = tokio::spawn(async move {
+        waiting_state
+            .wait_for_account_service(Duration::from_secs(10))
+            .await
+            .expect("an installed-app login request waits for runtime bootstrap")
+    });
 
     bootstrap_with_resolver(
         &state,
@@ -136,10 +162,7 @@ async fn production_wiring_hands_the_initialized_process_to_account_commands_and
     .await
     .unwrap();
 
-    let service = state
-        .account_service()
-        .await
-        .expect("bootstrap installs the account service");
+    let service = service_waiter.await.unwrap();
     let snapshot = service.read_snapshot().await.unwrap();
     assert_eq!(
         snapshot.account,
@@ -149,6 +172,11 @@ async fn production_wiring_hands_the_initialized_process_to_account_commands_and
         }
     );
     assert!(!snapshot.login_pending);
+    let opener = SafeRecordingOpener(AtomicUsize::new(0));
+    start_login_and_open(&service, &opener).await.unwrap();
+    assert_eq!(opener.0.load(Ordering::Relaxed), 1);
+    assert!(service.cancel_login().await.unwrap());
+    assert!(!service.has_pending_login().await);
     assert!(state.translation_jobs().await.is_some());
     let isolated_config = std::fs::read_to_string(isolated_home.join("config.toml")).unwrap();
     assert!(!isolated_config.contains("HOSTILE_USER_CONFIG"));

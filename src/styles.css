@@ -247,7 +247,6 @@ main[data-theme="dark"] :is(.hotkey-recorder output, .blocked-app) { background:
 main[data-theme="dark"] :is(.conflict-cause, .force-warning, .permission-note) { color: #f4dfad; background: #332b18; }
 
 @media (prefers-color-scheme: dark) {
-  :root { color: #e7edf5; background: #111827; }
   main[data-theme="system"] { color: #e7edf5; background: #111827; color-scheme: dark; }
   main[data-theme="system"] :is(.text-workspace, .workspace-footer, .account-panel, .app-menu-secondary, .app-notification-popover, #app-panel-settings > section, button, select, input) { color: #e7edf5; background: #182233; border-color: #344258; }
   main[data-theme="system"] .result-pane textarea { background: #141e2c; }

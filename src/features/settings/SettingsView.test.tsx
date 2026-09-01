@@ -65,6 +65,40 @@ afterEach(() => {
 });
 
 describe('SettingsView', () => {
+  it('shows Windows shortcut guidance without macOS Accessibility instructions', async () => {
+    Object.defineProperty(navigator, 'platform', { configurable: true, value: 'Win32' });
+    Object.defineProperty(navigator, 'userAgent', { configurable: true, value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' });
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'get_settings') return structuredClone({ ...defaultSettings, locale: 'en' });
+      if (command === 'list_available_models' || command === 'list_hotkeys' || command === 'list_blocked_apps') return [];
+      if (command === 'get_lifecycle_status') return { launchAtLoginAvailable: true, launchAtLoginEnabled: false, hotkeysPaused: false };
+      throw new Error(`unexpected command: ${command}`);
+    });
+
+    render(<SettingsView locale="en" initialCategory="shortcuts" />);
+
+    expect(await screen.findByText('Windows shortcut permissions')).toBeVisible();
+    expect(screen.queryByText(/On macOS|Accessibility permission/i)).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Executable name')).toBeVisible();
+  });
+
+  it('retains macOS Accessibility guidance and Bundle ID fields', async () => {
+    Object.defineProperty(navigator, 'platform', { configurable: true, value: 'MacIntel' });
+    Object.defineProperty(navigator, 'userAgent', { configurable: true, value: 'Mozilla/5.0 (Macintosh; Intel Mac OS X)' });
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'get_settings') return structuredClone({ ...defaultSettings, locale: 'en' });
+      if (command === 'list_available_models' || command === 'list_hotkeys' || command === 'list_blocked_apps') return [];
+      if (command === 'get_lifecycle_status') return { launchAtLoginAvailable: true, launchAtLoginEnabled: false, hotkeysPaused: false };
+      throw new Error(`unexpected command: ${command}`);
+    });
+
+    render(<SettingsView locale="en" initialCategory="shortcuts" />);
+
+    expect(await screen.findByText(/On macOS, sequences may require Accessibility permission/)).toBeVisible();
+    expect(screen.getByLabelText('Bundle ID')).toBeVisible();
+    expect(screen.queryByText('Windows shortcut permissions')).not.toBeInTheDocument();
+  });
+
   it('shows approved Korean defaults in compact settings categories', async () => {
     mockCommands();
     const user = userEvent.setup();

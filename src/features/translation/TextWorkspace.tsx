@@ -12,6 +12,7 @@ import { SecretModeSwitch, useSecretMode } from '../history/secretMode';
 
 const MAX_SOURCE_CHARS = 200_000;
 const MAX_SOURCE_BYTES = 1_000_000;
+const AUTO_TRANSLATE_DEBOUNCE_MS = 500;
 
 const copy = {
   ko: {
@@ -69,10 +70,14 @@ export function TextWorkspace({
   const [notice, setNotice] = useState('');
   const [validationError, setValidationError] = useState('');
   const [loadError, setLoadError] = useState(false);
+  const [editRevision, setEditRevision] = useState(0);
+  const [composing, setComposing] = useState(false);
   const [secret,setSecret]=useSecretMode();
   const savedHistoryJob=useRef<string|undefined>(undefined);
   const activeSecret=useRef(false);
   const accountGeneration = useRef(0);
+  const autoStartTimer = useRef<number | undefined>(undefined);
+  const startedRevision = useRef(0);
   const mounted = useRef(false);
   const { state, detectedLanguage, listenerState, start, cancel, reset } = useTranslationJob();
   const locale = localeOverride ?? settings?.locale ?? 'ko';
@@ -158,7 +163,7 @@ export function TextWorkspace({
       setValidationError(labels.tooLarge);
       return;
     }
-    if (!effectiveProfile || accountPhase !== 'signedIn') return;
+    if (!effectiveProfile || accountPhase !== 'signedIn' || listenerState !== 'ready') return;
     const sourceMatchesTarget = effectiveProfile.sourceLanguage?.toLowerCase() === effectiveProfile.targetLanguage.toLowerCase()
       || (useDetectedLanguage && effectiveProfile.sourceLanguage === null && detectedLanguage?.toLowerCase() === effectiveProfile.targetLanguage.toLowerCase());
     if (mode === 'translate' && sourceMatchesTarget) return;
@@ -167,7 +172,14 @@ export function TextWorkspace({
     void start({ text, profile: effectiveProfile, field, glossary, mode, secret });
   };
 
-  const run = (mode: TranslationMode = 'translate') => runText(source, mode);
+  const run = (mode: TranslationMode = 'translate') => {
+    if (autoStartTimer.current !== undefined) {
+      window.clearTimeout(autoStartTimer.current);
+      autoStartTimer.current = undefined;
+    }
+    startedRevision.current = editRevision;
+    runText(source, mode);
+  };
 
   const clearBoundResult = () => {
     if (state.status === 'completed' || (state.status === 'failed' && !state.pendingCleanup)) reset();
@@ -225,6 +237,30 @@ export function TextWorkspace({
   const pendingCleanup = state.status === 'failed' && Boolean(state.pendingCleanup);
   const activityActive = state.status === 'running' || pendingCleanup;
   const disabled = loadError || !effectiveProfile || accountPhase !== 'signedIn' || listenerState !== 'ready' || pendingCleanup;
+
+  useEffect(() => {
+    if (autoStartTimer.current !== undefined) {
+      window.clearTimeout(autoStartTimer.current);
+      autoStartTimer.current = undefined;
+    }
+    if (editRevision === 0 || editRevision <= startedRevision.current || composing || activityActive
+      || disabled || sameLanguage || !source.trim() || !sourceWithinBounds(source) || !effectiveProfile) return;
+
+    autoStartTimer.current = window.setTimeout(() => {
+      autoStartTimer.current = undefined;
+      startedRevision.current = editRevision;
+      setNotice('');
+      setValidationError('');
+      activeSecret.current = secret;
+      void start({ text: source, profile: effectiveProfile, field, glossary, mode: 'translate', secret });
+    }, AUTO_TRANSLATE_DEBOUNCE_MS);
+    return () => {
+      if (autoStartTimer.current !== undefined) {
+        window.clearTimeout(autoStartTimer.current);
+        autoStartTimer.current = undefined;
+      }
+    };
+  }, [activityActive, composing, disabled, editRevision, effectiveProfile, field, glossary, sameLanguage, secret, source, start]);
 
   useEffect(() => {
     onActivityChange?.(activityActive);
@@ -289,10 +325,13 @@ export function TextWorkspace({
             aria-label={labels.source}
             value={source}
             readOnly={activityActive}
+            onCompositionStart={() => setComposing(true)}
+            onCompositionEnd={() => setComposing(false)}
             onChange={(event) => {
               if (activityActive) return;
               clearBoundResult();
               setSource(event.target.value);
+              setEditRevision((revision) => revision + 1);
             }}
             onPaste={(event) => {
               if (activityActive) return;
