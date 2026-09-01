@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
 import { AccountPanel } from '../features/account/AccountPanel';
 import type { AppLocale } from './App';
@@ -8,12 +9,12 @@ const copy = {
   ko: {
     menu: '앱 메뉴', general: '일반 설정', translation: '번역 설정', hotkeys: '단축키',
     privacy: '개인정보·기록', updates: '업데이트', about: '앱 정보', quit: '종료',
-    version: 'SmartCAT Translate 0.1.0', settingsLocked: '번역 중에는 설정을 열 수 없습니다.',
+    product: 'SmartCAT Translate', versionUnavailable: '버전을 확인할 수 없습니다.', settingsLocked: '번역 중에는 설정을 열 수 없습니다.',
   },
   en: {
     menu: 'App menu', general: 'General settings', translation: 'Translation settings', hotkeys: 'Shortcuts',
     privacy: 'Privacy & history', updates: 'Updates', about: 'About', quit: 'Quit',
-    version: 'SmartCAT Translate 0.1.0', settingsLocked: 'Settings are unavailable while translating.',
+    product: 'SmartCAT Translate', versionUnavailable: 'Version unavailable', settingsLocked: 'Settings are unavailable while translating.',
   },
 } as const;
 
@@ -33,6 +34,24 @@ export function AppMenuOverlay({
   const labels = copy[locale];
   const panelRef = useRef<HTMLElement>(null);
   const [showAbout, setShowAbout] = useState(false);
+  const [version, setVersion] = useState<
+    { status: 'loading' } | { status: 'success'; value: string } | { status: 'failed' }
+  >({ status: 'loading' });
+
+  useEffect(() => {
+    let mounted = true;
+    void getVersion().then(
+      (installedVersion) => {
+        if (mounted) setVersion({ status: 'success', value: installedVersion });
+      },
+      () => {
+        if (mounted) setVersion({ status: 'failed' });
+      },
+    );
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   useEffect(() => {
     panelRef.current?.focus({ preventScroll: true });
@@ -89,7 +108,10 @@ export function AppMenuOverlay({
       {settingsLocked && <p className="app-menu-note" role="status">{labels.settingsLocked}</p>}
       <div className="app-menu-secondary">
         <button type="button" aria-expanded={showAbout} onClick={() => setShowAbout((visible) => !visible)}><i aria-hidden="true">ⓘ</i><span>{labels.about}</span></button>
-        {showAbout && <p>{labels.version}</p>}
+        {showAbout && <p>
+          {labels.product}
+          {version.status === 'success' ? ` ${version.value}` : version.status === 'failed' ? <> — <span>{labels.versionUnavailable}</span></> : ''}
+        </p>}
         <button type="button" onClick={() => void invoke('quit_application')}><i aria-hidden="true">⇥</i><span>{labels.quit}</span></button>
       </div>
     </aside>

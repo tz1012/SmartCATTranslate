@@ -4,6 +4,18 @@
 
 ## 미출시
 
+### SmartCAT Translate 0.1.1 복구
+
+- 고정된 Codex 0.144.4 번역 프로토콜의 정상 진행 알림 `deprecationNotice`, `account/rateLimits/updated`, `thread/tokenUsage/updated`는 필수 공식 필드·타입·scope를 검증하면서 호환 가능한 추가 필드는 허용합니다. `modelContextWindow`는 선택 필드로서 생략, `null`, signed i64를 허용하고, 필수 token breakdown 정수는 signed i64 범위를 벗어나면 거부합니다. 같은 이름의 malformed payload와 알 수 없는 이벤트는 기존 thread/turn 범위 검증과 함께 실패 폐쇄합니다.
+- listener 등록 실패 뒤 Retry는 주 작업 영역과 빠른 팝업 모두에서 새 guarded 등록 시도를 수행합니다. UI에는 정확한 지원 코드 allowlist 값만 표시하고, 알 수 없거나 안전하지 않은 값은 `translation_start_failed`로 대체합니다.
+- 정보 화면은 설치된 앱 버전 0.1.1을 표시하며, 이를 설치된 런타임 버전이라고 부르지 않습니다. 앱 버전 조회가 실패하면 raw rejection 대신 현지화되고 정리된 unavailable 메시지를 표시합니다.
+- 부트스트랩 테스트의 가짜 프로세스가 하드코딩된 버전 대신 현재 패키지 버전을 검증하도록 바꿔 이후 버전 갱신에도 같은 회귀를 방지합니다. 이는 테스트 지원 변경이며 프로덕션 런타임 동작은 바꾸지 않습니다.
+- 최종 로컬 검증은 AccountPanel 15/15, `codex_auth` 23/23, `codex_bootstrap` 4 passed / 0 failed / 2 ignored, Rust lib 86/86, frontend 81/81, translation coordinator 38/38을 통과했습니다. production build, `cargo check`, `cargo fmt -- --check`, `git diff --check`도 통과했습니다.
+- 최종 NSIS 설치 관리자 SHA-256은 `906FE7067ACC34E99751F6C88BB0E88ED2A37D90DBDA6AE4BE21A0C1C5843A28`, 설치된 앱은 `8DC37627FE470E7099876C068D5DA864DD8CF3A9123A5F22A929ADF7894E67C1`, 설치된 sidecar는 `E4DB53E141020CBB70D0CBDDC4BE796FCC12CFE027A6A1F7DEAC70B959599D53`이며 Authenticode는 `NotSigned`입니다.
+- NSIS in-place 설치는 exit 0이었고, 실제 설치 앱의 정보 화면에서 0.1.1을 확인했으며 고정된 비민감 번역 smoke가 통과했습니다. 이후 Exit 메뉴로 종료했을 때 앱과 sidecar 프로세스가 남지 않았습니다.
+- 사용자 지시에 따라 GitHub Actions는 의도적으로 실행하지 않았고 로컬 검증과 설치를 최종 관문으로 사용했습니다. GitHub CI가 통과했다고 주장하지 않습니다.
+- URL, token, 계정 식별자, 이메일, 원문 또는 번역 결과는 기록하지 않았습니다.
+
 ### 최종 검증 증거
 
 - 최종 커밋 `d2ea38b`의 GitHub Actions push run `33478909612`와 PR run `33478914106`은 작업 단계가 시작되기 전에 거부되었습니다. 샘플링한 모든 annotation은 최근 계정 결제 실패 또는 Actions 지출 한도로 runner가 시작되지 않았다고 기록했습니다. 이는 코드·테스트 실패가 아닌 외부 GitHub billing 상태이며, 최종 GitHub CI가 통과했다고 주장하지 않습니다.

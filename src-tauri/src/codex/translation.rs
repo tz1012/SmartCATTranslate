@@ -889,6 +889,14 @@ fn handle_event(
     ) {
         return Ok(EventOutcome::Continue);
     }
+    if event.method == "deprecationNotice" {
+        validate_deprecation_notice(event)?;
+        return Ok(EventOutcome::Continue);
+    }
+    if event.method == "account/rateLimits/updated" {
+        validate_rate_limits_update(event)?;
+        return Ok(EventOutcome::Continue);
+    }
     let scope = event_scope(event);
     match scope {
         Some((event_thread, event_turn)) if event_thread != thread_id || event_turn != turn_id => {
@@ -900,6 +908,10 @@ fn handle_event(
 
     match event.method.as_str() {
         "turn/started" => Ok(EventOutcome::Continue),
+        "thread/tokenUsage/updated" => {
+            validate_token_usage_update(event)?;
+            Ok(EventOutcome::Continue)
+        }
         "item/started" => match item_type(event) {
             Some("userMessage" | "agentMessage") => Ok(EventOutcome::Continue),
             Some(_) => Err(TranslationError::ToolUseRejected),
@@ -950,6 +962,80 @@ fn handle_event(
         }
         "error" => Err(TranslationError::RuntimeUnavailable),
         _ => Err(TranslationError::ProtocolViolation),
+    }
+}
+
+fn unscoped_params(
+    event: &AppServerNotification,
+) -> Result<&serde_json::Map<String, Value>, TranslationError> {
+    let params = event
+        .params
+        .as_object()
+        .ok_or(TranslationError::ProtocolViolation)?;
+    if ["threadId", "turnId", "thread", "turn"]
+        .iter()
+        .any(|key| params.contains_key(*key))
+    {
+        return Err(TranslationError::ProtocolViolation);
+    }
+    Ok(params)
+}
+
+fn validate_deprecation_notice(event: &AppServerNotification) -> Result<(), TranslationError> {
+    let params = unscoped_params(event)?;
+    params
+        .get("summary")
+        .and_then(Value::as_str)
+        .ok_or(TranslationError::ProtocolViolation)?;
+    if !matches!(
+        params.get("details"),
+        None | Some(Value::Null) | Some(Value::String(_))
+    ) {
+        return Err(TranslationError::ProtocolViolation);
+    }
+    Ok(())
+}
+
+fn validate_rate_limits_update(event: &AppServerNotification) -> Result<(), TranslationError> {
+    unscoped_params(event)?
+        .get("rateLimits")
+        .and_then(Value::as_object)
+        .ok_or(TranslationError::ProtocolViolation)?;
+    Ok(())
+}
+
+fn validate_token_usage_update(event: &AppServerNotification) -> Result<(), TranslationError> {
+    let token_usage = event
+        .params
+        .get("tokenUsage")
+        .and_then(Value::as_object)
+        .ok_or(TranslationError::ProtocolViolation)?;
+    validate_token_breakdown(token_usage.get("total"))?;
+    validate_token_breakdown(token_usage.get("last"))?;
+    match token_usage.get("modelContextWindow") {
+        None | Some(Value::Null) => Ok(()),
+        Some(value) if value.as_i64().is_some() => Ok(()),
+        _ => Err(TranslationError::ProtocolViolation),
+    }
+}
+
+fn validate_token_breakdown(breakdown: Option<&Value>) -> Result<(), TranslationError> {
+    let breakdown = breakdown
+        .and_then(Value::as_object)
+        .ok_or(TranslationError::ProtocolViolation)?;
+    if [
+        "totalTokens",
+        "inputTokens",
+        "cachedInputTokens",
+        "outputTokens",
+        "reasoningOutputTokens",
+    ]
+    .iter()
+    .all(|key| breakdown.get(*key).and_then(Value::as_i64).is_some())
+    {
+        Ok(())
+    } else {
+        Err(TranslationError::ProtocolViolation)
     }
 }
 

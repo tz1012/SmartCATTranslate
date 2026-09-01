@@ -695,6 +695,506 @@ async fn applies_the_resolved_model_and_streams_only_the_structured_translation(
 }
 
 #[tokio::test]
+async fn accepts_codex_0_144_4_progress_notifications_during_a_successful_translation() {
+    let harness = spawn_fake_transport(|mut reader, mut writer| async move {
+        let base = read_request(&mut reader).await;
+        write_json_line(
+            &mut writer,
+            &json!({"id": base["id"], "result": {"thread": {"id": "base"}, "instructionSources": []}}),
+        )
+        .await;
+        let fork = read_request(&mut reader).await;
+        write_json_line(
+            &mut writer,
+            &json!({"id": fork["id"], "result": {"thread": {"id": "ephemeral"}}}),
+        )
+        .await;
+        let turn = read_request(&mut reader).await;
+        write_json_line(
+            &mut writer,
+            &json!({"id": turn["id"], "result": {"turn": {"id": "turn-1"}}}),
+        )
+        .await;
+
+        write_json_line(
+            &mut writer,
+            &json!({
+                "method": "deprecationNotice",
+                "params": {
+                    "summary": "Synthetic deprecated setting",
+                    "details": "Synthetic replacement setting"
+                }
+            }),
+        )
+        .await;
+        write_json_line(
+            &mut writer,
+            &json!({
+                "method": "thread/tokenUsage/updated",
+                "params": {
+                    "threadId": "ephemeral",
+                    "turnId": "turn-1",
+                    "tokenUsage": {
+                        "total": {
+                            "totalTokens": 20,
+                            "inputTokens": 12,
+                            "cachedInputTokens": 2,
+                            "outputTokens": 8,
+                            "reasoningOutputTokens": 3
+                        },
+                        "last": {
+                            "totalTokens": 7,
+                            "inputTokens": 4,
+                            "cachedInputTokens": 1,
+                            "outputTokens": 3,
+                            "reasoningOutputTokens": 2
+                        },
+                        "modelContextWindow": null
+                    }
+                }
+            }),
+        )
+        .await;
+        write_json_line(
+            &mut writer,
+            &json!({
+                "method": "account/rateLimits/updated",
+                "params": {
+                    "rateLimits": {
+                        "primary": {"usedPercent": 5.0, "windowDurationMins": 300}
+                    }
+                }
+            }),
+        )
+        .await;
+        write_json_line(
+            &mut writer,
+            &json!({
+                "method": "item/completed",
+                "params": {
+                    "threadId": "ephemeral",
+                    "turnId": "turn-1",
+                    "item": {
+                        "id": "agent-1",
+                        "type": "agentMessage",
+                        "text": r#"{"translation":"synthetic translation"}"#
+                    }
+                }
+            }),
+        )
+        .await;
+        write_json_line(
+            &mut writer,
+            &json!({
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "ephemeral",
+                    "turnId": "turn-1",
+                    "turn": {"id": "turn-1", "status": "completed", "items": []}
+                }
+            }),
+        )
+        .await;
+
+        let cleanup = read_request(&mut reader).await;
+        if cleanup["method"] == "turn/interrupt" {
+            write_json_line(&mut writer, &json!({"id": cleanup["id"], "result": {}})).await;
+            let unsubscribe = read_request(&mut reader).await;
+            assert_eq!(unsubscribe["method"], "thread/unsubscribe");
+            write_json_line(
+                &mut writer,
+                &json!({"id": unsubscribe["id"], "result": {"status": "unsubscribed"}}),
+            )
+            .await;
+        } else {
+            assert_eq!(cleanup["method"], "thread/unsubscribe");
+            write_json_line(
+                &mut writer,
+                &json!({"id": cleanup["id"], "result": {"status": "unsubscribed"}}),
+            )
+            .await;
+        }
+    })
+    .await;
+    let root = tempdir().unwrap();
+    let workspace = prepare_owned_empty_workspace(root.path()).unwrap();
+    let backend = CodexTranslationBackend::new(Arc::new(harness.transport), &workspace)
+        .await
+        .unwrap();
+
+    let result = backend.translate(request("synthetic source text")).await;
+    harness.server_task.await.unwrap();
+    let result = result.expect("known Codex progress notifications must not fail translation");
+
+    assert_eq!(result.translated_text, "synthetic translation");
+}
+
+async fn translate_with_token_usage_notification(
+    token_usage: Value,
+) -> Result<smartcat_translate::core::types::TranslationResult, TranslationError> {
+    let harness = spawn_fake_transport(move |mut reader, mut writer| async move {
+        let base = read_request(&mut reader).await;
+        write_json_line(
+            &mut writer,
+            &json!({"id": base["id"], "result": {"thread": {"id": "base"}, "instructionSources": []}}),
+        )
+        .await;
+        let fork = read_request(&mut reader).await;
+        write_json_line(
+            &mut writer,
+            &json!({"id": fork["id"], "result": {"thread": {"id": "ephemeral"}}}),
+        )
+        .await;
+        let turn = read_request(&mut reader).await;
+        write_json_line(
+            &mut writer,
+            &json!({"id": turn["id"], "result": {"turn": {"id": "turn-1"}}}),
+        )
+        .await;
+        write_json_line(
+            &mut writer,
+            &json!({
+                "method": "thread/tokenUsage/updated",
+                "params": {
+                    "threadId": "ephemeral",
+                    "turnId": "turn-1",
+                    "tokenUsage": token_usage
+                }
+            }),
+        )
+        .await;
+        write_json_line(
+            &mut writer,
+            &json!({
+                "method": "item/completed",
+                "params": {
+                    "threadId": "ephemeral",
+                    "turnId": "turn-1",
+                    "item": {
+                        "id": "agent-1",
+                        "type": "agentMessage",
+                        "text": r#"{"translation":"synthetic translation"}"#
+                    }
+                }
+            }),
+        )
+        .await;
+        write_json_line(
+            &mut writer,
+            &json!({
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "ephemeral",
+                    "turnId": "turn-1",
+                    "turn": {"id": "turn-1", "status": "completed", "items": []}
+                }
+            }),
+        )
+        .await;
+
+        let cleanup = read_request(&mut reader).await;
+        if cleanup["method"] == "turn/interrupt" {
+            write_json_line(&mut writer, &json!({"id": cleanup["id"], "result": {}})).await;
+            let unsubscribe = read_request(&mut reader).await;
+            assert_eq!(unsubscribe["method"], "thread/unsubscribe");
+            write_json_line(
+                &mut writer,
+                &json!({"id": unsubscribe["id"], "result": {"status": "unsubscribed"}}),
+            )
+            .await;
+        } else {
+            assert_eq!(cleanup["method"], "thread/unsubscribe");
+            write_json_line(
+                &mut writer,
+                &json!({"id": cleanup["id"], "result": {"status": "unsubscribed"}}),
+            )
+            .await;
+        }
+    })
+    .await;
+    let root = tempdir().unwrap();
+    let workspace = prepare_owned_empty_workspace(root.path()).unwrap();
+    let backend = CodexTranslationBackend::new(Arc::new(harness.transport), &workspace)
+        .await
+        .unwrap();
+
+    let result = backend.translate(request("synthetic source text")).await;
+    harness.server_task.await.unwrap();
+    result
+}
+
+fn valid_token_breakdown() -> Value {
+    json!({
+        "totalTokens": 20,
+        "inputTokens": 12,
+        "cachedInputTokens": 2,
+        "outputTokens": 8,
+        "reasoningOutputTokens": 3
+    })
+}
+
+#[tokio::test]
+async fn accepts_token_usage_when_optional_model_context_window_is_omitted() {
+    let breakdown = valid_token_breakdown();
+    let result = translate_with_token_usage_notification(json!({
+        "total": breakdown.clone(),
+        "last": breakdown
+    }))
+    .await
+    .expect("the pinned Codex payload may omit optional modelContextWindow");
+
+    assert_eq!(result.translated_text, "synthetic translation");
+}
+
+#[tokio::test]
+async fn rejects_token_usage_integer_above_signed_i64_max() {
+    let mut breakdown = valid_token_breakdown();
+    breakdown["totalTokens"] = json!(9_223_372_036_854_775_808_u64);
+
+    let result = translate_with_token_usage_notification(json!({
+        "total": breakdown,
+        "last": valid_token_breakdown(),
+        "modelContextWindow": null
+    }))
+    .await;
+
+    assert_eq!(result, Err(TranslationError::ProtocolViolation));
+}
+
+#[tokio::test]
+async fn rejects_malformed_allowlisted_progress_notifications() {
+    let valid_breakdown = json!({
+        "totalTokens": 20,
+        "inputTokens": 12,
+        "cachedInputTokens": 2,
+        "outputTokens": 8,
+        "reasoningOutputTokens": 3
+    });
+    let valid_token_usage = json!({
+        "total": valid_breakdown.clone(),
+        "last": valid_breakdown,
+        "modelContextWindow": 128_000
+    });
+    let cases = [
+        (
+            "deprecation notice missing summary",
+            json!({
+                "method": "deprecationNotice",
+                "params": {}
+            }),
+        ),
+        (
+            "deprecation notice summary has the wrong type",
+            json!({
+                "method": "deprecationNotice",
+                "params": {"summary": 7}
+            }),
+        ),
+        (
+            "deprecation notice params are not an object",
+            json!({
+                "method": "deprecationNotice",
+                "params": "private-looking detail"
+            }),
+        ),
+        (
+            "deprecation notice is incorrectly thread and turn scoped",
+            json!({
+                "method": "deprecationNotice",
+                "params": {"summary": "deprecated", "threadId": "ephemeral", "turnId": "turn-1"}
+            }),
+        ),
+        (
+            "rate limits update is missing rateLimits",
+            json!({
+                "method": "account/rateLimits/updated",
+                "params": {}
+            }),
+        ),
+        (
+            "rate limits update rateLimits has the wrong type",
+            json!({
+                "method": "account/rateLimits/updated",
+                "params": {"rateLimits": "private-looking detail"}
+            }),
+        ),
+        (
+            "rate limits update params are not an object",
+            json!({
+                "method": "account/rateLimits/updated",
+                "params": 7
+            }),
+        ),
+        (
+            "rate limits update is incorrectly thread and turn scoped",
+            json!({
+                "method": "account/rateLimits/updated",
+                "params": {"rateLimits": {}, "threadId": "ephemeral", "turnId": "turn-1"}
+            }),
+        ),
+        (
+            "token usage update is missing tokenUsage",
+            json!({
+                "method": "thread/tokenUsage/updated",
+                "params": {"threadId": "ephemeral", "turnId": "turn-1"}
+            }),
+        ),
+        (
+            "token usage update tokenUsage has the wrong type",
+            json!({
+                "method": "thread/tokenUsage/updated",
+                "params": {"threadId": "ephemeral", "turnId": "turn-1", "tokenUsage": []}
+            }),
+        ),
+        (
+            "token usage update is missing total",
+            json!({
+                "method": "thread/tokenUsage/updated",
+                "params": {
+                    "threadId": "ephemeral",
+                    "turnId": "turn-1",
+                    "tokenUsage": {"last": valid_token_usage["last"].clone(), "modelContextWindow": null}
+                }
+            }),
+        ),
+        (
+            "token usage update has a malformed total breakdown",
+            json!({
+                "method": "thread/tokenUsage/updated",
+                "params": {
+                    "threadId": "ephemeral",
+                    "turnId": "turn-1",
+                    "tokenUsage": {
+                        "total": {
+                            "totalTokens": 20,
+                            "inputTokens": 12,
+                            "cachedInputTokens": 2,
+                            "outputTokens": "8",
+                            "reasoningOutputTokens": 3
+                        },
+                        "last": valid_token_usage["last"].clone(),
+                        "modelContextWindow": null
+                    }
+                }
+            }),
+        ),
+        (
+            "token usage update is missing last",
+            json!({
+                "method": "thread/tokenUsage/updated",
+                "params": {
+                    "threadId": "ephemeral",
+                    "turnId": "turn-1",
+                    "tokenUsage": {"total": valid_token_usage["total"].clone(), "modelContextWindow": null}
+                }
+            }),
+        ),
+        (
+            "token usage update has a malformed last breakdown",
+            json!({
+                "method": "thread/tokenUsage/updated",
+                "params": {
+                    "threadId": "ephemeral",
+                    "turnId": "turn-1",
+                    "tokenUsage": {
+                        "total": valid_token_usage["total"].clone(),
+                        "last": {
+                            "totalTokens": 7,
+                            "inputTokens": 4,
+                            "cachedInputTokens": 1,
+                            "outputTokens": 3
+                        },
+                        "modelContextWindow": null
+                    }
+                }
+            }),
+        ),
+        (
+            "token usage update has no scope",
+            json!({
+                "method": "thread/tokenUsage/updated",
+                "params": {"tokenUsage": valid_token_usage.clone()}
+            }),
+        ),
+        (
+            "token usage update scope has the wrong type",
+            json!({
+                "method": "thread/tokenUsage/updated",
+                "params": {"threadId": 7, "turnId": false, "tokenUsage": valid_token_usage.clone()}
+            }),
+        ),
+    ];
+
+    let mut failures = Vec::new();
+    for (case, notification) in cases {
+        let harness = spawn_fake_transport(move |mut reader, mut writer| async move {
+            let base = read_request(&mut reader).await;
+            write_json_line(
+                &mut writer,
+                &json!({"id": base["id"], "result": {"thread": {"id": "base"}, "instructionSources": []}}),
+            )
+            .await;
+            let fork = read_request(&mut reader).await;
+            write_json_line(
+                &mut writer,
+                &json!({"id": fork["id"], "result": {"thread": {"id": "ephemeral"}}}),
+            )
+            .await;
+            let turn = read_request(&mut reader).await;
+            write_json_line(
+                &mut writer,
+                &json!({"id": turn["id"], "result": {"turn": {"id": "turn-1"}}}),
+            )
+            .await;
+            write_json_line(&mut writer, &notification).await;
+
+            let cleanup = read_request(&mut reader).await;
+            if cleanup["method"] == "turn/interrupt" {
+                write_json_line(&mut writer, &json!({"id": cleanup["id"], "result": {}})).await;
+                let unsubscribe = read_request(&mut reader).await;
+                assert_eq!(unsubscribe["method"], "thread/unsubscribe");
+                write_json_line(
+                    &mut writer,
+                    &json!({"id": unsubscribe["id"], "result": {"status": "unsubscribed"}}),
+                )
+                .await;
+            } else {
+                assert_eq!(cleanup["method"], "thread/unsubscribe");
+                write_json_line(
+                    &mut writer,
+                    &json!({"id": cleanup["id"], "result": {"status": "unsubscribed"}}),
+                )
+                .await;
+            }
+        })
+        .await;
+        let root = tempdir().unwrap();
+        let workspace = prepare_owned_empty_workspace(root.path()).unwrap();
+        let backend = CodexTranslationBackend::new_with_timeout(
+            Arc::new(harness.transport),
+            &workspace,
+            Duration::from_millis(20),
+        )
+        .await
+        .unwrap();
+
+        let result = backend.translate(request("synthetic source text")).await;
+
+        match result {
+            Err(TranslationError::ProtocolViolation) => {}
+            Err(error) => failures.push(format!("{case}: returned {error:?}")),
+            Ok(_) => failures.push(format!("{case}: notification was accepted")),
+        }
+        harness.server_task.await.unwrap();
+    }
+    assert!(
+        failures.is_empty(),
+        "malformed allowlisted notifications were not rejected:\n{}",
+        failures.join("\n")
+    );
+}
+
+#[tokio::test]
 async fn rejects_unowned_or_nonempty_workspaces_before_creating_a_thread() {
     let root = tempdir().unwrap();
     let unowned = root.path().join("empty-workspace");

@@ -221,6 +221,82 @@ describe('TextWorkspace', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('번역 서비스를 시작할 수 없습니다.');
   });
 
+  it('retries translation listener registration before allowing translation to start', async () => {
+    let translationListenerAttempts = 0;
+    vi.mocked(listen).mockImplementation((async (name: string, handler: EventCallback) => {
+      if (name === 'translation-event') {
+        translationListenerAttempts += 1;
+        if (translationListenerAttempts === 1) {
+          throw new Error('private websocket endpoint and token');
+        }
+        bridge.translationHandler = handler;
+        return bridge.unlistenTranslation;
+      }
+      if (name === 'account-state-changed') {
+        bridge.accountHandler = handler;
+        return bridge.unlistenAccount;
+      }
+      throw new Error(`unexpected event: ${name}`);
+    }) as unknown as typeof listen);
+    render(<TextWorkspace locale="en" />);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('The translation service is unavailable.');
+    expect(document.body).not.toHaveTextContent('private websocket endpoint and token');
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(translationListenerAttempts).toBe(2));
+
+    await userEvent.type(screen.getByLabelText('Source text'), 'Hello');
+    await userEvent.click(screen.getByRole('button', { name: 'Translate' }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('translate_text', expect.anything()));
+  });
+
+  it('shows safe translation support codes without rendering unsafe thrown text', async () => {
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'get_settings') return structuredClone(settings);
+      if (command === 'get_account') return { account: { state: 'signedIn' }, loginPending: false };
+      if (command === 'translate_text') throw 'translation_service_unavailable';
+      throw new Error(`unexpected command: ${command}`);
+    });
+    render(<TextWorkspace locale="en" />);
+    await userEvent.type(await screen.findByLabelText('Source text'), 'Hello');
+    await userEvent.click(screen.getByRole('button', { name: 'Translate' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Support code: translation_service_unavailable');
+
+    cleanup();
+    vi.clearAllMocks();
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'get_settings') return structuredClone(settings);
+      if (command === 'get_account') return { account: { state: 'signedIn' }, loginPending: false };
+      if (command === 'translate_text') throw 'https://secret.example/token?email=private@example.com';
+      throw new Error(`unexpected command: ${command}`);
+    });
+    render(<TextWorkspace locale="en" />);
+    await userEvent.type(await screen.findByLabelText('Source text'), 'Hello');
+    await userEvent.click(screen.getByRole('button', { name: 'Translate' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Could not complete the translation.');
+    expect(alert).toHaveTextContent('Support code: translation_start_failed');
+    expect(alert).not.toHaveTextContent('https://secret.example/token?email=private@example.com');
+  });
+
+  it('replaces an unknown regex-safe backend start code with the exact fallback support code', async () => {
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'get_settings') return structuredClone(settings);
+      if (command === 'get_account') return { account: { state: 'signedIn' }, loginPending: false };
+      if (command === 'translate_text') throw 'future_private_backend_failure';
+      throw new Error(`unexpected command: ${command}`);
+    });
+    render(<TextWorkspace locale="en" />);
+    await userEvent.type(await screen.findByLabelText('Source text'), 'Hello');
+    await userEvent.click(screen.getByRole('button', { name: 'Translate' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Support code: translation_start_failed');
+    expect(alert).not.toHaveTextContent('future_private_backend_failure');
+  });
+
   it('streams only the active job and replaces deltas with the completed result', async () => {
     render(<TextWorkspace />);
     await userEvent.type(await screen.findByLabelText('원문'), 'Hello');

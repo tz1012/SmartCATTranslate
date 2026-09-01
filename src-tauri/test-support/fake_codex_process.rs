@@ -37,13 +37,17 @@ fn main() {
         "\"id\":0",
         "\"name\":\"smartcat_translate\"",
         "\"title\":\"SmartCAT Translate\"",
-        "\"version\":\"0.1.0\"",
     ] {
         if !initialize.contains(required) {
             std::process::exit(12);
         }
     }
     let initialize_json: serde_json::Value = serde_json::from_str(&initialize).unwrap();
+    if initialize_json["params"]["clientInfo"]["version"].as_str()
+        != Some(env!("CARGO_PKG_VERSION"))
+    {
+        std::process::exit(12);
+    }
     if initialize_json["params"].get("capabilities").is_some() {
         std::process::exit(14);
     }

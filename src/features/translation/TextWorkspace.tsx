@@ -13,6 +13,23 @@ import { SecretModeSwitch, useSecretMode } from '../history/secretMode';
 const MAX_SOURCE_CHARS = 200_000;
 const MAX_SOURCE_BYTES = 1_000_000;
 const AUTO_TRANSLATE_DEBOUNCE_MS = 500;
+const TEXT_TRANSLATION_SUPPORT_CODES = new Set([
+  'invalid_translation_input',
+  'unsafe_translation_workspace',
+  'invalid_translation_output',
+  'translation_size_limit',
+  'translation_tool_rejected',
+  'translation_runtime_unavailable',
+  'translation_protocol_violation',
+  'translation_timed_out',
+  'translation_cancelled',
+  'translation_shutting_down',
+  'translation_service_unavailable',
+  'translation_listener_unavailable',
+  'translation_cancel_failed',
+  'translation_start_failed',
+  'rewrite_suggested',
+]);
 
 const copy = {
   ko: {
@@ -23,7 +40,7 @@ const copy = {
     shortcut: '단축키: 설정되지 않음', ready: '번역할 준비가 되었습니다.', running: '번역 중입니다.', completed: '번역이 완료되었습니다.', copied: '번역문을 복사했습니다.', saved: '번역문 파일을 저장했습니다.',
     empty: '번역할 원문을 입력해 주세요.', tooLarge: '원문은 200,000자와 1,000,000바이트 이하여야 합니다.', loadError: '번역 설정을 불러올 수 없습니다.',
     rewritePrompt: '같은 언어입니다. 문장을 개선할까요?', rewrite: '문장 개선', changeTarget: '대상 언어 변경',
-    error: '번역을 완료하지 못했습니다.', timedOut: '번역 시간이 초과되었습니다.', cancelled: '번역이 취소되었습니다.', signedOutError: 'ChatGPT 계정을 연결해 주세요.', unavailable: '번역 서비스를 시작할 수 없습니다.', cancelFailed: '번역 취소를 완료하지 못했습니다.', copyFailed: '번역문을 복사하지 못했습니다.', saveFailed: '번역문 파일을 저장하지 못했습니다.',
+    error: '번역을 완료하지 못했습니다.', timedOut: '번역 시간이 초과되었습니다.', cancelled: '번역이 취소되었습니다.', signedOutError: 'ChatGPT 계정을 연결해 주세요.', unavailable: '번역 서비스를 시작할 수 없습니다.', cancelFailed: '번역 취소를 완료하지 못했습니다.', copyFailed: '번역문을 복사하지 못했습니다.', saveFailed: '번역문 파일을 저장하지 못했습니다.', supportCode: '지원 코드:',
   },
   en: {
     workspace: 'Text translation', text: 'Text', image: 'Image', document: 'Document', capture: 'Screen capture', history: 'History',
@@ -33,19 +50,20 @@ const copy = {
     shortcut: 'Shortcut: Not set', ready: 'Ready to translate.', running: 'Translating.', completed: 'Translation complete.', copied: 'Translation copied.', saved: 'Translation file saved.',
     empty: 'Enter source text to translate.', tooLarge: 'Source text must be at most 200,000 characters and 1,000,000 bytes.', loadError: 'Could not load translation settings.',
     rewritePrompt: 'The languages match. Improve the writing instead?', rewrite: 'Improve writing', changeTarget: 'Change target language',
-    error: 'Could not complete the translation.', timedOut: 'The translation timed out.', cancelled: 'Translation cancelled.', signedOutError: 'Connect your ChatGPT account.', unavailable: 'The translation service is unavailable.', cancelFailed: 'Could not cancel the translation.', copyFailed: 'Could not copy the translation.', saveFailed: 'Could not save the translation file.',
+    error: 'Could not complete the translation.', timedOut: 'The translation timed out.', cancelled: 'Translation cancelled.', signedOutError: 'Connect your ChatGPT account.', unavailable: 'The translation service is unavailable.', cancelFailed: 'Could not cancel the translation.', copyFailed: 'Could not copy the translation.', saveFailed: 'Could not save the translation file.', supportCode: 'Support code:',
   },
 } as const;
 
 function errorMessage(code: string, locale: AppLocale) {
   const labels = copy[locale];
-  if (code.includes('timed_out')) return labels.timedOut;
-  if (code.includes('cancelled')) return labels.cancelled;
-  if (code.includes('cancel_failed')) return labels.cancelFailed;
-  if (code.includes('listener_unavailable')) return labels.unavailable;
-  if (code.includes('signed_out')) return labels.signedOutError;
-  if (code.includes('unavailable')) return labels.unavailable;
-  return labels.error;
+  const safeCode = TEXT_TRANSLATION_SUPPORT_CODES.has(code) ? code : 'translation_start_failed';
+  const message = safeCode.includes('timed_out') ? labels.timedOut
+    : safeCode.includes('cancelled') ? labels.cancelled
+      : safeCode.includes('cancel_failed') ? labels.cancelFailed
+        : safeCode.includes('listener_unavailable') ? labels.unavailable
+          : safeCode.includes('signed_out') ? labels.signedOutError
+            : safeCode.includes('unavailable') ? labels.unavailable : labels.error;
+  return `${message} ${labels.supportCode} ${safeCode}`;
 }
 
 function sourceWithinBounds(text: string) {
@@ -79,7 +97,7 @@ export function TextWorkspace({
   const autoStartTimer = useRef<number | undefined>(undefined);
   const startedRevision = useRef(0);
   const mounted = useRef(false);
-  const { state, detectedLanguage, listenerState, start, cancel, reset } = useTranslationJob();
+  const { state, detectedLanguage, listenerState, start, cancel, reset, retryListener } = useTranslationJob();
   const locale = localeOverride ?? settings?.locale ?? 'ko';
   const labels = copy[locale];
 
@@ -226,9 +244,12 @@ export function TextWorkspace({
     }
   };
 
-  const retry = () => state.status === 'failed' && state.pendingCleanup
-    ? void cancel()
-    : run(sameLanguage ? 'rewrite' : 'translate');
+  const listenerFailed = state.status === 'failed' && state.message === 'translation_listener_unavailable';
+  const retry = () => listenerFailed
+    ? retryListener()
+    : state.status === 'failed' && state.pendingCleanup
+      ? void cancel()
+      : run(sameLanguage ? 'rewrite' : 'translate');
   const jobError = state.status === 'failed' ? errorMessage(state.message, locale) : '';
   const status = notice || (state.status === 'running' ? labels.running
     : state.status === 'completed' ? labels.completed
@@ -373,7 +394,7 @@ export function TextWorkspace({
 
         <div className="workspace-status" aria-live="polite" role="status">{status}</div>
         {(validationError || jobError) && <p role="alert" aria-live="polite">{validationError || jobError}</p>}
-        {state.status === 'failed' && <button type="button" onClick={retry} disabled={state.pendingCleanup ? false : disabled}>{labels.retry}</button>}
+        {state.status === 'failed' && <button type="button" onClick={retry} disabled={listenerFailed ? listenerState !== 'failed' : state.pendingCleanup ? false : disabled}>{labels.retry}</button>}
       </footer>
     </section>
   );

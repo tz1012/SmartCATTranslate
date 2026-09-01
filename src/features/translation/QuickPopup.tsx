@@ -72,7 +72,7 @@ export function QuickPopup() {
 }
 
 function PopupRequest({ payload, pinned, onPin }: { payload: PopupPayload; pinned: boolean; onPin: () => void }) {
-  const { state, listenerState, start, cancel, reset } = useTranslationJob();
+  const { state, listenerState, start, cancel, reset, retryListener } = useTranslationJob();
   const [copied, setCopied] = useState(false);
   const [speaking, setSpeaking] = useState(false);
   const started = useRef(false);
@@ -90,6 +90,10 @@ function PopupRequest({ payload, pinned, onPin }: { payload: PopupPayload; pinne
 
   const retry = () => {
     if (!payload.request || state.status === 'running') return;
+    if (errorCode === 'translation_listener_unavailable') {
+      retryListener();
+      return;
+    }
     reset();
     started.current = false;
     queueMicrotask(() => { started.current = true;activeSecret.current=secret; void start({...payload.request!,secret}); });

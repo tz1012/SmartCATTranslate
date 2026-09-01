@@ -27,6 +27,9 @@ export function useTranslationJob() {
   const cancelSent = useRef(false);
   const cancelRequested = useRef(false);
   const listenerReady = useRef(false);
+  const listenerStatus = useRef<TranslationListenerState>('connecting');
+  const listenerAttempt = useRef(0);
+  const unlistenTranslation = useRef<(() => void) | undefined>(undefined);
 
   const applyEvent = useCallback((event: TranslationEvent, expectedGeneration: number) => {
     if (!mounted.current || expectedGeneration !== generation.current) return;
@@ -48,10 +51,8 @@ export function useTranslationJob() {
     }
   }, []);
 
-  useEffect(() => {
-    mounted.current = true;
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
+  const registerListener = useCallback(() => {
+    const attempt = ++listenerAttempt.current;
     void onTranslationEvent((event) => {
       if (starting.current && activeJobId.current === null) {
         if (pendingEvents.current.length < 256) pendingEvents.current.push(event);
@@ -59,30 +60,38 @@ export function useTranslationJob() {
       }
       applyEvent(event, generation.current);
     }).then((stop) => {
-      if (disposed) stop();
-      else {
-        unlisten = stop;
-        listenerReady.current = true;
-        setListenerState('ready');
+      if (!mounted.current || attempt !== listenerAttempt.current) {
+        stop();
+        return;
       }
+      unlistenTranslation.current = stop;
+      listenerReady.current = true;
+      listenerStatus.current = 'ready';
+      setListenerState('ready');
     }).catch(() => {
-      if (!disposed && mounted.current) {
-        listenerReady.current = false;
-        setListenerState('failed');
-        setState({ status: 'failed', text: '', message: 'translation_listener_unavailable' });
-      }
+      if (!mounted.current || attempt !== listenerAttempt.current) return;
+      listenerReady.current = false;
+      listenerStatus.current = 'failed';
+      setListenerState('failed');
+      setState({ status: 'failed', text: '', message: 'translation_listener_unavailable' });
     });
+  }, [applyEvent]);
+
+  useEffect(() => {
+    mounted.current = true;
+    registerListener();
     return () => {
-      disposed = true;
       mounted.current = false;
       listenerReady.current = false;
+      listenerAttempt.current += 1;
       generation.current += 1;
-      unlisten?.();
+      unlistenTranslation.current?.();
+      unlistenTranslation.current = undefined;
       const jobId = activeJobId.current;
       activeJobId.current = null;
       if (jobId && !cancelSent.current) void cancelTranslation(jobId);
     };
-  }, [applyEvent]);
+  }, [registerListener]);
 
   const start = useCallback(async (request: TranslationRequest) => {
     if (!listenerReady.current || starting.current || activeJobId.current !== null) return;
@@ -155,5 +164,16 @@ export function useTranslationJob() {
     setState({ status: 'idle', text: '' });
   }, []);
 
-  return { state, detectedLanguage, listenerState, start, cancel, reset };
+  const retryListener = useCallback(() => {
+    if (!mounted.current || listenerStatus.current !== 'failed' || starting.current || activeJobId.current !== null) return;
+    listenerReady.current = false;
+    listenerStatus.current = 'connecting';
+    setListenerState('connecting');
+    setState((current) => current.status === 'failed' && current.message === 'translation_listener_unavailable'
+      ? { status: 'idle', text: '' }
+      : current);
+    registerListener();
+  }, [registerListener]);
+
+  return { state, detectedLanguage, listenerState, start, cancel, reset, retryListener };
 }
