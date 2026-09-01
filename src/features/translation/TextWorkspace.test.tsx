@@ -98,6 +98,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   cleanup();
   bridge.translationHandler = null;
   bridge.accountHandler = null;
@@ -105,6 +106,60 @@ afterEach(() => {
 });
 
 describe('TextWorkspace', () => {
+  it('debounces editing into one ready translation and lets a manual start replace the pending auto-start', async () => {
+    render(<TextWorkspace locale="en" />);
+    const source = await screen.findByLabelText('Source text');
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Translate' })).toBeEnabled());
+    vi.useFakeTimers();
+
+    fireEvent.change(source, { target: { value: 'Hel' } });
+    fireEvent.change(source, { target: { value: 'Hello' } });
+    await act(async () => vi.advanceTimersByTimeAsync(499));
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === 'translate_text')).toHaveLength(0);
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === 'translate_text')).toHaveLength(1);
+
+    emitTranslation({ type: 'completed', jobId: 'job-1', result: { translatedText: '?????', detectedLanguage: 'en' } });
+    fireEvent.change(source, { target: { value: 'Hello again' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Translate' }));
+    await act(async () => vi.advanceTimersByTimeAsync(500));
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === 'translate_text')).toHaveLength(2);
+    vi.useRealTimers();
+  });
+
+  it('does not auto-start during IME composition or for an explicit same-language pair', async () => {
+    render(<TextWorkspace locale="en" />);
+    const source = await screen.findByLabelText('Source text');
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Translate' })).toBeEnabled());
+    vi.useFakeTimers();
+
+    fireEvent.compositionStart(source);
+    fireEvent.change(source, { target: { value: '?' } });
+    await act(async () => vi.advanceTimersByTimeAsync(500));
+    expect(invoke).not.toHaveBeenCalledWith('translate_text', expect.anything());
+    fireEvent.compositionEnd(source);
+    await act(async () => vi.advanceTimersByTimeAsync(500));
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === 'translate_text')).toHaveLength(1);
+    vi.useRealTimers();
+
+    cleanup();
+    vi.clearAllMocks();
+    signedInCommands();
+    const sameLanguageSettings = structuredClone(settings);
+    sameLanguageSettings.profiles[0].profile.sourceLanguage = 'ko';
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'get_settings') return sameLanguageSettings;
+      if (command === 'get_account') return { account: { state: 'signedIn' }, loginPending: false };
+      if (command === 'translate_text') return 'job-2';
+      throw new Error(`unexpected command: ${command}`);
+    });
+    render(<TextWorkspace locale="en" />);
+    const matchingSource = await screen.findByLabelText('Source text');
+    fireEvent.change(matchingSource, { target: { value: '?????' } });
+    await new Promise((resolve) => window.setTimeout(resolve, 550));
+    expect(invoke).not.toHaveBeenCalledWith('translate_text', expect.anything());
+  });
+
   it('uses the app top bar as the only workspace navigation', async () => {
     const { container } = render(<TextWorkspace />);
 
@@ -462,6 +517,21 @@ describe('TextWorkspace', () => {
     expect(screen.queryByText('private backend message')).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: '다시 시도' }));
     expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === 'translate_text')).toHaveLength(2);
+  });
+
+  it('preserves a sanitized backend start code without exposing private rejection details', async () => {
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'get_settings') return structuredClone(settings);
+      if (command === 'get_account') return { account: { state: 'signedIn' }, loginPending: false };
+      if (command === 'translate_text') throw 'translation_service_unavailable';
+      throw new Error(`unexpected command: ${command}`);
+    });
+    render(<TextWorkspace locale="en" />);
+    await userEvent.type(await screen.findByLabelText('Source text'), 'Hello');
+    await userEvent.click(screen.getByRole('button', { name: 'Translate' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('The translation service is unavailable.');
+    expect(screen.queryByText('translation_service_unavailable')).not.toBeInTheDocument();
   });
 
   it('swaps an explicit language pair and offers rewrite for matching languages', async () => {

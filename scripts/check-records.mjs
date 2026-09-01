@@ -17,10 +17,59 @@ function stagedFiles() {
   return output.split(/\r?\n/).filter(Boolean);
 }
 
-function rangeFiles(base, head) {
+function isCommit(revision) {
+  try {
+    execFileSync('git', ['cat-file', '-e', `${revision}^{commit}`], { stdio: 'pipe' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function resolveCommit(revision) {
+  return execFileSync('git', ['rev-parse', '--verify', `${revision}^{commit}`], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+}
+
+function fallbackMergeBase(fallbackBase, head) {
+  if (!fallbackBase || !isCommit(fallbackBase) || !isCommit(head)) {
+    throw new Error('The explicit base is unavailable and the fallback base or head is not a valid commit.');
+  }
+
+  const resolvedFallback = resolveCommit(fallbackBase);
+  const resolvedHead = resolveCommit(head);
+  let mergeBase;
+  try {
+    mergeBase = execFileSync('git', ['merge-base', resolvedFallback, resolvedHead], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+  } catch {
+    throw new Error('The fallback base and head do not have a merge base.');
+  }
+  if (!mergeBase) {
+    throw new Error('The fallback base and head do not have a merge base.');
+  }
+  if (mergeBase === resolvedHead) {
+    throw new Error('The fallback merge base resolves to head; refusing an empty enforcement range.');
+  }
+  return { head: resolvedHead, start: mergeBase };
+}
+
+function rangeFiles(base, head, fallbackBase) {
   const emptyTree = execFileSync('git', ['hash-object', '-t', 'tree', '--stdin'], { encoding: 'utf8', input: '' }).trim();
-  const start = /^0+$/.test(base) ? emptyTree : base;
-  const output = execFileSync('git', ['diff', '--name-only', start, head], { encoding: 'utf8' });
+  let start = emptyTree;
+  let end = head;
+  if (!/^0+$/.test(base)) {
+    if (isCommit(base)) {
+      start = base;
+    } else {
+      ({ head: end, start } = fallbackMergeBase(fallbackBase, head));
+    }
+  }
+  const output = execFileSync('git', ['diff', '--name-only', start, end], { encoding: 'utf8' });
   return output.split(/\r?\n/).filter(Boolean);
 }
 
@@ -30,15 +79,19 @@ function filesToCheck(args) {
     return stagedFiles();
   }
   if (
-    normalizedArgs.length === 4
+    (normalizedArgs.length === 4 || normalizedArgs.length === 6)
     && normalizedArgs[0] === '--base'
     && normalizedArgs[2] === '--head'
     && normalizedArgs[1]
     && normalizedArgs[3]
+    && (
+      normalizedArgs.length === 4
+      || (normalizedArgs[4] === '--fallback-base' && normalizedArgs[5])
+    )
   ) {
-    return rangeFiles(normalizedArgs[1], normalizedArgs[3]);
+    return rangeFiles(normalizedArgs[1], normalizedArgs[3], normalizedArgs[5]);
   }
-  throw new Error('Use no arguments for staged files, or --base <revision> --head <revision> for a commit range.');
+  throw new Error('Use no arguments for staged files, or --base <revision> --head <revision> [--fallback-base <revision>] for a commit range.');
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

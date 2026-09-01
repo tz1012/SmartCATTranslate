@@ -32,15 +32,31 @@ impl<B: SettingsBackend> SettingsStore<B> {
             self.persist(&settings).await?;
             return Ok(settings);
         };
-        let (value, legacy_wrapper) = match value.get("settings") {
+        let (mut value, legacy_wrapper) = match value.get("settings") {
             Some(settings) => (settings.clone(), true),
             None => (value, false),
         };
         let missing_version = value.get("schemaVersion").is_none();
+        let schema_version = value
+            .get("schemaVersion")
+            .and_then(Value::as_u64)
+            .unwrap_or(1);
+        let migrated_schema_one = schema_version == 1;
+        if migrated_schema_one {
+            if value
+                .get("theme")
+                .and_then(Value::as_str)
+                .unwrap_or("system")
+                == "system"
+            {
+                value["theme"] = Value::String("light".to_owned());
+            }
+            value["schemaVersion"] = Value::from(super::types::SETTINGS_SCHEMA_VERSION);
+        }
         let settings: AppSettings =
             serde_json::from_value(value).map_err(|_| SettingsError::InvalidDocument)?;
         settings.validate()?;
-        if legacy_wrapper || missing_version {
+        if legacy_wrapper || missing_version || migrated_schema_one {
             self.persist(&settings).await?;
         }
         Ok(settings)

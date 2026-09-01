@@ -1,7 +1,8 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use tokio::sync::{Mutex, MutexGuard, RwLock};
+use tokio::sync::{Mutex, MutexGuard, Notify, RwLock};
+use tokio::time::{timeout, Duration};
 
 use crate::codex::auth::AccountService;
 use crate::codex::transport::{JsonlAppServerTransport, TransportError};
@@ -13,6 +14,8 @@ use crate::settings::ModelCatalogService;
 
 pub struct AppState {
     runtime: RwLock<Option<InstalledAccountRuntime>>,
+    runtime_ready: Notify,
+    runtime_bootstrap_failed: AtomicBool,
     shutting_down: AtomicBool,
     translation_owners: SharedOwnerJobRegistry,
     settings_operation: Mutex<()>,
@@ -24,6 +27,8 @@ impl Default for AppState {
     fn default() -> Self {
         Self {
             runtime: RwLock::new(None),
+            runtime_ready: Notify::new(),
+            runtime_bootstrap_failed: AtomicBool::new(false),
             shutting_down: AtomicBool::new(false),
             translation_owners: new_owner_job_registry(),
             settings_operation: Mutex::new(()),
@@ -42,6 +47,7 @@ impl AppState {
                 transport: None,
                 translation_jobs: None,
             });
+            self.runtime_ready.notify_waiters();
         }
     }
 
@@ -63,7 +69,13 @@ impl AppState {
             transport: Some(transport),
             translation_jobs: Some(translation_jobs),
         });
+        self.runtime_ready.notify_waiters();
         Ok(())
+    }
+
+    pub fn mark_account_runtime_failed(&self) {
+        self.runtime_bootstrap_failed.store(true, Ordering::Release);
+        self.runtime_ready.notify_waiters();
     }
 
     pub async fn account_service(&self) -> Option<Arc<AccountService>> {
@@ -72,6 +84,36 @@ impl AppState {
             .await
             .as_ref()
             .map(|runtime| runtime.service.clone())
+    }
+
+    pub async fn wait_for_account_service(&self, wait: Duration) -> Option<Arc<AccountService>> {
+        timeout(wait, self.wait_for_account_service_inner(|| {}))
+            .await
+            .ok()
+            .flatten()
+    }
+
+    async fn wait_for_account_service_inner(
+        &self,
+        mut before_await: impl FnMut(),
+    ) -> Option<Arc<AccountService>> {
+        loop {
+            let notified = self.runtime_ready.notified();
+            tokio::pin!(notified);
+            let _ = notified.as_mut().enable();
+
+            if let Some(service) = self.account_service().await {
+                return Some(service);
+            }
+            if self.runtime_bootstrap_failed.load(Ordering::Acquire)
+                || self.shutting_down.load(Ordering::Acquire)
+            {
+                return None;
+            }
+
+            before_await();
+            notified.await;
+        }
     }
 
     pub async fn translation_jobs(&self) -> Option<Arc<TranslationJobManager>> {
@@ -163,6 +205,7 @@ impl AppState {
 
     pub async fn shutdown(&self) -> Result<(), AppShutdownError> {
         self.shutting_down.store(true, Ordering::Release);
+        self.runtime_ready.notify_waiters();
         self.replace_quick_hotkeys(None);
         let settings_operation = self.settings_operation.lock().await;
         drop(settings_operation);
@@ -223,6 +266,7 @@ pub enum AppShutdownError {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::time::Duration;
 
     use super::AppState;
 
@@ -247,5 +291,81 @@ mod tests {
         drop(active);
         shutdown.await.unwrap().unwrap();
         assert!(state.lock_settings_operation().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn account_service_requests_wait_for_bootstrap_instead_of_failing_immediately() {
+        let state = Arc::new(AppState::default());
+        let waiting_state = state.clone();
+        let waiter = tokio::spawn(async move {
+            waiting_state
+                .wait_for_account_service(Duration::from_secs(5))
+                .await
+        });
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+        }
+        assert!(!waiter.is_finished(), "the wait must not time out early");
+
+        state.mark_account_runtime_failed();
+        assert!(
+            waiter.await.unwrap().is_none(),
+            "a failed bootstrap must release the wait without a service"
+        );
+    }
+
+    #[tokio::test]
+    async fn notification_after_state_check_but_before_await_is_retained() {
+        let state = AppState::default();
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            state.wait_for_account_service_inner(|| state.mark_account_runtime_failed()),
+        )
+        .await
+        .expect("the retained notification must release the waiter");
+
+        assert!(
+            result.is_none(),
+            "an armed waiter must observe a notification sent before its first await"
+        );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_failure_releases_multiple_account_service_waiters() {
+        let state = Arc::new(AppState::default());
+        let first_state = state.clone();
+        let first = tokio::spawn(async move {
+            first_state
+                .wait_for_account_service(Duration::from_secs(5))
+                .await
+        });
+        let second_state = state.clone();
+        let second = tokio::spawn(async move {
+            second_state
+                .wait_for_account_service(Duration::from_secs(5))
+                .await
+        });
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+        }
+        assert!(!first.is_finished());
+        assert!(!second.is_finished());
+
+        state.mark_account_runtime_failed();
+
+        assert!(first.await.unwrap().is_none());
+        assert!(second.await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn waiting_for_the_account_service_returns_after_shutdown() {
+        let state = AppState::default();
+        state.shutdown().await.unwrap();
+
+        assert!(state
+            .wait_for_account_service(Duration::from_secs(5))
+            .await
+            .is_none());
     }
 }

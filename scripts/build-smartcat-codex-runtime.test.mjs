@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,6 +16,25 @@ import {
 
 const EXPECTED_COMMIT = "8c68d4c87dc54d38861f5114e920c3de2efa5876";
 const EXPECTED_ARCHIVE_SHA = "14c173d78f0c22da73e4ca1a205836b525e1dd9fe7db9b4ddea62214b2cc5009";
+
+test("audited patch is checked out with LF bytes matching the pin", async () => {
+  const attributes = await readFile(new URL("../.gitattributes", import.meta.url), "utf8");
+  assert.match(
+    attributes,
+    /^(?:runtime-patches\/codex-0\.144\.4-smartcat\/smartcat\.patch|\*\.patch) text eol=lf$/m,
+  );
+
+  const pin = JSON.parse(
+    await readFile(
+      new URL("../runtime-patches/codex-0.144.4-smartcat/pin.json", import.meta.url),
+      "utf8",
+    ),
+  );
+  const patch = await readFile(
+    new URL("../runtime-patches/codex-0.144.4-smartcat/smartcat.patch", import.meta.url),
+  );
+  assert.equal(createHash("sha256").update(patch).digest("hex"), pin.patchSha256);
+});
 
 test("pin accepts only exact upstream identity and three sidecar targets", async () => {
   const pin = await loadAndValidatePin(
@@ -165,9 +185,11 @@ test("release workflow verifies dependency and artifact evidence before attestin
     new URL("../.github/workflows/smartcat-runtime-release.yml", import.meta.url),
     "utf8",
   );
+  const jobEnv = workflow.slice(workflow.indexOf("    env:"), workflow.indexOf("    steps:"));
 
   assert.match(workflow, /workflow_dispatch:/);
   assert.doesNotMatch(workflow, /^\s+(push|pull_request|schedule):/m);
+  assert.doesNotMatch(jobEnv, /\$\{\{\s*runner\./);
   for (const target of [
     "x86_64-pc-windows-msvc",
     "x86_64-apple-darwin",
@@ -215,6 +237,21 @@ test("frontend CI runs the offline runtime supply-chain contract without buildin
 
   assert.match(frontendJob, /pnpm runtime:build:test/);
   assert.doesNotMatch(frontendJob, /pnpm runtime:build -- --target/);
+});
+
+test("PR unsigned packaging provisions the pinned Rust SBOM tool before the bounded runtime build", async () => {
+  const workflow = await readFile(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+  const packageJob = workflow.slice(workflow.indexOf("  package_unsigned:"));
+
+  assert.match(packageJob, /^    timeout-minutes: 120$/m);
+  assert.match(packageJob, /cargo install cargo-cyclonedx --version 0\.5\.9 --locked/);
+
+  const sbomToolInstall = packageJob.indexOf(
+    "cargo install cargo-cyclonedx --version 0.5.9 --locked",
+  );
+  const runtimeBuild = packageJob.indexOf("pnpm runtime:build -- --target");
+  assert.ok(sbomToolInstall >= 0, "the package job must install the pinned SBOM tool");
+  assert.ok(runtimeBuild > sbomToolInstall, "the expensive runtime build must wait for SBOM tooling");
 });
 
 test("runtime bundle overlay contains only the patched sidecar and tracked notices", async () => {

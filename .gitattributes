@@ -1,0 +1,4 @@
+src-tauri/resources/shortcut-catalog.json text eol=lf
+*.patch text eol=lf
+CHANGELOG.md text eol=lf
+PROJECT_LOG.txt text eol=lf

@@ -7,7 +7,7 @@ pub use crate::core::types::Field;
 use crate::core::types::{Quality, Tone, TranslationModel, TranslationProfile};
 use crate::hotkeys::{BlockedApp, Blocklist, HotkeyBinding, SequenceEngine};
 
-pub const SETTINGS_SCHEMA_VERSION: u32 = 1;
+pub const SETTINGS_SCHEMA_VERSION: u32 = 2;
 pub const DEFAULT_HISTORY_RETENTION_DAYS: u16 = 30;
 const MAX_HISTORY_RETENTION_DAYS: u16 = 365;
 const MAX_PROFILES: usize = 64;
@@ -33,8 +33,8 @@ pub enum AppLocale {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum Theme {
-    #[default]
     System,
+    #[default]
     Light,
     Dark,
 }
@@ -129,7 +129,7 @@ impl Default for AppSettings {
         Self {
             schema_version: SETTINGS_SCHEMA_VERSION,
             locale: AppLocale::Ko,
-            theme: Theme::System,
+            theme: Theme::Light,
             default_profile_id: id,
             profiles: vec![SavedProfile {
                 id,

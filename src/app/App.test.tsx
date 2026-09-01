@@ -7,6 +7,12 @@ import { App } from './App';
 type EventHandler = (event: { payload: unknown }) => void;
 const eventBridge = vi.hoisted(() => ({ translation: null as EventHandler | null }));
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => { resolve = resolvePromise; });
+  return { promise, resolve };
+}
+
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn(async (name: string, handler: EventHandler) => {
@@ -22,6 +28,36 @@ afterEach(() => {
 });
 
 describe('App', () => {
+  it('starts light before settings load and preserves an explicit saved dark theme', async () => {
+    let settingsReads = 0;
+    const firstSettings = deferred<Record<string, unknown>>();
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'get_settings') {
+        settingsReads += 1;
+        if (settingsReads === 1) return firstSettings.promise;
+        return {
+          schemaVersion: 2, locale: 'en', theme: 'dark', defaultProfileId: 'default-profile',
+          profiles: [{ id: 'default-profile', name: 'Default profile', field: 'general', profile: { sourceLanguage: null, targetLanguage: 'ko', quality: 'balanced', tone: 'natural', protectedTerms: [] } }],
+          glossary: [], selectedModel: { type: 'automatic' }, launchAtLogin: false, closeBehavior: 'keepInTray', quickAccessPosition: 'popup', historyRetentionDays: 30,
+        };
+      }
+      if (command === 'get_account') return { account: { state: 'signedOut' }, loginPending: false };
+      if (command === 'get_privacy_status') return { cleanupPending: false, retentionPending: false };
+      if (command === 'get_lifecycle_status') return { launchAtLoginAvailable: true, launchAtLoginEnabled: false, hotkeysPaused: false };
+      if (command === 'list_history' || command === 'list_recoverable_jobs') return [];
+      throw new Error(`unexpected command: ${command}`);
+    });
+    const { container } = render(<App locale="en" />);
+
+    expect(container.querySelector('main')).toHaveAttribute('data-theme', 'light');
+    firstSettings.resolve({
+      schemaVersion: 2, locale: 'en', theme: 'dark', defaultProfileId: 'default-profile',
+      profiles: [{ id: 'default-profile', name: 'Default profile', field: 'general', profile: { sourceLanguage: null, targetLanguage: 'ko', quality: 'balanced', tone: 'natural', protectedTerms: [] } }],
+      glossary: [], selectedModel: { type: 'automatic' }, launchAtLogin: false, closeBehavior: 'keepInTray', quickAccessPosition: 'popup', historyRetentionDays: 30,
+    });
+    await waitFor(() => expect(container.querySelector('main')).toHaveAttribute('data-theme', 'dark'));
+  });
+
   it('keeps privacy maintenance notices behind a top-bar notification button', async () => {
     vi.mocked(invoke).mockImplementation(async (command) => {
       if (command === 'get_settings') return {

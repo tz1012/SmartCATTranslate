@@ -1,6 +1,9 @@
+use std::sync::Arc;
+
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Runtime, State};
 use tauri_plugin_opener::OpenerExt;
+use tokio::time::Duration;
 
 use crate::app_state::AppState;
 use crate::codex::auth::{
@@ -9,6 +12,16 @@ use crate::codex::auth::{
 };
 
 const SERVICE_UNAVAILABLE: &str = "account_service_unavailable";
+const ACCOUNT_RUNTIME_START_TIMEOUT: Duration = Duration::from_secs(30);
+
+async fn account_service(
+    state: &AppState,
+) -> Result<Arc<crate::codex::auth::AccountService>, String> {
+    state
+        .wait_for_account_service(ACCOUNT_RUNTIME_START_TIMEOUT)
+        .await
+        .ok_or_else(|| SERVICE_UNAVAILABLE.to_owned())
+}
 
 #[derive(Serialize)]
 #[serde(tag = "state", rename_all = "camelCase")]
@@ -25,7 +38,7 @@ pub enum CancelLoginResult {
 
 #[tauri::command]
 pub async fn get_account(state: State<'_, AppState>) -> Result<AccountSnapshot, String> {
-    let service = state.account_service().await.ok_or(SERVICE_UNAVAILABLE)?;
+    let service = account_service(&state).await?;
     service
         .read_snapshot()
         .await
@@ -34,7 +47,7 @@ pub async fn get_account(state: State<'_, AppState>) -> Result<AccountSnapshot, 
 
 #[tauri::command]
 pub async fn get_rate_limits(state: State<'_, AppState>) -> Result<RateLimitState, String> {
-    let service = state.account_service().await.ok_or(SERVICE_UNAVAILABLE)?;
+    let service = account_service(&state).await?;
     service
         .read_rate_limits()
         .await
@@ -46,7 +59,7 @@ pub async fn start_chatgpt_login<R: Runtime>(
     app: AppHandle<R>,
     state: State<'_, AppState>,
 ) -> Result<StartLoginResult, String> {
-    let service = state.account_service().await.ok_or(SERVICE_UNAVAILABLE)?;
+    let service = account_service(&state).await?;
     start_login_and_open(service.as_ref(), &TauriBrowserOpener { app })
         .await
         .map_err(|error| error_code(&error))?;
@@ -55,7 +68,7 @@ pub async fn start_chatgpt_login<R: Runtime>(
 
 #[tauri::command]
 pub async fn cancel_chatgpt_login(state: State<'_, AppState>) -> Result<CancelLoginResult, String> {
-    let service = state.account_service().await.ok_or(SERVICE_UNAVAILABLE)?;
+    let service = account_service(&state).await?;
     let cancelled = service
         .cancel_login()
         .await

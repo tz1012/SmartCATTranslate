@@ -68,17 +68,62 @@ fn profile(source: Option<&str>, target: &str) -> TranslationProfile {
 }
 
 #[tokio::test]
-async fn defaults_are_auto_to_korean_balanced_natural_system_and_korean_ui() {
+async fn defaults_are_auto_to_korean_balanced_natural_light_and_korean_ui() {
     let store = SettingsStore::new(MemoryBackend::default());
     let settings = store.load().await.unwrap();
     let default_profile = settings.default_profile().unwrap();
 
     assert_eq!(settings.locale, AppLocale::Ko);
-    assert_eq!(settings.theme, Theme::System);
+    assert_eq!(settings.theme, Theme::Light);
     assert_eq!(default_profile.profile.source_language, None);
     assert_eq!(default_profile.profile.target_language, "ko");
     assert_eq!(default_profile.profile.quality, Quality::Balanced);
     assert_eq!(default_profile.profile.tone, Tone::Natural);
+}
+
+#[tokio::test]
+async fn schema_one_implicit_system_migrates_to_light_while_explicit_choices_survive() {
+    for (saved_theme, expected_theme) in [
+        ("system", Theme::Light),
+        ("light", Theme::Light),
+        ("dark", Theme::Dark),
+    ] {
+        let backend = MemoryBackend::default();
+        let mut legacy = serde_json::to_value(AppSettings::default()).unwrap();
+        legacy["schemaVersion"] = json!(1);
+        legacy["theme"] = json!(saved_theme);
+        backend
+            .state
+            .lock()
+            .unwrap()
+            .values
+            .insert("settings".into(), legacy);
+
+        let settings = SettingsStore::new(backend.clone()).load().await.unwrap();
+
+        assert_eq!(settings.schema_version, 2);
+        assert_eq!(settings.theme, expected_theme);
+        assert_eq!(backend.state.lock().unwrap().save_count, 1);
+    }
+}
+
+#[tokio::test]
+async fn schema_two_explicit_system_continues_to_follow_the_operating_system() {
+    let backend = MemoryBackend::default();
+    let mut explicit = serde_json::to_value(AppSettings::default()).unwrap();
+    explicit["theme"] = json!("system");
+    backend
+        .state
+        .lock()
+        .unwrap()
+        .values
+        .insert("settings".into(), explicit);
+
+    let settings = SettingsStore::new(backend.clone()).load().await.unwrap();
+
+    assert_eq!(settings.schema_version, 2);
+    assert_eq!(settings.theme, Theme::System);
+    assert_eq!(backend.state.lock().unwrap().save_count, 0);
 }
 
 #[tokio::test]
@@ -95,7 +140,7 @@ async fn missing_schema_version_migrates_and_is_saved_once() {
 
     let settings = SettingsStore::new(backend.clone()).load().await.unwrap();
 
-    assert_eq!(settings.schema_version, 1);
+    assert_eq!(settings.schema_version, 2);
     assert_eq!(settings.locale, AppLocale::En);
     assert_eq!(settings.theme, Theme::Dark);
     assert!(settings.launch_at_login);

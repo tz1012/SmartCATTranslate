@@ -17,7 +17,7 @@ type PrivacyStatus = { cleanupPending: boolean; retentionPending: boolean };
 
 export function App({ locale }: { locale?: AppLocale }) {
   const [savedLocale, setSavedLocale] = useState<AppLocale>('ko');
-  const [savedTheme, setSavedTheme] = useState<Theme>('system');
+  const [savedTheme, setSavedTheme] = useState<Theme>('light');
   const [activeView, setActiveView] = useState<AppView>('translate');
   const [menuOpen, setMenuOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
