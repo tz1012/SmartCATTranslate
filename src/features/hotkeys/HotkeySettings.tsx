@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { createUuidV4 } from '../settings/uuid';
 import type { HotkeyBinding, Trigger } from './types';
 import { analyzeHotkey, listBlockedApps, listHotkeys, saveBlockedApps, saveHotkey, type BlockedApp, type ConflictReport } from './hotkeyApi';
@@ -19,13 +19,24 @@ export function HotkeySettings({ locale, defaultProfileId }: { locale: 'ko' | 'e
   const [blockedApps, setBlockedApps] = useState<BlockedApp[]>([]);
   const [appName, setAppName] = useState('');
   const [identity, setIdentity] = useState('');
+  const analysisVersion = useRef(0);
 
   useEffect(() => { void Promise.all([listHotkeys(), listBlockedApps()]).then(([hotkeys, blocked]) => { setBindings(hotkeys); setBlockedApps(blocked); }).catch(() => setStatus(ko ? '단축키 설정을 불러오지 못했습니다.' : 'Could not load shortcut settings.')); }, [ko]);
 
   const inspect = async (next: Trigger) => {
+    const version = ++analysisVersion.current;
     setTrigger(next); setForceWarning(false); setAnalyzing(true); setStatus('');
-    try { setReport(await analyzeHotkey(next)); } catch { setReport(emptyReport); setStatus(ko ? '충돌을 확인하지 못했습니다.' : 'Could not check conflicts.'); }
-    finally { setAnalyzing(false); }
+    try {
+      const nextReport = await analyzeHotkey(next);
+      if (version === analysisVersion.current) setReport(nextReport);
+    } catch {
+      if (version === analysisVersion.current) {
+        setReport(emptyReport);
+        setStatus(ko ? '충돌을 확인하지 못했습니다.' : 'Could not check conflicts.');
+      }
+    } finally {
+      if (version === analysisVersion.current) setAnalyzing(false);
+    }
   };
   const persist = async (force: boolean) => {
     if (!trigger) return;
@@ -50,7 +61,20 @@ export function HotkeySettings({ locale, defaultProfileId }: { locale: 'ko' | 'e
   return <fieldset className="hotkey-settings">
     <legend>{ko ? '빠른 번역 단축키' : 'Quick translation shortcut'}</legend>
     <p>{ko ? '다른 프로그램에서 선택한 문장을 번역할 단축키를 정합니다.' : 'Choose a shortcut to translate selected text in other apps.'}</p>
-    <HotkeyRecorder locale={locale} value={trigger ?? bindings.find((binding) => binding.action === 'translateSelection')?.trigger ?? null} onChange={(next) => void inspect(next)} describedBy="hotkey-conflict-help" />
+    <HotkeyRecorder
+      locale={locale}
+      value={trigger ?? bindings.find((binding) => binding.action === 'translateSelection')?.trigger ?? null}
+      onChange={(next) => void inspect(next)}
+      onRecordingStart={() => {
+        analysisVersion.current += 1;
+        setTrigger(null);
+        setReport(emptyReport);
+        setAnalyzing(false);
+        setForceWarning(false);
+        setStatus('');
+      }}
+      describedBy="hotkey-conflict-help"
+    />
     <div id="hotkey-conflict-help" aria-live="polite">
       {analyzing && <p role="status">{ko ? '다른 프로그램과 겹치는지 확인 중…' : 'Checking for conflicts…'}</p>}
       {report.causes.map((cause, index) => <article className={`conflict-cause ${cause.severity}`} key={`${cause.description}-${index}`}>

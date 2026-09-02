@@ -206,6 +206,7 @@ pub fn run() {
             commands::update::mark_app_healthy,
             commands::update::get_update_recovery_instructions,
             commands::update::open_previous_installer,
+            commands::update::open_update_release,
         ])
         .build(tauri::generate_context!())
         .expect("failed to run SmartCAT Translate");

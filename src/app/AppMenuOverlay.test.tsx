@@ -4,6 +4,7 @@ import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App';
+import { AppMenuOverlay } from './AppMenuOverlay';
 
 vi.mock('@tauri-apps/api/app', () => ({ getVersion: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
@@ -47,6 +48,24 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+});
+
+describe('App version', () => {
+  it('shows the synchronized application version in About', async () => {
+    vi.mocked(getVersion).mockResolvedValue('0.1.4');
+    render(
+      <AppMenuOverlay
+        locale="en"
+        settingsLocked={false}
+        onClose={vi.fn()}
+        onNavigate={vi.fn()}
+      />,
+    );
+
+    await userEvent.click(screen.getByRole('button', { name: 'About' }));
+
+    expect(screen.getByText('SmartCAT Translate 0.1.4')).toBeVisible();
+  });
 });
 
 describe('App menu overlay', () => {

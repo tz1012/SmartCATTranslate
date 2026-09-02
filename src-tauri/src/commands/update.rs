@@ -13,6 +13,9 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 const CONSENT_TTL: Duration = Duration::from_secs(15 * 60);
+const PUBLIC_RELEASE_API: &str =
+    "https://api.github.com/repos/tz1012/SmartCATTranslate/releases?per_page=100";
+const PUBLIC_RELEASE_PATH_PREFIX: &str = "/tz1012/SmartCATTranslate/releases/tag/app-v";
 
 #[derive(Default)]
 pub struct UpdateState {
@@ -50,6 +53,17 @@ pub struct UpdateCheckResult {
     published_at: Option<String>,
     size_bytes: Option<u64>,
     consent_token: Option<String>,
+    manual_only: bool,
+    release_url: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct PublicRelease {
+    tag_name: String,
+    body: Option<String>,
+    published_at: Option<String>,
+    draft: bool,
+    prerelease: bool,
 }
 
 #[derive(Serialize)]
@@ -113,7 +127,9 @@ pub async fn check_for_update(
     app: AppHandle,
     state: State<'_, UpdateState>,
 ) -> Result<UpdateCheckResult, String> {
-    require_configured()?;
+    if require_configured().is_err() {
+        return check_public_release(&app).await;
+    }
     let update = app
         .updater()
         .map_err(|_| "updater_not_configured".to_owned())?
@@ -128,6 +144,8 @@ pub async fn check_for_update(
             published_at: None,
             size_bytes: None,
             consent_token: None,
+            manual_only: false,
+            release_url: None,
         });
     };
 
@@ -152,6 +170,8 @@ pub async fn check_for_update(
         published_at: update.date.map(|date| date.to_string()),
         size_bytes,
         consent_token: Some(token.clone()),
+        manual_only: false,
+        release_url: None,
     };
     let mut checks = state.checks.lock().await;
     checks.retain(|_, checked| checked.expires_at > Instant::now());
@@ -503,4 +523,151 @@ fn map_download_error(error: tauri_plugin_updater::Error) -> String {
 
 fn map_install_error(_: tauri_plugin_updater::Error) -> String {
     "update_install_failed".to_owned()
+}
+
+async fn check_public_release(app: &AppHandle) -> Result<UpdateCheckResult, String> {
+    let response = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|_| "update_network_error".to_owned())?
+        .get(PUBLIC_RELEASE_API)
+        .header(reqwest::header::USER_AGENT, "SmartCAT-Translate")
+        .send()
+        .await
+        .map_err(|_| "update_network_error".to_owned())?;
+    if response.status().as_u16() == 404 {
+        return Ok(no_public_update());
+    }
+    if !response.status().is_success() {
+        return Err("update_network_error".to_owned());
+    }
+    let releases: Vec<PublicRelease> = response
+        .json()
+        .await
+        .map_err(|_| "update_network_error".to_owned())?;
+    let Some((target, release, release_url)) =
+        select_public_release(releases, &app.package_info().version)
+    else {
+        return Ok(no_public_update());
+    };
+    Ok(UpdateCheckResult {
+        available: true,
+        version: Some(target.to_string()),
+        release_notes: release.body,
+        published_at: release.published_at,
+        size_bytes: None,
+        consent_token: None,
+        manual_only: true,
+        release_url: Some(release_url),
+    })
+}
+
+fn select_public_release(
+    releases: Vec<PublicRelease>,
+    current: &semver::Version,
+) -> Option<(semver::Version, PublicRelease, String)> {
+    releases
+        .into_iter()
+        .filter_map(|release| {
+            if release.draft || release.prerelease {
+                return None;
+            }
+            let version = semver::Version::parse(release.tag_name.strip_prefix("app-v")?).ok()?;
+            if &version <= current {
+                return None;
+            }
+            let url =
+                format!("https://github.com/tz1012/SmartCATTranslate/releases/tag/app-v{version}");
+            Some((version, release, url))
+        })
+        .max_by(|left, right| left.0.cmp(&right.0))
+}
+
+fn no_public_update() -> UpdateCheckResult {
+    UpdateCheckResult {
+        available: false,
+        version: None,
+        release_notes: None,
+        published_at: None,
+        size_bytes: None,
+        consent_token: None,
+        manual_only: true,
+        release_url: None,
+    }
+}
+
+fn is_allowed_release_url(candidate: &str) -> bool {
+    let Ok(url) = url::Url::parse(candidate) else {
+        return false;
+    };
+    url.scheme() == "https"
+        && url.host_str() == Some("github.com")
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.port().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && url
+            .path()
+            .strip_prefix(PUBLIC_RELEASE_PATH_PREFIX)
+            .is_some_and(|version| semver::Version::parse(version).is_ok())
+}
+
+#[tauri::command]
+pub fn open_update_release(app: AppHandle, url: String) -> Result<(), String> {
+    if !is_allowed_release_url(&url) {
+        return Err("update_release_url_invalid".to_owned());
+    }
+    app.opener()
+        .open_url(url, None::<String>)
+        .map_err(|_| "update_release_unavailable".to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_allowed_release_url, select_public_release, PublicRelease};
+
+    #[test]
+    fn manual_release_url_is_restricted_to_the_public_repository() {
+        assert!(is_allowed_release_url(
+            "https://github.com/tz1012/SmartCATTranslate/releases/tag/app-v0.1.4"
+        ));
+        assert!(!is_allowed_release_url(
+            "https://github.com/tz1012/SmartCATTranslate.evil.example/releases/tag/app-v0.1.4"
+        ));
+        assert!(!is_allowed_release_url(
+            "https://user@github.com/tz1012/SmartCATTranslate/releases/tag/app-v0.1.4"
+        ));
+    }
+
+    #[test]
+    fn latest_app_release_ignores_newer_unrelated_draft_and_prerelease_entries() {
+        let releases = vec![
+            release("runtime-v9.0.0", false, false),
+            release("app-v0.1.7", true, false),
+            release("app-v0.1.6", false, true),
+            release("app-v0.1.5", false, false),
+            release("app-v0.1.4", false, false),
+        ];
+
+        let (version, _, url) =
+            select_public_release(releases, &semver::Version::parse("0.1.3").unwrap()).unwrap();
+
+        assert_eq!(version, semver::Version::parse("0.1.5").unwrap());
+        assert_eq!(
+            url,
+            "https://github.com/tz1012/SmartCATTranslate/releases/tag/app-v0.1.5"
+        );
+    }
+
+    fn release(tag_name: &str, draft: bool, prerelease: bool) -> PublicRelease {
+        PublicRelease {
+            tag_name: tag_name.to_owned(),
+            body: None,
+            published_at: None,
+            draft,
+            prerelease,
+        }
+    }
 }
