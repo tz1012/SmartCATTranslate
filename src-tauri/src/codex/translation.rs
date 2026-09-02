@@ -914,7 +914,7 @@ fn handle_event(
             Ok(EventOutcome::Continue)
         }
         "item/started" => match item_type(event) {
-            Some("userMessage" | "agentMessage") => Ok(EventOutcome::Continue),
+            Some("userMessage" | "agentMessage" | "reasoning") => Ok(EventOutcome::Continue),
             Some(_) => Err(TranslationError::ToolUseRejected),
             None => Err(TranslationError::ProtocolViolation),
         },
@@ -931,7 +931,7 @@ fn handle_event(
             Ok(EventOutcome::Continue)
         }
         "item/completed" => match item_type(event) {
-            Some("userMessage") => Ok(EventOutcome::Continue),
+            Some("userMessage" | "reasoning") => Ok(EventOutcome::Continue),
             Some("agentMessage") => {
                 let text = event
                     .params

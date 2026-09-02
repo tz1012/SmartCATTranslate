@@ -126,7 +126,6 @@ pub async fn translate_document(
     let job_root = cleanup
         .create_job_root(&job_id.simple().to_string())
         .map_err(|_| "document_io_failed".to_owned())?;
-    set_private_permissions(&job_root, true);
     let cancelled = jobs.begin(job_id);
     let translated_results = Arc::new(Mutex::new(std::collections::HashMap::new()));
     DiagnosticEvent::new(

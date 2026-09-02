@@ -51,6 +51,46 @@ pub struct CaptureProgress {
     pub percent: u8,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CaptureSessionEnded<'a> {
+    session_id: Uuid,
+    status: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<&'a str>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CaptureSourceReady<'a> {
+    #[serde(flatten)]
+    result: &'a CaptureJobResult,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    capture_session_id: Option<Uuid>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SessionTeardownPolicy {
+    destroy_requested_session_windows: bool,
+    emit_terminal_event: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CaptureFailurePolicy {
+    KeepSessionForRetry,
+    TerminateSession,
+}
+
+impl CaptureFailurePolicy {
+    fn for_reason(reason: &str) -> Self {
+        if reason == "invalid_capture_selection" {
+            Self::KeepSessionForRetry
+        } else {
+            Self::TerminateSession
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn start_screen_capture<R: Runtime>(
     app: tauri::AppHandle<R>,
@@ -76,11 +116,9 @@ pub async fn start_screen_capture<R: Runtime>(
         crate::settings::types::AppLocale::Ko => "ko",
         crate::settings::types::AppLocale::En => "en",
     };
+    let mut windows = Vec::with_capacity(monitors.len());
     for monitor in &monitors {
-        let label = overlay_label(&monitor.id);
-        if let Some(existing) = app.get_webview_window(&label) {
-            let _ = existing.close();
-        }
+        let label = overlay_label(session_id, &monitor.id);
         let query = format!(
             "index.html?captureOverlay=1&session={session_id}&monitor={}&locale={locale}",
             percent_encode(&monitor.id)
@@ -93,10 +131,10 @@ pub async fn start_screen_capture<R: Runtime>(
             .skip_taskbar(true)
             .resizable(false)
             .shadow(false)
+            .visible(false)
             .build();
         let Ok(window) = built else {
-            let _ = coordinator.cancel(session_id);
-            close_overlays(&app);
+            cancel_capture_setup(&app, session_id);
             return Err("capture_overlay_unavailable".to_owned());
         };
         if window
@@ -112,10 +150,18 @@ pub async fn start_screen_capture<R: Runtime>(
                 ))
                 .is_err()
         {
-            let _ = coordinator.cancel(session_id);
-            close_overlays(&app);
+            cancel_capture_setup(&app, session_id);
             return Err("capture_overlay_unavailable".to_owned());
         }
+        windows.push(window);
+    }
+    for window in &windows {
+        if window.show().is_err() {
+            cancel_capture_setup(&app, session_id);
+            return Err("capture_overlay_unavailable".to_owned());
+        }
+    }
+    for window in &windows {
         let _ = window.set_focus();
     }
     Ok(StartCaptureResult {
@@ -156,10 +202,16 @@ pub fn complete_screen_capture<R: Runtime>(
 ) -> Result<CaptureJobResult, String> {
     let job_id = Uuid::new_v4();
     let cleanup = app.state::<CleanupService>();
-    let root = cleanup
-        .create_job_root(&job_id.simple().to_string())
-        .map_err(|_| "capture_storage_unavailable".to_owned())?;
-    crate::commands::documents::set_private_permissions(&root, true);
+    let root = match cleanup.create_job_root(&job_id.simple().to_string()) {
+        Ok(root) => root,
+        Err(_) => {
+            return Err(fail_capture_session(
+                &app,
+                session_id,
+                "capture_storage_unavailable",
+            ));
+        }
+    };
     let decoded = match app
         .state::<CaptureCoordinator>()
         .complete(session_id, selection, &root)
@@ -168,10 +220,16 @@ pub fn complete_screen_capture<R: Runtime>(
         Err(error) => {
             let _ = cleanup.on_job_cancel(&job_id.simple().to_string());
             crate::commands::history::emit_privacy_status(&app);
-            return Err(error.code().to_owned());
+            let safe_reason = safe_capture_session_reason(error.code());
+            return match CaptureFailurePolicy::for_reason(safe_reason) {
+                CaptureFailurePolicy::KeepSessionForRetry => Err(safe_reason.to_owned()),
+                CaptureFailurePolicy::TerminateSession => {
+                    Err(fail_capture_session(&app, session_id, safe_reason))
+                }
+            };
         }
     };
-    close_overlays(&app);
+    destroy_overlays_for_session(&app, session_id);
     let result = source_result(&decoded, job_id);
     app.state::<CaptureJobStore>().insert(CaptureJob {
         source: decoded,
@@ -180,7 +238,13 @@ pub fn complete_screen_capture<R: Runtime>(
         cancelled: Arc::new(AtomicBool::new(false)),
         translation_job: None,
     });
-    let _ = app.emit("capture-source-ready", &result);
+    let _ = app.emit(
+        "capture-source-ready",
+        CaptureSourceReady {
+            result: &result,
+            capture_session_id: Some(session_id),
+        },
+    );
     Ok(result)
 }
 
@@ -193,7 +257,13 @@ pub fn cancel_screen_capture<R: Runtime>(
         .state::<CaptureCoordinator>()
         .cancel(session_id)
         .map_err(|error| error.code().to_owned());
-    close_overlays(&app);
+    apply_session_teardown(
+        &app,
+        session_id,
+        session_teardown_policy(result.is_ok()),
+        "cancelled",
+        None,
+    );
     result
 }
 
@@ -220,7 +290,6 @@ pub fn choose_image<R: Runtime>(
     let root = cleanup
         .create_job_root(&job_id.simple().to_string())
         .map_err(|_| "capture_storage_unavailable".to_owned())?;
-    crate::commands::documents::set_private_permissions(&root, true);
     let decoded = match crate::capture::ImageInput::open_read_only(path, root) {
         Ok(decoded) => decoded,
         Err(error) => {
@@ -237,7 +306,13 @@ pub fn choose_image<R: Runtime>(
         cancelled: Arc::new(AtomicBool::new(false)),
         translation_job: None,
     });
-    let _ = app.emit("capture-source-ready", &result);
+    let _ = app.emit(
+        "capture-source-ready",
+        CaptureSourceReady {
+            result: &result,
+            capture_session_id: None,
+        },
+    );
     Ok(Some(result))
 }
 
@@ -570,21 +645,140 @@ fn cleanup_capture_source<R: Runtime>(app: &tauri::AppHandle<R>, job_id: Uuid) {
     crate::commands::history::emit_privacy_status(app);
 }
 
-fn close_overlays<R: Runtime>(app: &tauri::AppHandle<R>) {
+fn destroy_overlays_for_session<R: Runtime>(app: &tauri::AppHandle<R>, session_id: Uuid) {
     for (_, window) in app.webview_windows() {
-        if window.label().starts_with(OVERLAY_PREFIX) {
-            let _ = window.close();
+        if is_overlay_label_for_session(window.label(), session_id) {
+            let _ = window.destroy();
         }
     }
 }
 
-fn overlay_label(id: &str) -> String {
-    let safe: String = id
-        .chars()
-        .filter(|value| value.is_ascii_alphanumeric() || *value == '-')
-        .take(80)
-        .collect();
-    format!("{OVERLAY_PREFIX}{safe}")
+fn cancel_capture_setup<R: Runtime>(app: &tauri::AppHandle<R>, session_id: Uuid) {
+    let _ = app.state::<CaptureCoordinator>().cancel(session_id);
+    destroy_overlays_for_session(app, session_id);
+}
+
+fn session_teardown_policy(cancelled_exact_session: bool) -> SessionTeardownPolicy {
+    SessionTeardownPolicy {
+        destroy_requested_session_windows: true,
+        emit_terminal_event: cancelled_exact_session,
+    }
+}
+
+fn apply_session_teardown<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    session_id: Uuid,
+    policy: SessionTeardownPolicy,
+    status: &str,
+    reason: Option<&str>,
+) {
+    if policy.destroy_requested_session_windows {
+        destroy_overlays_for_session(app, session_id);
+    }
+    if policy.emit_terminal_event {
+        emit_capture_session_ended(app, session_id, status, reason);
+    }
+}
+
+fn fail_capture_session<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    session_id: Uuid,
+    reason: &str,
+) -> String {
+    let safe_reason = safe_capture_session_reason(reason);
+    let cancelled = app.state::<CaptureCoordinator>().cancel(session_id).is_ok();
+    apply_session_teardown(
+        app,
+        session_id,
+        session_teardown_policy(cancelled),
+        "failed",
+        Some(safe_reason),
+    );
+    safe_reason.to_owned()
+}
+
+pub(crate) fn handle_capture_overlay_close<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    label: &str,
+) -> bool {
+    let Some(session_id) = overlay_session_id(label) else {
+        return false;
+    };
+    let cancelled = app.state::<CaptureCoordinator>().cancel(session_id).is_ok();
+    apply_session_teardown(
+        app,
+        session_id,
+        session_teardown_policy(cancelled),
+        "cancelled",
+        None,
+    );
+    true
+}
+
+pub(crate) fn is_capture_overlay_window(label: &str) -> bool {
+    overlay_session_id(label).is_some()
+}
+
+fn emit_capture_session_ended<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    session_id: Uuid,
+    status: &str,
+    reason: Option<&str>,
+) {
+    let _ = app.emit(
+        "capture-session-ended",
+        CaptureSessionEnded {
+            session_id,
+            status,
+            reason,
+        },
+    );
+}
+
+fn safe_capture_session_reason(reason: &str) -> &str {
+    if reason == "invalid_capture_selection" {
+        return reason;
+    }
+    let suffix = reason
+        .strip_prefix("screen_capture_")
+        .or_else(|| reason.strip_prefix("capture_"));
+    match suffix {
+        Some(value)
+            if !value.is_empty()
+                && value.len() <= 48
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte == b'_') =>
+        {
+            reason
+        }
+        _ => "screen_capture_completion_failed",
+    }
+}
+
+fn overlay_session_id(label: &str) -> Option<Uuid> {
+    let suffix = label.strip_prefix(OVERLAY_PREFIX)?;
+    let (session, monitor) = suffix.split_once('-')?;
+    if session.len() != 32
+        || monitor.len() != 32
+        || !monitor.bytes().all(|value| value.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    Uuid::parse_str(session).ok()
+}
+
+fn is_overlay_label_for_session(label: &str, session_id: Uuid) -> bool {
+    overlay_session_id(label) == Some(session_id)
+}
+
+fn overlay_label(session_id: Uuid, monitor_id: &str) -> String {
+    let monitor_key = Uuid::new_v5(&session_id, monitor_id.as_bytes());
+    format!(
+        "{OVERLAY_PREFIX}{}-{}",
+        session_id.simple(),
+        monitor_key.simple()
+    )
 }
 
 fn percent_encode(value: &str) -> String {
@@ -598,4 +792,93 @@ fn percent_encode(value: &str) -> String {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        is_overlay_label_for_session, overlay_label, overlay_session_id,
+        safe_capture_session_reason, session_teardown_policy, CaptureFailurePolicy,
+        SessionTeardownPolicy,
+    };
+    use uuid::Uuid;
+
+    #[test]
+    fn capture_session_reason_allows_only_safe_capture_codes() {
+        assert_eq!(
+            safe_capture_session_reason("screen_capture_failed"),
+            "screen_capture_failed"
+        );
+        assert_eq!(
+            safe_capture_session_reason("capture_storage_unavailable"),
+            "capture_storage_unavailable"
+        );
+        assert_eq!(
+            safe_capture_session_reason("invalid_capture_selection"),
+            "invalid_capture_selection"
+        );
+        assert_eq!(
+            safe_capture_session_reason("secret at C:\\capture.png"),
+            "screen_capture_completion_failed"
+        );
+    }
+
+    #[test]
+    fn overlay_labels_round_trip_and_match_only_their_session() {
+        let session_a = Uuid::parse_str("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
+        let session_b = Uuid::parse_str("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb").unwrap();
+        let label = overlay_label(session_a, "display:/primary");
+
+        assert_eq!(overlay_session_id(&label), Some(session_a));
+        assert!(is_overlay_label_for_session(&label, session_a));
+        assert!(!is_overlay_label_for_session(&label, session_b));
+        assert_eq!(overlay_session_id("capture-overlay-primary"), None);
+        assert_eq!(overlay_session_id("main"), None);
+        assert_eq!(overlay_session_id("quick-popup"), None);
+    }
+
+    #[test]
+    fn overlay_labels_are_unique_across_sessions_and_monitors() {
+        let session_a = Uuid::parse_str("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
+        let session_b = Uuid::parse_str("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb").unwrap();
+
+        assert_ne!(
+            overlay_label(session_a, "display/1"),
+            overlay_label(session_a, "display:1")
+        );
+        assert_ne!(
+            overlay_label(session_a, "display/1"),
+            overlay_label(session_b, "display/1")
+        );
+    }
+
+    #[test]
+    fn stale_session_teardown_destroys_only_requested_windows_without_terminal_event() {
+        assert_eq!(
+            session_teardown_policy(false),
+            SessionTeardownPolicy {
+                destroy_requested_session_windows: true,
+                emit_terminal_event: false,
+            }
+        );
+        assert_eq!(
+            session_teardown_policy(true),
+            SessionTeardownPolicy {
+                destroy_requested_session_windows: true,
+                emit_terminal_event: true,
+            }
+        );
+    }
+
+    #[test]
+    fn invalid_selection_is_retryable_but_other_capture_failures_terminate_the_session() {
+        assert_eq!(
+            CaptureFailurePolicy::for_reason("invalid_capture_selection"),
+            CaptureFailurePolicy::KeepSessionForRetry
+        );
+        assert_eq!(
+            CaptureFailurePolicy::for_reason("capture_storage_unavailable"),
+            CaptureFailurePolicy::TerminateSession
+        );
+    }
 }

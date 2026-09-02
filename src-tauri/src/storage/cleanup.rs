@@ -127,13 +127,28 @@ impl CleanupService {
             }
             Err(_) => return Err(CleanupError::Unavailable),
         }
-        let canonical = candidate
-            .canonicalize()
-            .map_err(|_| CleanupError::Unavailable)?;
-        if canonical.parent() != Some(self.root.as_path()) {
+        let metadata = fs::symlink_metadata(&candidate).map_err(|_| CleanupError::Unavailable)?;
+        if is_link_or_reparse(&metadata) || !metadata.is_dir() {
             return Err(CleanupError::OutsideRoot);
         }
-        Ok(canonical)
+        #[cfg(windows)]
+        {
+            // The root is canonicalized and protected when the service is
+            // created, and job IDs cannot contain path separators. Avoid a
+            // second handle-based canonicalization here: restricted Windows
+            // tokens can create the private child but fail to canonicalize it.
+            Ok(candidate)
+        }
+        #[cfg(not(windows))]
+        {
+            let canonical = candidate
+                .canonicalize()
+                .map_err(|_| CleanupError::Unavailable)?;
+            if canonical.parent() != Some(self.root.as_path()) {
+                return Err(CleanupError::OutsideRoot);
+            }
+            Ok(canonical)
+        }
     }
 
     pub fn on_job_complete(&self, job_id: &str) -> Result<CleanupStats, CleanupError> {
@@ -471,4 +486,36 @@ fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
 
 fn valid_job_id(value: &str) -> bool {
     value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn creates_only_a_direct_non_reparse_job_directory() {
+        let temporary = tempfile::tempdir().expect("temporary root");
+        let cleanup =
+            CleanupService::new(temporary.path().join("private")).expect("cleanup service");
+        let job = cleanup
+            .create_job_root("0123456789abcdef0123456789abcdef")
+            .expect("valid job root");
+        let metadata = fs::symlink_metadata(&job).expect("job metadata");
+
+        assert_eq!(job.parent(), Some(cleanup.root()));
+        assert!(metadata.is_dir());
+        assert!(!is_link_or_reparse(&metadata));
+    }
+
+    #[test]
+    fn rejects_job_ids_that_can_escape_the_private_root() {
+        let temporary = tempfile::tempdir().expect("temporary root");
+        let cleanup =
+            CleanupService::new(temporary.path().join("private")).expect("cleanup service");
+
+        assert!(matches!(
+            cleanup.create_job_root("../outside"),
+            Err(CleanupError::OutsideRoot)
+        ));
+    }
 }

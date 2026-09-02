@@ -1,4 +1,10 @@
-use std::{io::Cursor, path::Path, sync::Mutex};
+use std::{
+    io::{self, Cursor, Write},
+    path::Path,
+    sync::Mutex,
+    thread,
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -14,6 +20,8 @@ use super::{
 const MAX_MONITORS: usize = 16;
 const MAX_CAPTURE_PIXELS: u64 = 120_000_000;
 const MIN_SELECTION: u32 = 8;
+const MAX_STORAGE_ATTEMPTS: usize = 3;
+const STORAGE_RETRY_DELAY: Duration = Duration::from_millis(25);
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ScreenCaptureError {
@@ -31,6 +39,14 @@ pub enum ScreenCaptureError {
     DisplayLimitExceeded,
     #[error("screen capture is unavailable")]
     BackendUnavailable,
+    #[error("the capture image could not be encoded")]
+    EncodingFailed,
+    #[error("the capture image file could not be opened")]
+    StorageOpenUnavailable,
+    #[error("the capture storage root is unavailable")]
+    StorageRootUnavailable,
+    #[error("the capture image file could not be written")]
+    StorageWriteUnavailable,
     #[error("the capture image could not be stored")]
     StorageUnavailable,
 }
@@ -45,6 +61,10 @@ impl ScreenCaptureError {
             Self::InvalidSelection => "invalid_capture_selection",
             Self::DisplayLimitExceeded => "capture_display_limit_exceeded",
             Self::BackendUnavailable => "screen_capture_unavailable",
+            Self::EncodingFailed => "capture_encoding_failed",
+            Self::StorageOpenUnavailable => "capture_storage_open_failed",
+            Self::StorageRootUnavailable => "capture_storage_root_failed",
+            Self::StorageWriteUnavailable => "capture_storage_write_failed",
             Self::StorageUnavailable => "capture_storage_unavailable",
         }
     }
@@ -182,12 +202,22 @@ impl CaptureCoordinator {
             .filter(|value| value.id == session_id)
             .ok_or(ScreenCaptureError::SessionUnavailable)?;
         let image = compose_selection(&session.frames, selection.global_physical)?;
-        let _completed = current.take();
         std::fs::create_dir_all(immutable_root)
-            .map_err(|_| ScreenCaptureError::StorageUnavailable)?;
+            .map_err(|_| ScreenCaptureError::StorageRootUnavailable)?;
         let path = immutable_root.join(format!("{}.png", Uuid::new_v4()));
         let png = encode_png(image.width(), image.height(), image.as_raw())?;
-        std::fs::write(&path, &png).map_err(|_| ScreenCaptureError::StorageUnavailable)?;
+        let mut output = retry_transient_io(|| {
+            std::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&path)
+        })
+        .map_err(|_| ScreenCaptureError::StorageOpenUnavailable)?;
+        output
+            .write_all(&png)
+            .and_then(|_| output.flush())
+            .map_err(|_| ScreenCaptureError::StorageWriteUnavailable)?;
+        let _completed = current.take();
         Ok(DecodedImage {
             width: image.width(),
             height: image.height(),
@@ -301,11 +331,38 @@ fn compose_selection(
 }
 
 fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, ScreenCaptureError> {
+    let expected = u64::from(width)
+        .checked_mul(u64::from(height))
+        .and_then(|pixels| pixels.checked_mul(4))
+        .and_then(|bytes| usize::try_from(bytes).ok())
+        .ok_or(ScreenCaptureError::EncodingFailed)?;
+    if rgba.len() != expected {
+        return Err(ScreenCaptureError::EncodingFailed);
+    }
     let mut bytes = Cursor::new(Vec::new());
     PngEncoder::new(&mut bytes)
         .write_image(rgba, width, height, ColorType::Rgba8.into())
-        .map_err(|_| ScreenCaptureError::StorageUnavailable)?;
+        .map_err(|_| ScreenCaptureError::EncodingFailed)?;
     Ok(bytes.into_inner())
+}
+
+fn retry_transient_io<T>(mut operation: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+    for attempt in 1..=MAX_STORAGE_ATTEMPTS {
+        match operation() {
+            Ok(value) => return Ok(value),
+            Err(error)
+                if attempt < MAX_STORAGE_ATTEMPTS
+                    && matches!(
+                        error.kind(),
+                        io::ErrorKind::PermissionDenied | io::ErrorKind::WouldBlock
+                    ) =>
+            {
+                thread::sleep(STORAGE_RETRY_DELAY);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("the bounded retry loop always returns")
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -494,6 +551,85 @@ mod native {
             }
             Ok(MonitorFrame { info, rgba: bgra })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{self, ErrorKind};
+
+    #[test]
+    fn png_parameter_failure_has_safe_encoding_code() {
+        let error = encode_png(1, 1, &[]).expect_err("invalid pixel data must fail");
+
+        assert_eq!(error.code(), "capture_encoding_failed");
+        assert_eq!(error.to_string(), "the capture image could not be encoded");
+    }
+
+    #[test]
+    fn storage_open_failure_has_safe_stage_code() {
+        assert_eq!(
+            ScreenCaptureError::StorageOpenUnavailable.code(),
+            "capture_storage_open_failed"
+        );
+    }
+
+    #[test]
+    fn storage_root_and_write_failures_have_safe_stage_codes() {
+        assert_eq!(
+            ScreenCaptureError::StorageRootUnavailable.code(),
+            "capture_storage_root_failed"
+        );
+        assert_eq!(
+            ScreenCaptureError::StorageWriteUnavailable.code(),
+            "capture_storage_write_failed"
+        );
+    }
+
+    #[test]
+    fn transient_io_retry_succeeds_on_a_later_attempt() {
+        let mut attempts = 0;
+
+        let result = retry_transient_io(|| {
+            attempts += 1;
+            if attempts == 1 {
+                Err(io::Error::from(ErrorKind::WouldBlock))
+            } else {
+                Ok("stored")
+            }
+        });
+
+        assert_eq!(result.expect("second attempt must succeed"), "stored");
+        assert_eq!(attempts, 2);
+    }
+
+    #[test]
+    fn transient_io_retry_stops_after_three_attempts() {
+        let mut attempts = 0;
+
+        let error = retry_transient_io(|| -> io::Result<()> {
+            attempts += 1;
+            Err(io::Error::from(ErrorKind::PermissionDenied))
+        })
+        .expect_err("persistent transient errors must stop");
+
+        assert_eq!(error.kind(), ErrorKind::PermissionDenied);
+        assert_eq!(attempts, 3);
+    }
+
+    #[test]
+    fn transient_io_retry_does_not_retry_other_errors() {
+        let mut attempts = 0;
+
+        let error = retry_transient_io(|| -> io::Result<()> {
+            attempts += 1;
+            Err(io::Error::from(ErrorKind::AlreadyExists))
+        })
+        .expect_err("non-retryable errors must be returned");
+
+        assert_eq!(error.kind(), ErrorKind::AlreadyExists);
+        assert_eq!(attempts, 1);
     }
 }
 

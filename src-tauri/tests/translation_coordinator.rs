@@ -496,6 +496,103 @@ async fn malicious_source_cannot_trigger_tools_or_escape_the_ephemeral_turn() {
 }
 
 #[tokio::test]
+async fn reasoning_items_do_not_get_misclassified_as_tool_use() {
+    let harness = spawn_fake_transport(|mut reader, mut writer| async move {
+        let base = read_request(&mut reader).await;
+        write_json_line(
+            &mut writer,
+            &json!({"id": base["id"], "result": {"thread": {"id": "base"}, "instructionSources": []}}),
+        )
+        .await;
+
+        let fork = read_request(&mut reader).await;
+        write_json_line(
+            &mut writer,
+            &json!({"id": fork["id"], "result": {"thread": {"id": "ephemeral"}}}),
+        )
+        .await;
+
+        let turn = read_request(&mut reader).await;
+        write_json_line(
+            &mut writer,
+            &json!({"id": turn["id"], "result": {"turn": {"id": "turn-1"}}}),
+        )
+        .await;
+        write_json_line(
+            &mut writer,
+            &json!({
+                "method": "item/started",
+                "params": {
+                    "threadId": "ephemeral",
+                    "turnId": "turn-1",
+                    "item": {"id": "reasoning-1", "type": "reasoning", "summary": []}
+                }
+            }),
+        )
+        .await;
+        write_json_line(
+            &mut writer,
+            &json!({
+                "method": "item/completed",
+                "params": {
+                    "threadId": "ephemeral",
+                    "turnId": "turn-1",
+                    "item": {"id": "reasoning-1", "type": "reasoning", "summary": []}
+                }
+            }),
+        )
+        .await;
+        write_json_line(
+            &mut writer,
+            &json!({
+                "method": "item/completed",
+                "params": {
+                    "threadId": "ephemeral",
+                    "turnId": "turn-1",
+                    "item": {
+                        "id": "agent-1",
+                        "type": "agentMessage",
+                        "text": r#"{"translation":"translated capture"}"#
+                    }
+                }
+            }),
+        )
+        .await;
+        write_json_line(
+            &mut writer,
+            &json!({
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "ephemeral",
+                    "turnId": "turn-1",
+                    "turn": {"id": "turn-1", "status": "completed", "items": []}
+                }
+            }),
+        )
+        .await;
+
+        let unsubscribe = read_request(&mut reader).await;
+        assert_eq!(unsubscribe["method"], "thread/unsubscribe");
+        write_json_line(
+            &mut writer,
+            &json!({"id": unsubscribe["id"], "result": {"status": "unsubscribed"}}),
+        )
+        .await;
+    })
+    .await;
+    let root = tempdir().unwrap();
+    let workspace = prepare_owned_empty_workspace(root.path()).unwrap();
+    let backend = CodexTranslationBackend::new(Arc::new(harness.transport), &workspace)
+        .await
+        .unwrap();
+
+    let result = backend.translate(request("capture text")).await.unwrap();
+
+    assert_eq!(result.translated_text, "translated capture");
+    harness.server_task.await.unwrap();
+}
+
+#[tokio::test]
 async fn starts_an_ephemeral_thread_when_the_base_thread_cannot_be_forked() {
     let harness = spawn_fake_transport(|mut reader, mut writer| async move {
         let base = read_request(&mut reader).await;

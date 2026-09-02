@@ -212,7 +212,10 @@ pub fn run() {
     app.run(|app_handle, event| {
         if let tauri::RunEvent::WindowEvent { label, event, .. } = &event {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if app_handle
+                if commands::capture::is_capture_overlay_window(label) {
+                    api.prevent_close();
+                    let _ = commands::capture::handle_capture_overlay_close(app_handle, label);
+                } else if app_handle
                     .state::<lifecycle::LifecycleState>()
                     .should_intercept_close()
                     && lifecycle::should_intercept_window_close(label)
