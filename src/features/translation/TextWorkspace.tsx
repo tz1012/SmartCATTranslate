@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import type { Field, GlossaryMapping, TranslationMode, TranslationProfile } from '../../lib/types';
+import type { CompletedTextTranslation, Field, GlossaryMapping, TranslationMode, TranslationProfile } from '../../lib/types';
 import { getAccount, onAccountStateChanged } from '../account/accountApi';
 import type { AppLocale, AppSettings, Theme } from '../settings/SettingsView';
 import { resolveDefaultProfile } from '../settings/defaultProfile';
@@ -74,14 +74,19 @@ function sourceWithinBounds(text: string) {
 export function TextWorkspace({
   locale: localeOverride,
   onActivityChange,
+  importedTranslation,
+  onImportedTranslationConsumed,
   onPreferencesLoaded,
 }: {
   locale?: AppLocale;
   onActivityChange?: (active: boolean) => void;
+  importedTranslation?: CompletedTextTranslation;
+  onImportedTranslationConsumed?: () => void;
   onPreferencesLoaded?: (locale: AppLocale, theme: Theme) => void;
 }) {
   const [settings, setSettings] = useState<AppSettings | null>(null);
-  const [source, setSource] = useState('');
+  const [source, setSource] = useState(() => importedTranslation?.source ?? '');
+  const [importedResult, setImportedResult] = useState<string | null>(() => importedTranslation?.translation ?? null);
   const [profile, setProfile] = useState<TranslationProfile | null>(null);
   const [field, setField] = useState<Field>('general');
   const [accountPhase, setAccountPhase] = useState<'checking' | 'signedIn' | 'signedOut'>('checking');
@@ -100,6 +105,12 @@ export function TextWorkspace({
   const { state, detectedLanguage, listenerState, start, cancel, reset, retryListener } = useTranslationJob();
   const locale = localeOverride ?? settings?.locale ?? 'ko';
   const labels = copy[locale];
+  const displayedText = importedResult ?? state.text;
+
+  useEffect(() => {
+    if (!importedTranslation) return;
+    onImportedTranslationConsumed?.();
+  }, [importedTranslation, onImportedTranslationConsumed]);
 
   const refreshAccount = useCallback(async () => {
     const requestGeneration = ++accountGeneration.current;
@@ -195,11 +206,13 @@ export function TextWorkspace({
       window.clearTimeout(autoStartTimer.current);
       autoStartTimer.current = undefined;
     }
+    setImportedResult(null);
     startedRevision.current = editRevision;
     runText(source, mode);
   };
 
   const clearBoundResult = () => {
+    setImportedResult(null);
     if (state.status === 'completed' || (state.status === 'failed' && !state.pendingCleanup)) reset();
     setNotice('');
     setValidationError('');
@@ -218,15 +231,16 @@ export function TextWorkspace({
   const clearAll = () => {
     if (state.status === 'running' || pendingCleanup) return;
     setSource('');
+    setImportedResult(null);
     setValidationError('');
     setNotice('');
     reset();
   };
 
   const copyResult = async () => {
-    if (!state.text) return;
+    if (!displayedText) return;
     try {
-      await navigator.clipboard.writeText(state.text);
+      await navigator.clipboard.writeText(displayedText);
       setNotice(labels.copied);
     } catch {
       setValidationError(labels.copyFailed);
@@ -234,10 +248,10 @@ export function TextWorkspace({
   };
 
   const saveResult = async () => {
-    if (!state.text) return;
+    if (!displayedText) return;
     setValidationError('');
     try {
-      const result = await saveTranslationText(state.text, effectiveProfile?.targetLanguage ?? 'translated', locale);
+      const result = await saveTranslationText(displayedText, effectiveProfile?.targetLanguage ?? 'translated', locale);
       if (result.status === 'saved') setNotice(labels.saved);
     } catch {
       setValidationError(labels.saveFailed);
@@ -252,7 +266,7 @@ export function TextWorkspace({
       : run(sameLanguage ? 'rewrite' : 'translate');
   const jobError = state.status === 'failed' ? errorMessage(state.message, locale) : '';
   const status = notice || (state.status === 'running' ? labels.running
-    : state.status === 'completed' ? labels.completed
+    : importedResult !== null || state.status === 'completed' ? labels.completed
       : accountPhase === 'signedIn' ? labels.ready
         : accountPhase === 'signedOut' ? labels.signedOut : labels.checking);
   const pendingCleanup = state.status === 'failed' && Boolean(state.pendingCleanup);
@@ -373,7 +387,7 @@ export function TextWorkspace({
         </div>
         <div className="translation-pane result-pane">
           <label htmlFor="translation-result">{labels.result}</label>
-          <textarea id="translation-result" aria-label={labels.result} value={state.text} readOnly />
+          <textarea id="translation-result" aria-label={labels.result} value={displayedText} readOnly />
         </div>
       </div>
 
@@ -387,9 +401,9 @@ export function TextWorkspace({
           >
             {state.status === 'running' ? labels.cancel : labels.translate}
           </button>
-          <button type="button" onClick={() => void copyResult()} disabled={!state.text}>{labels.copyResult}</button>
-          <button type="button" onClick={() => void saveResult()} disabled={!state.text}>{labels.saveResult}</button>
-          <button type="button" onClick={clearAll} disabled={state.status === 'running' || pendingCleanup || (!source && !state.text)}>{labels.clear}</button>
+          <button type="button" onClick={() => void copyResult()} disabled={!displayedText}>{labels.copyResult}</button>
+          <button type="button" onClick={() => void saveResult()} disabled={!displayedText}>{labels.saveResult}</button>
+          <button type="button" onClick={clearAll} disabled={state.status === 'running' || pendingCleanup || (!source && !displayedText)}>{labels.clear}</button>
         </div>
 
         <div className="workspace-status" aria-live="polite" role="status">{status}</div>

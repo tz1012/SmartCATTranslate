@@ -11,6 +11,7 @@ import type { PreparedDocumentRecovery } from '../features/history/historyApi';
 import { AppTopBar, type AppView } from './AppTopBar';
 import { AppMenuOverlay, type SettingsDestination } from './AppMenuOverlay';
 import { AppNotificationPopover } from './AppNotificationPopover';
+import type { CompletedTextTranslation } from '../lib/types';
 
 export type AppLocale = 'ko' | 'en';
 type PrivacyStatus = { cleanupPending: boolean; retentionPending: boolean };
@@ -26,6 +27,7 @@ export function App({ locale }: { locale?: AppLocale }) {
   const [recovery, setRecovery] = useState<PreparedDocumentRecovery>();
   const [privacyStatus, setPrivacyStatus] = useState<PrivacyStatus>();
   const [translationActive, setTranslationActive] = useState(false);
+  const [importedTranslation, setImportedTranslation] = useState<CompletedTextTranslation>();
   const accountLocale = locale ?? savedLocale;
   useEffect(() => {
     let disposed = false;
@@ -97,6 +99,11 @@ export function App({ locale }: { locale?: AppLocale }) {
     if (destination) setSettingsDestination(destination);
     setActiveView(view);
   }, [translationActive]);
+  const consumeImportedTranslation = useCallback(() => setImportedTranslation(undefined), []);
+  const acceptCaptureTranslation = useCallback((translation: CompletedTextTranslation) => {
+    setImportedTranslation(translation);
+    setActiveView('translate');
+  }, []);
 
   return (
     <main data-theme={savedTheme}>
@@ -140,11 +147,17 @@ export function App({ locale }: { locale?: AppLocale }) {
       {translationActive && <p id="settings-navigation-status" className="navigation-note" role="status">{labels.settingsLocked}</p>}
       {activeView === 'translate' ? (
         <div id="app-panel-translate" role="tabpanel" aria-labelledby="app-tab-translate">
-          <TextWorkspace locale={locale} onPreferencesLoaded={acceptPreferences} onActivityChange={setTranslationActive} />
+          <TextWorkspace
+            locale={locale}
+            importedTranslation={importedTranslation}
+            onImportedTranslationConsumed={consumeImportedTranslation}
+            onPreferencesLoaded={acceptPreferences}
+            onActivityChange={setTranslationActive}
+          />
         </div>
       ) : activeView === 'capture' ? (
         <div id="app-panel-capture" role="tabpanel" aria-labelledby="app-tab-capture">
-          <CaptureWorkspace locale={accountLocale} />
+          <CaptureWorkspace locale={accountLocale} onTranslationComplete={acceptCaptureTranslation} />
         </div>
       ) : activeView === 'documents' ? (
         <div id="app-panel-documents" role="tabpanel" aria-labelledby="app-tab-documents">

@@ -4,6 +4,7 @@ import { cancelImageTranslation, chooseImage, startScreenCapture, translateImage
 import type { CaptureJobResult, CaptureProgress } from './types';
 import { CaptureResult } from './CaptureResult';
 import { SecretModeSwitch,useSecretMode } from '../history/secretMode';
+import type { CompletedTextTranslation } from '../../lib/types';
 
 type CaptureErrorStage = 'capture' | 'translation' | 'import';
 
@@ -50,18 +51,54 @@ function toCaptureError(stage: CaptureErrorStage, reason: unknown): CaptureError
   };
 }
 
-export function CaptureWorkspace({ locale }: { locale: 'ko' | 'en' }) {
+export function CaptureWorkspace({
+  locale,
+  onTranslationComplete,
+}: {
+  locale: 'ko' | 'en';
+  onTranslationComplete?: (translation: CompletedTextTranslation) => void;
+}) {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<CaptureJobResult>();
   const [error, setError] = useState<CaptureError>();
   const [progress, setProgress] = useState<CaptureProgress>();
   const [captureListenersReady, setCaptureListenersReady] = useState(false);
   const activeCaptureSession = useRef<string | undefined>(undefined);
+  const translatingJobId = useRef<string | undefined>(undefined);
   const captureStartPending = useRef(false);
   const pendingCaptureTerminalEvents = useRef(new Map<string, CaptureSessionEnded>());
   const pendingCaptureSourceEvents = useRef(new Map<string, CaptureSourceReady>());
   const ko = locale === 'ko';
   const [secret,setSecret]=useSecretMode();
+  const translate = useCallback(async (source: CaptureJobResult) => {
+    if (translatingJobId.current !== undefined) return;
+    translatingJobId.current = source.jobId;
+    setBusy(true);
+    setError(undefined);
+    setProgress({ jobId: source.jobId, stage: 'ocr', percent: 5 });
+    try {
+      const translated = await translateImage(source.jobId, ['ko', 'en'],secret);
+      setResult(translated);
+      if (translated.status === 'rendered') {
+        onTranslationComplete?.({
+          id: translated.jobId,
+          source: translated.translatedBlocks.map((block) => block.sourceText).join('\n\n'),
+          translation: translated.translatedBlocks.map((block) => block.translatedText).join('\n\n'),
+        });
+      }
+    } catch (reason) {
+      setError(toCaptureError('translation', reason));
+    } finally {
+      if (translatingJobId.current === source.jobId) translatingJobId.current = undefined;
+      setBusy(false);
+    }
+  }, [onTranslationComplete, secret]);
+  const acceptSourceReady = useCallback((source: CaptureSourceReady) => {
+    activeCaptureSession.current = undefined;
+    setResult(source);
+    setError(undefined);
+    return translate(source);
+  }, [translate]);
   const finishCaptureSession = useCallback((status: CaptureSessionEnded['status'], reason?: unknown) => {
     activeCaptureSession.current = undefined;
     setBusy(false);
@@ -71,19 +108,13 @@ export function CaptureWorkspace({ locale }: { locale: 'ko' | 'en' }) {
   useEffect(() => {
     let disposed = false;
     let stops: Array<() => void> = [];
-    const sourceReady = (payload: CaptureSourceReady) => {
-      activeCaptureSession.current = undefined;
-      setResult(payload);
-      setError(undefined);
-      setBusy(false);
-    };
     void Promise.all([
       listen<CaptureSourceReady>('capture-source-ready', (event) => {
         const sessionId = event.payload.captureSessionId;
         if (!sessionId) {
-          sourceReady(event.payload);
+          void acceptSourceReady(event.payload);
         } else if (activeCaptureSession.current === sessionId) {
-          sourceReady(event.payload);
+          void acceptSourceReady(event.payload);
         } else if (captureStartPending.current) {
           rememberPendingEvent(pendingCaptureSourceEvents.current, sessionId, event.payload);
         }
@@ -111,7 +142,7 @@ export function CaptureWorkspace({ locale }: { locale: 'ko' | 'en' }) {
       disposed = true;
       stops.forEach((stop) => stop());
     };
-  }, [finishCaptureSession]);
+  }, [acceptSourceReady, finishCaptureSession]);
   useEffect(() => { let disposed = false; let stop: (() => void) | undefined; void listen<CaptureProgress>('capture-progress', (event) => { if (!result || event.payload.jobId === result.jobId) setProgress(event.payload); }).then((unlisten) => { if (disposed) unlisten(); else stop = unlisten; }); return () => { disposed = true; stop?.(); }; }, [result]);
   const start = async () => {
     setBusy(true); setError(undefined);
@@ -126,10 +157,7 @@ export function CaptureWorkspace({ locale }: { locale: 'ko' | 'en' }) {
       pendingCaptureSourceEvents.current.clear();
       pendingCaptureTerminalEvents.current.clear();
       if (sourceEvent) {
-        activeCaptureSession.current = undefined;
-        setResult(sourceEvent);
-        setError(undefined);
-        setBusy(false);
+        void acceptSourceReady(sourceEvent);
       } else if (terminalEvent) {
         finishCaptureSession(terminalEvent.status, terminalEvent.reason);
       } else {
@@ -143,15 +171,13 @@ export function CaptureWorkspace({ locale }: { locale: 'ko' | 'en' }) {
       finishCaptureSession('failed', reason);
     }
   };
-  const translate = async () => {
-    if (!result) return; setBusy(true); setError(undefined); setProgress({ jobId: result.jobId, stage: 'ocr', percent: 5 });
-    try { setResult(await translateImage(result.jobId, ['ko', 'en'],secret)); }
-    catch (reason) { setError(toCaptureError('translation', reason)); }
-    finally { setBusy(false); }
-  };
   const choose = async () => {
     setBusy(true); setError(undefined);
-    try { const imported = await chooseImage(); if (imported) setResult(imported); }
+    try {
+      const imported = await chooseImage();
+      if (imported?.status === 'sourceReady') await acceptSourceReady(imported);
+      else if (imported) setResult(imported);
+    }
     catch (reason) { setError(toCaptureError('import', reason)); }
     finally { setBusy(false); }
   };
@@ -166,7 +192,7 @@ export function CaptureWorkspace({ locale }: { locale: 'ko' | 'en' }) {
       translation: ko ? `이미지 번역을 완료할 수 없습니다. 지원 코드: ${error.supportCode}` : `Could not complete image translation. Support code: ${error.supportCode}`,
       import: ko ? `이미지를 가져올 수 없습니다. 지원 코드: ${error.supportCode}` : `Could not import image. Support code: ${error.supportCode}`,
     }[error.stage]}</p>}
-    {result?.status === 'sourceReady' && <div className="capture-source-ready" role="status"><strong>{ko ? '이미지가 준비되었습니다.' : 'Image is ready.'}</strong><span>{result.imageWidth} × {result.imageHeight}</span><button className="primary-action" type="button" onClick={() => void translate()} disabled={busy}>{ko ? 'OCR 및 번역 시작' : 'Start OCR & translation'}</button></div>}
-    {result?.status === 'rendered' && <CaptureResult result={result} locale={locale} onChange={setResult} onRetry={() => void translate()} />}
+    {result?.status === 'sourceReady' && <div className="capture-source-ready" role="status"><strong>{ko ? '이미지가 준비되었습니다.' : 'Image is ready.'}</strong><span>{result.imageWidth} × {result.imageHeight}</span><button className="primary-action" type="button" onClick={() => void translate(result)} disabled={busy}>{ko ? 'OCR 및 번역 시작' : 'Start OCR & translation'}</button></div>}
+    {result?.status === 'rendered' && <CaptureResult result={result} locale={locale} onChange={setResult} onRetry={() => void translate(result)} />}
   </section>;
 }

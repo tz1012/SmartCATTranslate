@@ -53,14 +53,28 @@ it('keeps the source-ready retry action and reports a safe translation error', a
   await waitFor(() => expect(mocks.sourceReady).toBeDefined());
   act(() => mocks.sourceReady?.({ payload: sourceReady }));
 
-  fireEvent.click(screen.getByRole('button', { name: 'Start OCR & translation' }));
-
   const alert = await screen.findByRole('alert');
+  expect(mocks.translateImage).toHaveBeenCalledTimes(1);
   expect(screen.getByRole('button', { name: 'Start OCR & translation' })).toBeEnabled();
   expect(alert.textContent).toBe(
     'Could not complete image translation. Support code: translation_tool_rejected',
   );
   expect(alert).not.toHaveTextContent('Could not start capture');
+});
+
+it('starts only one automatic translation for repeated source-ready events', async () => {
+  let resolveTranslation!: (value: CaptureJobResult) => void;
+  mocks.translateImage.mockReturnValue(new Promise((resolve) => { resolveTranslation = resolve; }));
+  render(<CaptureWorkspace locale="en" />);
+  await waitFor(() => expect(mocks.sourceReady).toBeDefined());
+
+  act(() => {
+    mocks.sourceReady?.({ payload: sourceReady });
+    mocks.sourceReady?.({ payload: sourceReady });
+  });
+
+  expect(mocks.translateImage).toHaveBeenCalledTimes(1);
+  await act(async () => resolveTranslation({ ...sourceReady, status: 'rendered' }));
 });
 
 it.each([
@@ -139,7 +153,9 @@ it('does not restore a phantom active session when source-ready precedes start r
   act(() => mocks.sessionEnded?.({
     payload: { sessionId: 'session-1', status: 'failed', reason: 'screen_capture_failed' },
   }));
-  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  expect(screen.getByRole('alert')).toHaveTextContent(
+    /^Could not complete image translation\. Support code: translation_tool_rejected$/,
+  );
   expect(screen.getByText('Image is ready.')).toBeInTheDocument();
 });
 

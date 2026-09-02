@@ -33,6 +33,12 @@ export interface TranslationResult {
   detectedLanguage: string | null;
 }
 
+export type CompletedTextTranslation = {
+  id: string;
+  source: string;
+  translation: string;
+};
+
 export type TranslationError = 'toolUseRejected';
 
 export interface AuditEvent {

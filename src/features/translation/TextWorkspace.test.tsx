@@ -106,6 +106,23 @@ afterEach(() => {
 });
 
 describe('TextWorkspace', () => {
+  it('shows an imported completed capture without starting or recording a second text job', async () => {
+    render(<TextWorkspace locale="en" importedTranslation={{
+      id: 'capture-job',
+      source: 'Recognized source',
+      translation: 'Completed translation',
+    }} />);
+
+    expect(await screen.findByLabelText('Source text')).toHaveValue('Recognized source');
+    expect(screen.getByLabelText('Translation')).toHaveValue('Completed translation');
+    expect(screen.getByRole('status')).toHaveTextContent('Translation complete.');
+    expect(vi.mocked(invoke).mock.calls.some(([command]) => command === 'translate_text')).toBe(false);
+    expect(vi.mocked(invoke).mock.calls.some(([command]) => command === 'save_history_record')).toBe(false);
+
+    fireEvent.change(screen.getByLabelText('Source text'), { target: { value: 'Edited source' } });
+    expect(screen.getByLabelText('Translation')).toHaveValue('');
+  });
+
   it('debounces editing into one ready translation and lets a manual start replace the pending auto-start', async () => {
     render(<TextWorkspace locale="en" />);
     const source = await screen.findByLabelText('Source text');

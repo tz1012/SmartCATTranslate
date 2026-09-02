@@ -222,4 +222,43 @@ describe('App', () => {
     await user.click(screen.getByRole('button', { name: 'Open menu' }));
     expect(screen.getByRole('button', { name: 'General settings' })).toBeDisabled();
   });
+
+  it('moves completed image OCR into the text workspace without translating it again', async () => {
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'get_settings') return {
+        schemaVersion: 1, locale: 'en', theme: 'system', defaultProfileId: 'default-profile',
+        profiles: [{ id: 'default-profile', name: 'Default profile', field: 'general', profile: { sourceLanguage: null, targetLanguage: 'ko', quality: 'balanced', tone: 'natural', protectedTerms: [] } }],
+        glossary: [], selectedModel: { type: 'automatic' }, launchAtLogin: false, closeBehavior: 'keepInTray', quickAccessPosition: 'popup', historyRetentionDays: 30,
+      };
+      if (command === 'get_account') return { account: { state: 'signedIn' }, loginPending: false };
+      if (command === 'get_privacy_status') return { cleanupPending: false, retentionPending: false };
+      if (command === 'get_lifecycle_status') return { launchAtLoginAvailable: true, launchAtLoginEnabled: false, hotkeysPaused: false };
+      if (command === 'list_history' || command === 'list_recoverable_jobs') return [];
+      if (command === 'choose_image') return {
+        jobId: 'capture-job', status: 'sourceReady', imageWidth: 800, imageHeight: 600,
+        translatedBlocks: [], warnings: [],
+      };
+      if (command === 'translate_image') return {
+        jobId: 'capture-job', status: 'rendered', imageWidth: 800, imageHeight: 600,
+        translatedBlocks: [
+          { id: 'one', sourceIds: ['line-one'], sourceText: 'First source line', translatedText: 'First translated line', bounds: { x: 0, y: 0, width: 0.5, height: 0.1 }, confidence: 0.99, visible: true },
+          { id: 'two', sourceIds: ['line-two'], sourceText: 'Second source line', translatedText: 'Second translated line', bounds: { x: 0, y: 0.2, width: 0.5, height: 0.1 }, confidence: 0.98, visible: false },
+        ],
+        warnings: [], sourcePreview: 'data:image/png;base64,source', translatedPreview: 'data:image/png;base64,translated',
+      };
+      throw new Error(`unexpected command: ${command}`);
+    });
+    const user = userEvent.setup();
+    render(<App locale="en" />);
+
+    const navigation = await screen.findByRole('tablist', { name: 'Main views' });
+    await user.click(within(navigation).getByRole('tab', { name: 'Image & screen' }));
+    await user.click(screen.getByRole('button', { name: 'Open image file' }));
+
+    await waitFor(() => expect(within(navigation).getByRole('tab', { name: 'Text' })).toHaveAttribute('aria-selected', 'true'));
+    expect(screen.getByLabelText('Source text')).toHaveValue('First source line\n\nSecond source line');
+    expect(screen.getByLabelText('Translation')).toHaveValue('First translated line\n\nSecond translated line');
+    expect(vi.mocked(invoke).mock.calls.some(([command]) => command === 'translate_text')).toBe(false);
+    expect(vi.mocked(invoke).mock.calls.some(([command]) => command === 'save_history_record')).toBe(false);
+  });
 });
