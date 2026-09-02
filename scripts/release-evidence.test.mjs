@@ -90,6 +90,7 @@ test("cargo dependency SBOM generation validates, copies, and removes its source
     components: [{ type: "application", name: "fixture" }, { type: "library", name: "dep" }],
     dependencies: [{ ref: "fixture", dependsOn: ["dep"] }],
   };
+  const invocations = [];
 
   await generateCargoDependencySbom({
     manifestPath,
@@ -97,9 +98,23 @@ test("cargo dependency SBOM generation validates, copies, and removes its source
     target: "x86_64-pc-windows-msvc",
     outputStem: "fixture.dependencies.cdx",
     destinationPath,
-    commandRunner: async () => writeFile(generatedPath, JSON.stringify(bom)),
+    commandRunner: async (command, args, cwd, environment) => {
+      invocations.push({ command, args, cwd, environment });
+      if (args[0] === "cyclonedx") {
+        await writeFile(generatedPath, JSON.stringify(bom));
+      }
+    },
   });
 
+  assert.deepEqual(invocations[0], {
+    command: "cargo",
+    args: ["fetch", "--locked", "--manifest-path", manifestPath],
+    cwd: root,
+    environment: {},
+  });
+  assert.equal(invocations[1].command, "cargo");
+  assert.equal(invocations[1].args[0], "cyclonedx");
+  assert.deepEqual(invocations[1].environment, { CARGO_NET_OFFLINE: "true" });
   assert.deepEqual(JSON.parse(await readFile(destinationPath, "utf8")), bom);
   await assert.rejects(readFile(generatedPath), /ENOENT/);
 });

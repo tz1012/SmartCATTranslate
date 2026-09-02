@@ -15,6 +15,7 @@ import type { CompletedTextTranslation } from '../lib/types';
 
 export type AppLocale = 'ko' | 'en';
 type PrivacyStatus = { cleanupPending: boolean; retentionPending: boolean };
+type UpdateCheckResult = { available: boolean; version: string | null };
 
 export function App({ locale }: { locale?: AppLocale }) {
   const [savedLocale, setSavedLocale] = useState<AppLocale>('ko');
@@ -26,6 +27,8 @@ export function App({ locale }: { locale?: AppLocale }) {
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const [recovery, setRecovery] = useState<PreparedDocumentRecovery>();
   const [privacyStatus, setPrivacyStatus] = useState<PrivacyStatus>();
+  const [availableUpdateVersion, setAvailableUpdateVersion] = useState<string>();
+  const startupUpdateCheck = useRef<Promise<UpdateCheckResult> | null>(null);
   const [translationActive, setTranslationActive] = useState(false);
   const [importedTranslation, setImportedTranslation] = useState<CompletedTextTranslation>();
   const accountLocale = locale ?? savedLocale;
@@ -67,6 +70,12 @@ export function App({ locale }: { locale?: AppLocale }) {
       else stopSettings = unlisten;
     });
     void invoke<PrivacyStatus>('get_privacy_status').then(setPrivacyStatus).catch(() => undefined);
+    startupUpdateCheck.current ??= invoke<UpdateCheckResult>('check_for_update');
+    void startupUpdateCheck.current
+      .then((result) => {
+        if (!disposed && result.available && result.version) setAvailableUpdateVersion(result.version);
+      })
+      .catch(() => undefined);
     void listen<PrivacyStatus>('privacy-status', (event) => setPrivacyStatus(event.payload)).then((unlisten) => {
       if (disposed) unlisten();
       else stopPrivacy = unlisten;
@@ -82,12 +91,13 @@ export function App({ locale }: { locale?: AppLocale }) {
     setSavedTheme(loadedTheme);
   }, [locale]);
   const labels = accountLocale === 'ko'
-    ? { navigation: '주요 화면', translate: '텍스트', capture: '이미지·화면', documents: '문서', history:'기록', settings: '설정', openMenu: '메뉴 열기', closeMenu: '메뉴 닫기', accountMenu: '계정 메뉴', notificationPanel: '알림', notifications: (count: number) => `알림 ${count}개`, cleanupNotice: '임시 파일 정리가 보류되었습니다. 앱이 시작될 때 안전하게 다시 시도합니다.', retentionNotice: '기록 보관 설정을 확인하는 중입니다. 확인 전에는 기록을 자동 삭제하지 않습니다.', settingsLocked: '번역 또는 취소 처리 중에는 설정을 열 수 없습니다.' }
-    : { navigation: 'Main views', translate: 'Text', capture: 'Image & screen', documents: 'Documents', history:'History', settings: 'Settings', openMenu: 'Open menu', closeMenu: 'Close menu', accountMenu: 'Account menu', notificationPanel: 'Notifications', notifications: (count: number) => `${count} notifications`, cleanupNotice: 'Temporary-file cleanup is pending and will be retried safely at startup.', retentionNotice: 'History retention is being verified. No history is automatically deleted until then.', settingsLocked: 'Settings are unavailable while translation or cancellation is in progress.' };
+    ? { navigation: '주요 화면', translate: '텍스트', capture: '이미지·화면', documents: '문서', history:'기록', settings: '설정', openMenu: '메뉴 열기', closeMenu: '메뉴 닫기', accountMenu: '계정 메뉴', notificationPanel: '알림', notifications: (count: number) => `알림 ${count}개`, cleanupNotice: '임시 파일 정리가 보류되었습니다. 앱이 시작될 때 안전하게 다시 시도합니다.', retentionNotice: '기록 보관 설정을 확인하는 중입니다. 확인 전에는 기록을 자동 삭제하지 않습니다.', updateNotice: (version: string) => `새 버전 ${version}를 사용할 수 있습니다. 설정의 업데이트에서 확인하세요.`, settingsLocked: '번역 또는 취소 처리 중에는 설정을 열 수 없습니다.' }
+    : { navigation: 'Main views', translate: 'Text', capture: 'Image & screen', documents: 'Documents', history:'History', settings: 'Settings', openMenu: 'Open menu', closeMenu: 'Close menu', accountMenu: 'Account menu', notificationPanel: 'Notifications', notifications: (count: number) => `${count} notifications`, cleanupNotice: 'Temporary-file cleanup is pending and will be retried safely at startup.', retentionNotice: 'History retention is being verified. No history is automatically deleted until then.', updateNotice: (version: string) => `Version ${version} is available. Open Updates in Settings to review it.`, settingsLocked: 'Settings are unavailable while translation or cancellation is in progress.' };
 
   const notifications = [
     ...(privacyStatus?.cleanupPending ? [labels.cleanupNotice] : []),
     ...(privacyStatus?.retentionPending ? [labels.retentionNotice] : []),
+    ...(availableUpdateVersion ? [labels.updateNotice(availableUpdateVersion)] : []),
   ];
 
   const closeMenu = useCallback(() => {

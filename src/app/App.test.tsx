@@ -2,6 +2,7 @@ import { act, cleanup, render, screen, waitFor, within } from '@testing-library/
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
+import { StrictMode } from 'react';
 import { App } from './App';
 
 type EventHandler = (event: { payload: unknown }) => void;
@@ -82,6 +83,39 @@ describe('App', () => {
 
     await userEvent.click(button);
     expect(screen.getByRole('dialog', { name: '알림' })).toHaveTextContent(notice);
+  });
+
+  it('checks once at startup and notifies without downloading an available update', async () => {
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'get_settings') return {
+        schemaVersion: 2, locale: 'ko', theme: 'light', defaultProfileId: 'default-profile',
+        profiles: [{ id: 'default-profile', name: '기본 프로필', field: 'general', profile: { sourceLanguage: null, targetLanguage: 'ko', quality: 'balanced', tone: 'natural', protectedTerms: [] } }],
+        glossary: [], selectedModel: { type: 'automatic' }, launchAtLogin: false, closeBehavior: 'keepInTray', quickAccessPosition: 'popup', historyRetentionDays: 30,
+      };
+      if (command === 'get_account') return { account: { state: 'signedOut' }, loginPending: false };
+      if (command === 'get_privacy_status') return { cleanupPending: false, retentionPending: false };
+      if (command === 'get_lifecycle_status') return { launchAtLoginAvailable: true, launchAtLoginEnabled: false, hotkeysPaused: false };
+      if (command === 'list_history' || command === 'list_recoverable_jobs') return [];
+      if (command === 'check_for_update') return {
+        available: true,
+        version: '0.1.4',
+        releaseNotes: '단축키 저장 안정화',
+        publishedAt: '2026-09-02T00:00:00Z',
+        sizeBytes: 1024,
+        consentToken: 'unused-until-manual-confirmation',
+      };
+      if (command === 'mark_app_healthy') return true;
+      throw new Error(`unexpected command: ${command}`);
+    });
+    render(<StrictMode><App /></StrictMode>);
+
+    const button = await screen.findByRole('button', { name: '알림 1개' });
+    await userEvent.click(button);
+
+    expect(screen.getByRole('dialog', { name: '알림' })).toHaveTextContent('새 버전 0.1.4를 사용할 수 있습니다. 설정의 업데이트에서 확인하세요.');
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === 'check_for_update')).toHaveLength(1);
+    expect(invoke).not.toHaveBeenCalledWith('prepare_update', expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith('install_update', expect.anything());
   });
 
   it('mounts the complete text translation workspace', async () => {

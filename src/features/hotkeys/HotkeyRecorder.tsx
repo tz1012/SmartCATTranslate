@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { suspendHotkeys } from './hotkeyApi';
 import type { Chord, KeyCode, Modifiers, PhysicalKey, Trigger } from './types';
 
@@ -41,7 +41,8 @@ function toTrigger(steps: Chord[]): Trigger {
   return steps.length === 1 ? { type: 'chord', chord: steps[0] } : { type: 'sequence', steps, timeoutMs: 650 };
 }
 
-export function HotkeyRecorder({ locale, value, onChange, describedBy }: { locale: 'ko' | 'en'; value: Trigger | null; onChange: (value: Trigger) => void; describedBy?: string }) {
+export function HotkeyRecorder({ locale, value, onChange, onRecordingStart, describedBy }: { locale: 'ko' | 'en'; value: Trigger | null; onChange: (value: Trigger) => void; onRecordingStart?: () => void; describedBy?: string }) {
+  const recorderRef = useRef<HTMLDivElement>(null);
   const [recording, setRecording] = useState(false);
   const [steps, setSteps] = useState<Chord[]>([]);
   const stop = useCallback(() => {
@@ -50,8 +51,12 @@ export function HotkeyRecorder({ locale, value, onChange, describedBy }: { local
   }, []);
 
   useEffect(() => () => { void suspendHotkeys(false); }, []);
+  useEffect(() => {
+    if (recording) recorderRef.current?.focus();
+  }, [recording]);
 
   const begin = () => {
+    onRecordingStart?.();
     setSteps([]);
     setRecording(true);
     void suspendHotkeys(true);
@@ -60,10 +65,10 @@ export function HotkeyRecorder({ locale, value, onChange, describedBy }: { local
     if (steps.length) onChange(toTrigger(steps));
     stop();
   };
-  const onKeyUp = (event: React.KeyboardEvent<HTMLDivElement>) => {
+  const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (!recording) return;
     if (event.key === 'Escape') { stop(); return; }
-    if (event.key === 'Tab' || modifierCodes.has(event.code)) return;
+    if (event.key === 'Tab' || event.repeat || modifierCodes.has(event.code)) return;
     const code = keyCode(event.nativeEvent);
     if (!code) return;
     event.preventDefault();
@@ -74,7 +79,7 @@ export function HotkeyRecorder({ locale, value, onChange, describedBy }: { local
   };
 
   const shown = recording ? steps.map(chordLabel).join(', ') : value ? triggerLabel(value) : '';
-  return <div className="hotkey-recorder" tabIndex={0} role="group" aria-describedby={describedBy} aria-label={locale === 'ko' ? '단축키 녹화' : 'Record shortcut'} onKeyUp={onKeyUp}>
+  return <div ref={recorderRef} className="hotkey-recorder" tabIndex={0} role="group" aria-describedby={describedBy} aria-label={locale === 'ko' ? '단축키 녹화' : 'Record shortcut'} onKeyDown={onKeyDown}>
     <output>{shown || (locale === 'ko' ? '단축키가 지정되지 않았습니다' : 'No shortcut assigned')}</output>
     {!recording ? <button type="button" onClick={begin}>{locale === 'ko' ? '새 단축키 녹화' : 'Record shortcut'}</button> : <>
       <span role="status">{locale === 'ko' ? '원하는 키를 누르세요 (최대 4단계)' : 'Press keys (up to 4 steps)'}</span>

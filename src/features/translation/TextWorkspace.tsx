@@ -377,6 +377,11 @@ export function TextWorkspace({
               const nextSource = source.slice(0, start) + pasted + source.slice(end);
               clearBoundResult();
               setSource(nextSource);
+              setEditRevision((revision) => {
+                const nextRevision = revision + 1;
+                startedRevision.current = nextRevision;
+                return nextRevision;
+              });
               runText(nextSource, 'translate', false);
             }}
             onKeyDown={(event) => {

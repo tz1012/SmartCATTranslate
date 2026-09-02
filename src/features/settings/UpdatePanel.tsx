@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
-type UpdateInfo = { available: boolean; version?: string; releaseNotes?: string; publishedAt?: string; sizeBytes?: number; consentToken?: string };
+type UpdateInfo = { available: boolean; version?: string; releaseNotes?: string; publishedAt?: string; sizeBytes?: number; consentToken?: string; manualOnly?: boolean; releaseUrl?: string };
 type Progress = { version: string; downloadedBytes: number; totalBytes?: number };
 type Prepared = { installToken: string; sizeBytes: number };
 type Recovery = { previousVersion: string; previousInstallerUrl: string; message: string };
@@ -51,7 +51,7 @@ export function UpdatePanel({ locale = 'ko' }: { locale?: 'ko' | 'en' }) {
     } catch (error) { fail(error); } finally { setBusy(false); }
   };
   const download = async () => {
-    if (!update?.version || !update.consentToken) return;
+    if (!update?.version || !update.consentToken || update.manualOnly) return;
     setBusy(true); setStatus(locale === 'ko' ? '다운로드 및 서명 확인 중…' : 'Downloading and verifying signature…');
     try {
       const value = await invoke<Prepared>('prepare_update', { version: update.version, consentToken: update.consentToken });
@@ -90,7 +90,12 @@ export function UpdatePanel({ locale = 'ko' }: { locale?: 'ko' | 'en' }) {
       <dl><div><dt>{locale === 'ko' ? '게시일' : 'Published'}</dt><dd>{update.publishedAt ?? '—'}</dd></div><div><dt>{locale === 'ko' ? '크기' : 'Size'}</dt><dd>{size ? `${(size / 1_048_576).toFixed(1)} MB` : (locale === 'ko' ? '서버에서 제공하지 않음' : 'Not provided')}</dd></div></dl>
       <h5>{locale === 'ko' ? '변경 내용' : 'Release notes'}</h5>
       <p className="update-notes">{update.releaseNotes || (locale === 'ko' ? '변경 내용이 제공되지 않았습니다.' : 'No release notes provided.')}</p>
-      {!prepared && <div className="update-actions"><button type="button" disabled={busy} onClick={() => void download()}>{locale === 'ko' ? '다운로드 및 설치 준비' : 'Download and prepare'}</button><button type="button" disabled={busy} onClick={() => { setUpdate(undefined); setStatus(locale === 'ko' ? '나중에 다시 확인할 수 있습니다.' : 'You can check again later.'); }}>{locale === 'ko' ? '나중에' : 'Later'}</button></div>}
+      {!prepared && <div className="update-actions">
+        {update.manualOnly && update.releaseUrl
+          ? <button type="button" disabled={busy} onClick={() => void invoke('open_update_release', { url: update.releaseUrl }).catch(fail)}>{locale === 'ko' ? '릴리스 페이지 열기' : 'Open release page'}</button>
+          : <button type="button" disabled={busy} onClick={() => void download()}>{locale === 'ko' ? '다운로드 및 설치 준비' : 'Download and prepare'}</button>}
+        <button type="button" disabled={busy} onClick={() => { setUpdate(undefined); setStatus(locale === 'ko' ? '나중에 다시 확인할 수 있습니다.' : 'You can check again later.'); }}>{locale === 'ko' ? '나중에' : 'Later'}</button>
+      </div>}
       {progress && <progress aria-label={locale === 'ko' ? '업데이트 다운로드' : 'Update download'} value={percent ?? progress.downloadedBytes} max={percent === undefined ? undefined : 100}>{percent}%</progress>}
       {prepared && <button type="button" disabled={busy} onClick={() => void install()}>{locale === 'ko' ? '설치하고 재시작' : 'Install and restart'}</button>}
     </article>}

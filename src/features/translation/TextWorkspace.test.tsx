@@ -223,6 +223,23 @@ describe('TextWorkspace', () => {
     expect(source).toHaveValue('Hello from paste');
   });
 
+  it('does not translate pasted text again after a pending typed edit', async () => {
+    render(<TextWorkspace locale="en" />);
+    const source = await screen.findByLabelText('Source text');
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Translate' })).toBeEnabled());
+    vi.useFakeTimers();
+
+    fireEvent.change(source, { target: { value: 'Draft' } });
+    fireEvent.paste(source, { clipboardData: { getData: () => ' pasted' } });
+    await act(async () => Promise.resolve());
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === 'translate_text')).toHaveLength(1);
+
+    emitTranslation({ type: 'completed', jobId: 'job-1', result: { translatedText: 'Done', detectedLanguage: 'en' } });
+    await act(async () => vi.advanceTimersByTimeAsync(500));
+
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === 'translate_text')).toHaveLength(1);
+  });
+
   it('shows a safe service error when translation cannot start', async () => {
     vi.mocked(invoke).mockImplementation(async (command) => {
       if (command === 'get_settings') return structuredClone(settings);

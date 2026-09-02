@@ -65,6 +65,13 @@ export async function generateCargoDependencySbom({
     target,
     outputStem,
   });
+  await commandRunner(
+    "cargo",
+    ["fetch", "--locked", "--manifest-path", manifest],
+    dirname(manifest),
+    {},
+  );
+  if (sha256(await readFile(lock)) !== before) throw new Error("cargo_lock_changed");
   await commandRunner(invocation.command, invocation.args, dirname(manifest), {
     CARGO_NET_OFFLINE: "true",
   });

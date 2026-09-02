@@ -18,7 +18,11 @@ const pins = new Map([
 for (const [name, expected] of pins) {
   const path = join(root, 'tests/fixtures/fonts', name);
   const metadata = await lstat(path);
-  if (!metadata.isFile() || metadata.isSymbolicLink() || sha(await readFile(path)) !== expected) fail(`font_asset_invalid:${name}`);
+  const bytes = await readFile(path);
+  const pinnedBytes = name === 'LICENSE.txt'
+    ? Buffer.from(bytes.toString('utf8').replace(/\r\n/g, '\n'))
+    : bytes;
+  if (!metadata.isFile() || metadata.isSymbolicLink() || sha(pinnedBytes) !== expected) fail(`font_asset_invalid:${name}`);
 }
 
 const resources = await walk(join(root, 'src-tauri/resources'));
