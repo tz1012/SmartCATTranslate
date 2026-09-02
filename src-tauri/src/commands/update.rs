@@ -22,7 +22,24 @@ pub struct UpdateState {
     checks: Mutex<HashMap<String, CheckedUpdate>>,
     prepared: Mutex<HashMap<String, PreparedUpdate>>,
     restart_consents: Mutex<HashMap<String, RestartConsent>>,
+    installing: AtomicBool,
     healthy_marked: AtomicBool,
+}
+
+#[derive(Debug)]
+struct InstallGuard<'a>(&'a AtomicBool);
+
+impl Drop for InstallGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+fn acquire_install_guard(installing: &AtomicBool) -> Result<InstallGuard<'_>, String> {
+    installing
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .map(|_| InstallGuard(installing))
+        .map_err(|_| "update_install_in_progress".to_owned())
 }
 
 struct CheckedUpdate {
@@ -256,6 +273,7 @@ pub async fn install_update(
     restart_consent_token: String,
 ) -> Result<(), String> {
     require_configured()?;
+    let _install_guard = acquire_install_guard(&state.installing)?;
     let restart_consent = state
         .restart_consents
         .lock()
@@ -626,7 +644,23 @@ pub fn open_update_release(app: AppHandle, url: String) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_allowed_release_url, select_public_release, PublicRelease};
+    use super::{
+        acquire_install_guard, is_allowed_release_url, select_public_release, PublicRelease,
+    };
+    use std::sync::atomic::AtomicBool;
+
+    #[test]
+    fn only_one_installer_can_run_and_the_guard_releases_afterward() {
+        let installing = AtomicBool::new(false);
+        let first =
+            acquire_install_guard(&installing).expect("first installer should acquire guard");
+        assert_eq!(
+            acquire_install_guard(&installing).unwrap_err(),
+            "update_install_in_progress"
+        );
+        drop(first);
+        assert!(acquire_install_guard(&installing).is_ok());
+    }
 
     #[test]
     fn manual_release_url_is_restricted_to_the_public_repository() {

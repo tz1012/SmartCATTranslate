@@ -85,7 +85,7 @@ describe('App', () => {
     expect(screen.getByRole('dialog', { name: '알림' })).toHaveTextContent(notice);
   });
 
-  it('checks once at startup and notifies without downloading an available update', async () => {
+  it('checks once at startup and installs a signed update from the notification Update button', async () => {
     vi.mocked(invoke).mockImplementation(async (command) => {
       if (command === 'get_settings') return {
         schemaVersion: 2, locale: 'ko', theme: 'light', defaultProfileId: 'default-profile',
@@ -98,12 +98,16 @@ describe('App', () => {
       if (command === 'list_history' || command === 'list_recoverable_jobs') return [];
       if (command === 'check_for_update') return {
         available: true,
-        version: '0.1.4',
-        releaseNotes: '단축키 저장 안정화',
-        publishedAt: '2026-09-02T00:00:00Z',
+        version: '0.1.5',
+        releaseNotes: '원클릭 업데이트',
+        publishedAt: '2026-09-03T00:00:00Z',
         sizeBytes: 1024,
-        consentToken: 'unused-until-manual-confirmation',
+        consentToken: 'check-token',
+        manualOnly: false,
       };
+      if (command === 'prepare_update') return { installToken: 'install-token', sizeBytes: 1024 };
+      if (command === 'authorize_update_restart') return { restartConsentToken: 'restart-token' };
+      if (command === 'install_update') return undefined;
       if (command === 'mark_app_healthy') return true;
       throw new Error(`unexpected command: ${command}`);
     });
@@ -112,10 +116,88 @@ describe('App', () => {
     const button = await screen.findByRole('button', { name: '알림 1개' });
     await userEvent.click(button);
 
-    expect(screen.getByRole('dialog', { name: '알림' })).toHaveTextContent('새 버전 0.1.4를 사용할 수 있습니다. 설정의 업데이트에서 확인하세요.');
+    expect(screen.getByRole('dialog', { name: '알림' })).toHaveTextContent('새 버전 0.1.5를 사용할 수 있습니다.');
     expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === 'check_for_update')).toHaveLength(1);
     expect(invoke).not.toHaveBeenCalledWith('prepare_update', expect.anything());
     expect(invoke).not.toHaveBeenCalledWith('install_update', expect.anything());
+
+    await userEvent.click(screen.getByRole('button', { name: '업데이트' }));
+
+    expect(invoke).toHaveBeenCalledWith('prepare_update', {
+      version: '0.1.5',
+      consentToken: 'check-token',
+    });
+    expect(invoke).toHaveBeenCalledWith('authorize_update_restart', {
+      version: '0.1.5',
+      installToken: 'install-token',
+    });
+    expect(invoke).toHaveBeenCalledWith('install_update', {
+      version: '0.1.5',
+      installToken: 'install-token',
+      restartConsentToken: 'restart-token',
+    });
+  });
+
+  it('never offers automatic installation for incomplete manual-only release metadata', async () => {
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'get_settings') return {
+        schemaVersion: 2, locale: 'en', theme: 'light', defaultProfileId: 'default-profile',
+        profiles: [{ id: 'default-profile', name: 'Default profile', field: 'general', profile: { sourceLanguage: null, targetLanguage: 'ko', quality: 'balanced', tone: 'natural', protectedTerms: [] } }],
+        glossary: [], selectedModel: { type: 'automatic' }, launchAtLogin: false, closeBehavior: 'keepInTray', quickAccessPosition: 'popup', historyRetentionDays: 30,
+      };
+      if (command === 'get_account') return { account: { state: 'signedOut' }, loginPending: false };
+      if (command === 'get_privacy_status') return { cleanupPending: false, retentionPending: false };
+      if (command === 'get_lifecycle_status') return { launchAtLoginAvailable: true, launchAtLoginEnabled: false, hotkeysPaused: false };
+      if (command === 'list_history' || command === 'list_recoverable_jobs') return [];
+      if (command === 'check_for_update') return { available: true, version: '0.1.5', manualOnly: true };
+      if (command === 'mark_app_healthy') return true;
+      throw new Error(`unexpected command: ${command}`);
+    });
+    render(<App locale="en" />);
+
+    await userEvent.click(await screen.findByRole('button', { name: '1 notifications' }));
+
+    expect(screen.queryByRole('button', { name: 'Update' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Open release page' })).not.toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Notifications' })).toHaveTextContent('This release cannot be opened safely.');
+  });
+
+  it('refreshes notification consent after a failed download so Update can retry', async () => {
+    let checks = 0;
+    let preparations = 0;
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'get_settings') return {
+        schemaVersion: 2, locale: 'en', theme: 'light', defaultProfileId: 'default-profile',
+        profiles: [{ id: 'default-profile', name: 'Default profile', field: 'general', profile: { sourceLanguage: null, targetLanguage: 'ko', quality: 'balanced', tone: 'natural', protectedTerms: [] } }],
+        glossary: [], selectedModel: { type: 'automatic' }, launchAtLogin: false, closeBehavior: 'keepInTray', quickAccessPosition: 'popup', historyRetentionDays: 30,
+      };
+      if (command === 'get_account') return { account: { state: 'signedOut' }, loginPending: false };
+      if (command === 'get_privacy_status') return { cleanupPending: false, retentionPending: false };
+      if (command === 'get_lifecycle_status') return { launchAtLoginAvailable: true, launchAtLoginEnabled: false, hotkeysPaused: false };
+      if (command === 'list_history' || command === 'list_recoverable_jobs') return [];
+      if (command === 'check_for_update') {
+        checks += 1;
+        return { available: true, version: '0.1.5', consentToken: `check-token-${checks}`, manualOnly: false };
+      }
+      if (command === 'prepare_update') {
+        preparations += 1;
+        if (preparations === 1) throw 'update_network_error';
+        return { installToken: 'install-token', sizeBytes: 1024 };
+      }
+      if (command === 'authorize_update_restart') return { restartConsentToken: 'restart-token' };
+      if (command === 'install_update') return undefined;
+      if (command === 'mark_app_healthy') return true;
+      throw new Error(`unexpected command: ${command}`);
+    });
+    render(<App locale="en" />);
+
+    await userEvent.click(await screen.findByRole('button', { name: '1 notifications' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Update' }));
+    await waitFor(() => expect(checks).toBe(2));
+    await userEvent.click(screen.getByRole('button', { name: 'Update' }));
+
+    expect(invoke).toHaveBeenCalledWith('prepare_update', { version: '0.1.5', consentToken: 'check-token-2' });
+    expect(invoke).toHaveBeenCalledWith('install_update', expect.objectContaining({ version: '0.1.5' }));
   });
 
   it('mounts the complete text translation workspace', async () => {
