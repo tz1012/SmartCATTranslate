@@ -1,12 +1,21 @@
 import { useEffect, useRef } from 'react';
 
+export type AppNotification = {
+  id: string;
+  message: string;
+  actionLabel?: string;
+  actionDisabled?: boolean;
+  onAction?: () => void;
+  status?: string;
+};
+
 export function AppNotificationPopover({
   label,
   notifications,
   onClose,
 }: {
   label: string;
-  notifications: string[];
+  notifications: AppNotification[];
   onClose: () => void;
 }) {
   const panelRef = useRef<HTMLElement>(null);
@@ -34,7 +43,11 @@ export function AppNotificationPopover({
   return (
     <aside ref={panelRef} id="app-notification-popover" className="app-notification-popover" role="dialog" aria-label={label} tabIndex={-1}>
       <h2>{label}</h2>
-      <ul>{notifications.map((notification) => <li key={notification}>{notification}</li>)}</ul>
+      <ul>{notifications.map((notification) => <li key={notification.id}>
+        <span>{notification.message}</span>
+        {notification.onAction && notification.actionLabel && <button type="button" disabled={notification.actionDisabled} onClick={notification.onAction}>{notification.actionLabel}</button>}
+        {notification.status && <p role="status" aria-live="polite">{notification.status}</p>}
+      </li>)}</ul>
     </aside>
   );
 }

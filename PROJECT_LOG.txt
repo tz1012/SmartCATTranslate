@@ -1207,3 +1207,7 @@ TDD와 검증
 - 전체 프런트엔드 83/83, production build, records·privacy·runtime asset·release workflow 관문이 PASS했다. 이전 전체 Rust 검증은 222 PASS, cargo check와 fmt PASS였다.
 - 공개 릴리스용 unsigned 패키징에서 고정 런타임 빌드는 완료됐지만 CycloneDX가 offline metadata를 만들 때 아직 캐시에 없는 잠금 의존성을 요구해 실패했다. 잠금 파일 전체를 `cargo fetch --locked`로 먼저 준비하고 잠금 해시 불변을 다시 확인한 뒤, 실제 SBOM 생성은 계속 offline으로 실행하도록 수정했다.
 - GitHub 저장소에는 release-signing Environment와 서명 비밀이 아직 없어, 서명된 updater 자산을 만드는 정식 릴리스는 해당 보호 설정이 준비되기 전에는 시작하지 않는다.
+[2026-09-03 06:54 Asia/Seoul] 변경 기록
+- 요약: feature: one-click-signed-updates
+- 변경 파일: CHANGELOG.md, package.json, src-tauri/Cargo.lock, src-tauri/Cargo.toml, src-tauri/src/commands/update.rs, src-tauri/tauri.conf.json, src/app/App.test.tsx, src/app/App.tsx, src/app/AppNotificationPopover.tsx, src/features/settings/UpdatePanel.test.tsx, src/features/settings/UpdatePanel.tsx, src/features/settings/installUpdate.ts
+- 검증: pnpm test && pnpm build && cargo test
