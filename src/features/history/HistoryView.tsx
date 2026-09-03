@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import type { AppSettings } from '../settings/SettingsView';
 import {
@@ -13,15 +13,20 @@ export function HistoryView({ locale }: { locale: 'ko' | 'en' }) {
   const [records, setRecords] = useState<HistoryRecord[]>([]);
   const [error, setError] = useState('');
   const [settings, setSettings] = useState<AppSettings>();
-  const load = () =>
-    listHistory()
-      .then((page) => setRecords(page.records))
-      .catch(() => setError(ko ? '기록을 열 수 없습니다.' : 'Could not open history.'));
+  const load = useCallback(async () => {
+    setError('');
+    try {
+      const page = await listHistory();
+      setRecords(page.records);
+    } catch {
+      setError(ko ? '기록을 열 수 없습니다.' : 'Could not open history.');
+    }
+  }, [ko]);
 
   useEffect(() => {
     load();
     void invoke<AppSettings>('get_settings').then(setSettings).catch(() => undefined);
-  }, []);
+  }, [load]);
 
   const retention = async (days: number) => {
     if (!settings) return;
@@ -65,7 +70,10 @@ export function HistoryView({ locale }: { locale: 'ko' | 'en' }) {
           {ko ? '전체 삭제' : 'Delete all'}
         </button>
       </header>
-      {error && <p role="alert">{error}</p>}
+      {error && <div className="history-load-error" role="alert">
+        <p>{error}</p>
+        <button type="button" onClick={() => void load()}>{ko ? '다시 시도' : 'Retry'}</button>
+      </div>}
       {!records.length && !error && <p>{ko ? '저장된 기록이 없습니다.' : 'No saved history.'}</p>}
       <ol>
         {records.map((record) => (

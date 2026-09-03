@@ -21,6 +21,9 @@ vi.mock('@tauri-apps/api/event', () => ({
     return () => undefined;
   }),
 }));
+vi.mock('@tauri-apps/api/webview', () => ({
+  getCurrentWebview: () => ({ onDragDropEvent: vi.fn(async () => () => undefined) }),
+}));
 
 afterEach(() => {
   cleanup();
@@ -83,6 +86,68 @@ describe('App', () => {
 
     await userEvent.click(button);
     expect(screen.getByRole('dialog', { name: '알림' })).toHaveTextContent(notice);
+
+    await userEvent.click(screen.getByRole('button', { name: '확인' }));
+    expect(screen.queryByText(notice)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '알림 0개' })).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('preserves typed text while switching between top-level views', async () => {
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'get_settings') return {
+        schemaVersion: 2, locale: 'ko', theme: 'light', defaultProfileId: 'default-profile',
+        profiles: [{ id: 'default-profile', name: '기본 프로필', field: 'general', profile: { sourceLanguage: null, targetLanguage: 'ko', quality: 'balanced', tone: 'natural', protectedTerms: [] } }],
+        glossary: [], selectedModel: { type: 'automatic' }, launchAtLogin: false, closeBehavior: 'keepInTray', quickAccessPosition: 'popup', historyRetentionDays: 30,
+      };
+      if (command === 'get_account') return { account: { state: 'signedIn' }, loginPending: false };
+      if (command === 'get_privacy_status') return { cleanupPending: false, retentionPending: false };
+      if (command === 'get_lifecycle_status') return { launchAtLoginAvailable: true, launchAtLoginEnabled: false, hotkeysPaused: false };
+      if (command === 'list_history') return { records: [], nextCursor: null };
+      if (command === 'list_recoverable_jobs') return [];
+      if (command === 'check_for_update') return { available: false, version: null };
+      throw new Error(`unexpected command: ${command}`);
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    const navigation = await screen.findByRole('tablist', { name: '주요 화면' });
+    await user.type(screen.getByLabelText('원문'), '메뉴를 바꿔도 남아야 합니다');
+
+    await user.click(within(navigation).getByRole('tab', { name: '기록' }));
+    await user.click(within(navigation).getByRole('tab', { name: '텍스트' }));
+
+    expect(screen.getByLabelText('원문')).toHaveValue('메뉴를 바꿔도 남아야 합니다');
+  });
+
+  it('preserves a selected document while switching between top-level views', async () => {
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'get_settings') return {
+        schemaVersion: 2, locale: 'ko', theme: 'light', defaultProfileId: 'default-profile',
+        profiles: [{ id: 'default-profile', name: '기본 프로필', field: 'general', profile: { sourceLanguage: null, targetLanguage: 'ko', quality: 'balanced', tone: 'natural', protectedTerms: [] } }],
+        glossary: [], selectedModel: { type: 'automatic' }, launchAtLogin: false, closeBehavior: 'keepInTray', quickAccessPosition: 'popup', historyRetentionDays: 30,
+      };
+      if (command === 'get_account') return { account: { state: 'signedIn' }, loginPending: false };
+      if (command === 'get_privacy_status') return { cleanupPending: false, retentionPending: false };
+      if (command === 'get_lifecycle_status') return { launchAtLoginAvailable: true, launchAtLoginEnabled: false, hotkeysPaused: false };
+      if (command === 'list_history') return { records: [], nextCursor: null };
+      if (command === 'list_recoverable_jobs') return [];
+      if (command === 'check_for_update') return { available: false, version: null };
+      if (command === 'choose_document') return {
+        sourcePath: 'C:\\work\\quarterly-report.docx',
+        manifest: { format: 'docx', fileName: 'quarterly-report.docx', segmentCount: 12, partCount: 1, sourceHash: 'hash', pageCount: 0, pageKinds: [], hasSignatures: false, hasForms: false, hasAnnotations: false },
+      };
+      throw new Error(`unexpected command: ${command}`);
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    const navigation = await screen.findByRole('tablist', { name: '주요 화면' });
+    await user.click(within(navigation).getByRole('tab', { name: '문서' }));
+    await user.click(screen.getByRole('button', { name: '문서 선택' }));
+    expect(await screen.findByText('quarterly-report.docx')).toBeVisible();
+
+    await user.click(within(navigation).getByRole('tab', { name: '텍스트' }));
+    await user.click(within(navigation).getByRole('tab', { name: '문서' }));
+
+    expect(screen.getByText('quarterly-report.docx')).toBeVisible();
   });
 
   it('checks once at startup and installs a signed update from the notification Update button', async () => {

@@ -11,12 +11,16 @@ export type AppNotification = {
 
 export function AppNotificationPopover({
   label,
+  dismissLabel,
   notifications,
   onClose,
+  onDismiss,
 }: {
   label: string;
+  dismissLabel: string;
   notifications: AppNotification[];
   onClose: () => void;
+  onDismiss: (id: string) => void;
 }) {
   const panelRef = useRef<HTMLElement>(null);
 
@@ -45,7 +49,10 @@ export function AppNotificationPopover({
       <h2>{label}</h2>
       <ul>{notifications.map((notification) => <li key={notification.id}>
         <span>{notification.message}</span>
-        {notification.onAction && notification.actionLabel && <button type="button" disabled={notification.actionDisabled} onClick={notification.onAction}>{notification.actionLabel}</button>}
+        <div className="app-notification-actions">
+          {notification.onAction && notification.actionLabel && <button type="button" disabled={notification.actionDisabled} onClick={notification.onAction}>{notification.actionLabel}</button>}
+          <button type="button" onClick={() => onDismiss(notification.id)}>{dismissLabel}</button>
+        </div>
         {notification.status && <p role="status" aria-live="polite">{notification.status}</p>}
       </li>)}</ul>
     </aside>

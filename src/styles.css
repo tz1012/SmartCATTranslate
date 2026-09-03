@@ -62,6 +62,7 @@ main {
 .app-notification-popover h2 { margin: 0 0 .55rem; font-size: 1rem; }
 .app-notification-popover ul { display: grid; gap: .55rem; margin: 0; padding-left: 1.25rem; }
 .app-notification-popover li { color: #526175; font-size: .86rem; line-height: 1.45; }
+.app-notification-actions { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .45rem; }
 .app-menu-overlay:focus { outline: none; }
 .app-menu-overlay .account-panel { display: grid; margin: 0 0 .55rem; border: 0; border-bottom: 1px solid #e4eaf1; border-radius: 0; padding: .7rem .55rem 1rem; }
 .app-menu-overlay nav, .app-menu-secondary { display: grid; gap: .15rem; }
@@ -112,6 +113,8 @@ main {
 .account-panel section { display: inline-flex; gap: 0.35rem; align-items: center; }
 
 .text-workspace {
+  display: flex;
+  flex-direction: column;
   flex: 1;
   min-height: 0;
   overflow: hidden;
@@ -173,6 +176,8 @@ input { width: 100%; min-height: 2.5rem; padding: 0.45rem 0.65rem; }
 
 .translation-grid {
   display: grid;
+  flex: 1;
+  min-height: 0;
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
@@ -198,6 +203,7 @@ textarea {
 .workspace-actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 0.5rem;
   padding: 0.75rem 0.9rem;
   border-top: 1px solid #e4eaf1;
@@ -209,7 +215,7 @@ textarea {
 
 .primary-action { border-color: #0967c6; background: #0967c6; color: #fff; font-weight: 700; }
 .primary-action:hover:not(:disabled) { background: #075aae; color: #fff; }
-.workspace-status { min-height: 2rem; padding: 0 0.9rem 0.75rem; color: #526175; font-size: 0.84rem; }
+.workspace-status { min-width: 0; margin-left: auto; overflow: hidden; color: #526175; font-size: 0.84rem; text-overflow: ellipsis; white-space: nowrap; }
 .text-workspace > [role="alert"] { margin: 0; padding: 0 0.9rem 0.75rem; color: #b42318; }
 .text-workspace > [role="alert"] + button { margin: 0 0.9rem 0.9rem; }
 

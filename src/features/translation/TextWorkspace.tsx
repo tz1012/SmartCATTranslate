@@ -7,7 +7,7 @@ import { resolveDefaultProfile } from '../settings/defaultProfile';
 import { languageLabel, SUPPORTED_LANGUAGES } from '../settings/languages';
 import { useTranslationJob } from './useTranslationJob';
 import { saveTranslationText } from './translationApi';
-import { saveHistoryRecord } from '../history/historyApi';
+import { saveHistoryRecord, type NewHistoryRecord } from '../history/historyApi';
 import { SecretModeSwitch, useSecretMode } from '../history/secretMode';
 
 const MAX_SOURCE_CHARS = 200_000;
@@ -41,6 +41,7 @@ const copy = {
     empty: '번역할 원문을 입력해 주세요.', tooLarge: '원문은 200,000자와 1,000,000바이트 이하여야 합니다.', loadError: '번역 설정을 불러올 수 없습니다.',
     rewritePrompt: '같은 언어입니다. 문장을 개선할까요?', rewrite: '문장 개선', changeTarget: '대상 언어 변경',
     error: '번역을 완료하지 못했습니다.', timedOut: '번역 시간이 초과되었습니다.', cancelled: '번역이 취소되었습니다.', signedOutError: 'ChatGPT 계정을 연결해 주세요.', unavailable: '번역 서비스를 시작할 수 없습니다.', cancelFailed: '번역 취소를 완료하지 못했습니다.', copyFailed: '번역문을 복사하지 못했습니다.', saveFailed: '번역문 파일을 저장하지 못했습니다.', supportCode: '지원 코드:',
+    historySaveFailed: '기록에 저장하지 못했습니다.', retryHistorySave: '기록 저장 다시 시도',
   },
   en: {
     workspace: 'Text translation', text: 'Text', image: 'Image', document: 'Document', capture: 'Screen capture', history: 'History',
@@ -51,6 +52,7 @@ const copy = {
     empty: 'Enter source text to translate.', tooLarge: 'Source text must be at most 200,000 characters and 1,000,000 bytes.', loadError: 'Could not load translation settings.',
     rewritePrompt: 'The languages match. Improve the writing instead?', rewrite: 'Improve writing', changeTarget: 'Change target language',
     error: 'Could not complete the translation.', timedOut: 'The translation timed out.', cancelled: 'Translation cancelled.', signedOutError: 'Connect your ChatGPT account.', unavailable: 'The translation service is unavailable.', cancelFailed: 'Could not cancel the translation.', copyFailed: 'Could not copy the translation.', saveFailed: 'Could not save the translation file.', supportCode: 'Support code:',
+    historySaveFailed: 'Could not save to history.', retryHistorySave: 'Retry history save',
   },
 } as const;
 
@@ -93,10 +95,12 @@ export function TextWorkspace({
   const [notice, setNotice] = useState('');
   const [validationError, setValidationError] = useState('');
   const [loadError, setLoadError] = useState(false);
+  const [failedHistoryJobs, setFailedHistoryJobs] = useState<Set<string>>(() => new Set());
   const [editRevision, setEditRevision] = useState(0);
   const [composing, setComposing] = useState(false);
   const [secret,setSecret]=useSecretMode();
   const savedHistoryJob=useRef<string|undefined>(undefined);
+  const pendingHistory=useRef<Map<string,NewHistoryRecord>>(new Map());
   const activeSecret=useRef(false);
   const accountGeneration = useRef(0);
   const autoStartTimer = useRef<number | undefined>(undefined);
@@ -109,6 +113,10 @@ export function TextWorkspace({
 
   useEffect(() => {
     if (!importedTranslation) return;
+    setSource(importedTranslation.source);
+    setImportedResult(importedTranslation.translation);
+    setValidationError('');
+    setNotice('');
     onImportedTranslationConsumed?.();
   }, [importedTranslation, onImportedTranslationConsumed]);
 
@@ -273,6 +281,22 @@ export function TextWorkspace({
   const activityActive = state.status === 'running' || pendingCleanup;
   const disabled = loadError || !effectiveProfile || accountPhase !== 'signedIn' || listenerState !== 'ready' || pendingCleanup;
 
+  const persistHistory = useCallback(async (jobId: string, record: NewHistoryRecord) => {
+    setFailedHistoryJobs((current) => {
+      if (!current.has(jobId)) return current;
+      const next = new Set(current);
+      next.delete(jobId);
+      return next;
+    });
+    try {
+      await saveHistoryRecord(record);
+      savedHistoryJob.current = jobId;
+      pendingHistory.current.delete(jobId);
+    } catch {
+      setFailedHistoryJobs((current) => new Set(current).add(jobId));
+    }
+  }, []);
+
   useEffect(() => {
     if (autoStartTimer.current !== undefined) {
       window.clearTimeout(autoStartTimer.current);
@@ -303,7 +327,12 @@ export function TextWorkspace({
 
   useEffect(() => () => onActivityChange?.(false), [onActivityChange]);
 
-  useEffect(()=>{if(state.status!=='completed'||savedHistoryJob.current===state.jobId||!effectiveProfile)return;savedHistoryJob.current=state.jobId;void saveHistoryRecord({kind:'text',sourceLanguage:effectiveProfile.sourceLanguage,targetLanguage:effectiveProfile.targetLanguage,source,result:state.text,displayName:null,warningCount:0,secret:activeSecret.current}).catch(()=>undefined);},[effectiveProfile,source,state]);
+  useEffect(() => {
+    if (state.status !== 'completed' || !state.jobId || savedHistoryJob.current === state.jobId || pendingHistory.current.has(state.jobId) || !effectiveProfile) return;
+    const record: NewHistoryRecord = { kind: 'text', sourceLanguage: effectiveProfile.sourceLanguage, targetLanguage: effectiveProfile.targetLanguage, source, result: state.text, displayName: null, warningCount: 0, secret: activeSecret.current };
+    pendingHistory.current.set(state.jobId, record);
+    void persistHistory(state.jobId, record);
+  }, [effectiveProfile, persistHistory, source, state]);
 
   return (
     <section className="text-workspace" aria-label={labels.workspace} onKeyDownCapture={(event) => {
@@ -409,11 +438,18 @@ export function TextWorkspace({
           <button type="button" onClick={() => void copyResult()} disabled={!displayedText}>{labels.copyResult}</button>
           <button type="button" onClick={() => void saveResult()} disabled={!displayedText}>{labels.saveResult}</button>
           <button type="button" onClick={clearAll} disabled={state.status === 'running' || pendingCleanup || (!source && !displayedText)}>{labels.clear}</button>
+          <div className="workspace-status" aria-live="polite" role="status">{status}</div>
         </div>
 
-        <div className="workspace-status" aria-live="polite" role="status">{status}</div>
         {(validationError || jobError) && <p role="alert" aria-live="polite">{validationError || jobError}</p>}
         {state.status === 'failed' && <button type="button" onClick={retry} disabled={listenerFailed ? listenerState !== 'failed' : state.pendingCleanup ? false : disabled}>{labels.retry}</button>}
+        {failedHistoryJobs.size > 0 && <p role="alert" aria-live="polite">{labels.historySaveFailed}</p>}
+        {failedHistoryJobs.size > 0 && <button type="button" onClick={() => {
+          for (const jobId of failedHistoryJobs) {
+            const record = pendingHistory.current.get(jobId);
+            if (record) void persistHistory(jobId, record);
+          }
+        }}>{labels.retryHistorySave}</button>}
       </footer>
     </section>
   );

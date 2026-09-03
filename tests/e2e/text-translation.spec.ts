@@ -40,6 +40,7 @@ test.beforeEach(async ({ page }) => {
       },
     };
     browserWindow.__TAURI_INTERNALS__ = {
+      metadata: { currentWindow: { label: 'main' }, currentWebview: { label: 'main' } },
       transformCallback: (callback: (data: unknown) => void) => {
         callbackId += 1;
         callbacks.set(callbackId, callback);
@@ -71,6 +72,7 @@ test.beforeEach(async ({ page }) => {
           return 'e2e-job';
         }
         if (command === 'cancel_translation') return true;
+        if (command === 'save_history_record') return 'e2e-history-record';
         throw new Error(`Unexpected command: ${command}`);
       },
     };
