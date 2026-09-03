@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import type { AppSettings } from '../settings/SettingsView';
 import {
@@ -11,17 +11,25 @@ import {
 export function HistoryView({ locale }: { locale: 'ko' | 'en' }) {
   const ko = locale === 'ko';
   const [records, setRecords] = useState<HistoryRecord[]>([]);
+  const [unreadableCount, setUnreadableCount] = useState(0);
   const [error, setError] = useState('');
   const [settings, setSettings] = useState<AppSettings>();
-  const load = () =>
-    listHistory()
-      .then((page) => setRecords(page.records))
-      .catch(() => setError(ko ? '기록을 열 수 없습니다.' : 'Could not open history.'));
+  const load = useCallback(async () => {
+    setError('');
+    setUnreadableCount(0);
+    try {
+      const page = await listHistory();
+      setRecords(page.records);
+      setUnreadableCount(page.unreadableCount ?? 0);
+    } catch {
+      setError(ko ? '기록을 열 수 없습니다.' : 'Could not open history.');
+    }
+  }, [ko]);
 
   useEffect(() => {
     load();
     void invoke<AppSettings>('get_settings').then(setSettings).catch(() => undefined);
-  }, []);
+  }, [load]);
 
   const retention = async (days: number) => {
     if (!settings) return;
@@ -65,7 +73,15 @@ export function HistoryView({ locale }: { locale: 'ko' | 'en' }) {
           {ko ? '전체 삭제' : 'Delete all'}
         </button>
       </header>
-      {error && <p role="alert">{error}</p>}
+      {error && <div className="history-load-error" role="alert">
+        <p>{error}</p>
+        <button type="button" onClick={() => void load()}>{ko ? '다시 시도' : 'Retry'}</button>
+      </div>}
+      {unreadableCount > 0 && <p className="history-unreadable-warning" role="status">
+        {ko
+          ? `손상되어 열 수 없는 기록 ${unreadableCount}건을 건너뛰었습니다.`
+          : `Skipped ${unreadableCount} damaged history record${unreadableCount === 1 ? '' : 's'} that could not be opened.`}
+      </p>}
       {!records.length && !error && <p>{ko ? '저장된 기록이 없습니다.' : 'No saved history.'}</p>}
       <ol>
         {records.map((record) => (

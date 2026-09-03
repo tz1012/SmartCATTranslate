@@ -53,6 +53,8 @@ const settings: AppSettings = {
   closeBehavior: 'keepInTray',
   quickAccessPosition: 'popup',
   historyRetentionDays: 30,
+  hotkeys: [],
+  blockedApps: [],
 };
 
 function signedInCommands() {
@@ -64,6 +66,7 @@ function signedInCommands() {
     if (command === 'translate_text') return 'job-1';
     if (command === 'cancel_translation') return true;
     if (command === 'save_translation_text') return { status: 'saved' };
+    if (command === 'save_history_record') return 'history-record';
     throw new Error(`unexpected command: ${command}`);
   });
 }
@@ -184,6 +187,7 @@ describe('TextWorkspace', () => {
     expect(screen.queryByRole('tablist', { name: '텍스트 번역' })).not.toBeInTheDocument();
     expect(screen.queryByText('단축키: 설정되지 않음')).not.toBeInTheDocument();
     expect(container.querySelector('.workspace-footer')).toContainElement(screen.getByRole('button', { name: '번역' }));
+    expect(container.querySelector('.workspace-actions')).toContainElement(screen.getByRole('status'));
   });
 
   it('translates with the approved saved default profile', async () => {
@@ -494,7 +498,57 @@ describe('TextWorkspace', () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('cancel_translation', { jobId: 'late-job' }));
   });
 
-  it('copies, saves natively and clears a completed result without storing it in app history', async () => {
+  it('records a completed text translation in app history', async () => {
+    render(<TextWorkspace />);
+    await userEvent.type(await screen.findByLabelText('원문'), 'Hello');
+    await userEvent.click(screen.getByRole('button', { name: '번역' }));
+    emitTranslation({ type: 'completed', jobId: 'job-1', result: { translatedText: '안녕하세요', detectedLanguage: 'en' } });
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('save_history_record', { record: {
+      kind: 'text', sourceLanguage: null, targetLanguage: 'ko', source: 'Hello', result: '안녕하세요', displayName: null, warningCount: 0, secret: false,
+    } }));
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === 'save_history_record')).toHaveLength(1);
+  });
+
+  it('keeps every failed history record and retries them without losing an earlier translation', async () => {
+    let historyAttempts = 0;
+    let translationStarts = 0;
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'get_settings') return structuredClone(settings);
+      if (command === 'get_account') return { account: { state: 'signedIn' }, loginPending: false };
+      if (command === 'translate_text') {
+        translationStarts += 1;
+        return `job-${translationStarts}`;
+      }
+      if (command === 'save_history_record') {
+        historyAttempts += 1;
+        if (historyAttempts <= 2) throw new Error('private database failure');
+        return 'history-record';
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+    render(<TextWorkspace />);
+    await userEvent.type(await screen.findByLabelText('원문'), 'Hello');
+    await userEvent.click(screen.getByRole('button', { name: '번역' }));
+    emitTranslation({ type: 'completed', jobId: 'job-1', result: { translatedText: '안녕하세요', detectedLanguage: 'en' } });
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('기록에 저장하지 못했습니다.');
+    expect(screen.queryByText('private database failure')).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('원문'), { target: { value: 'Second' } });
+    await userEvent.click(screen.getByRole('button', { name: '번역' }));
+    emitTranslation({ type: 'completed', jobId: 'job-2', result: { translatedText: '두 번째', detectedLanguage: 'en' } });
+    await waitFor(() => expect(historyAttempts).toBe(2));
+
+    await userEvent.click(screen.getByRole('button', { name: '기록 저장 다시 시도' }));
+    await waitFor(() => expect(historyAttempts).toBe(4));
+    const savedSources = vi.mocked(invoke).mock.calls
+      .filter(([command]) => command === 'save_history_record')
+      .map(([, args]) => (args as { record: { source: string } }).record.source);
+    expect(savedSources).toEqual(['Hello', 'Second', 'Hello', 'Second']);
+    expect(screen.queryByText('기록에 저장하지 못했습니다.')).not.toBeInTheDocument();
+  });
+
+  it('copies, saves natively and clears a completed result', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
     render(<TextWorkspace />);
@@ -512,6 +566,22 @@ describe('TextWorkspace', () => {
     expect(screen.getByLabelText('번역문')).toHaveValue('');
   });
 
+  it('copies an available translation with Ctrl+Enter instead of starting another job', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    render(<TextWorkspace />);
+    const source = await screen.findByLabelText('원문');
+    await userEvent.type(source, 'Hello');
+    await userEvent.click(screen.getByRole('button', { name: '번역' }));
+    emitTranslation({ type: 'completed', jobId: 'job-1', result: { translatedText: '안녕하세요', detectedLanguage: 'en' } });
+
+    source.focus();
+    await userEvent.keyboard('{Control>}{Enter}{/Control}');
+
+    expect(writeText).toHaveBeenCalledWith('안녕하세요');
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === 'translate_text')).toHaveLength(1);
+  });
+
   it('announces fixed copy and native save failures while treating save cancellation as neutral', async () => {
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: vi.fn().mockRejectedValue(new Error('private copy detail')) } });
     let saveResult: unknown = { status: 'cancelled' };
@@ -519,6 +589,7 @@ describe('TextWorkspace', () => {
       if (command === 'get_settings') return structuredClone(settings);
       if (command === 'get_account') return { account: { state: 'signedIn' }, loginPending: false };
       if (command === 'translate_text') return 'job-1';
+      if (command === 'save_history_record') return 'history-record';
       if (command === 'save_translation_text') {
         if (saveResult instanceof Error) throw saveResult;
         return saveResult;

@@ -24,6 +24,8 @@ export function App({ locale }: { locale?: AppLocale }) {
   const [activeView, setActiveView] = useState<AppView>('translate');
   const [menuOpen, setMenuOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [dismissedNotificationIds, setDismissedNotificationIds] = useState<Set<string>>(() => new Set());
+  const [mountedViews, setMountedViews] = useState<Set<AppView>>(() => new Set(['translate']));
   const [settingsDestination, setSettingsDestination] = useState<SettingsDestination>('general');
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const [recovery, setRecovery] = useState<PreparedDocumentRecovery>();
@@ -34,7 +36,20 @@ export function App({ locale }: { locale?: AppLocale }) {
   const startupUpdateCheck = useRef<Promise<UpdateCheckResult> | null>(null);
   const [translationActive, setTranslationActive] = useState(false);
   const [importedTranslation, setImportedTranslation] = useState<CompletedTextTranslation>();
+  const previousView = useRef<Exclude<AppView, 'settings'>>('translate');
   const accountLocale = locale ?? savedLocale;
+  useEffect(() => {
+    if (activeView !== 'settings') previousView.current = activeView;
+  }, [activeView]);
+  useEffect(() => {
+    if (activeView !== 'settings') return;
+    const leaveSettings = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented || menuOpen || notificationsOpen) return;
+      setActiveView(previousView.current);
+    };
+    window.addEventListener('keydown', leaveSettings);
+    return () => window.removeEventListener('keydown', leaveSettings);
+  }, [activeView, menuOpen, notificationsOpen]);
   useEffect(() => {
     let disposed = false;
     let retry: number | undefined;
@@ -94,8 +109,8 @@ export function App({ locale }: { locale?: AppLocale }) {
     setSavedTheme(loadedTheme);
   }, [locale]);
   const labels = accountLocale === 'ko'
-    ? { navigation: '주요 화면', translate: '텍스트', capture: '이미지·화면', documents: '문서', history:'기록', settings: '설정', openMenu: '메뉴 열기', closeMenu: '메뉴 닫기', accountMenu: '계정 메뉴', notificationPanel: '알림', notifications: (count: number) => `알림 ${count}개`, cleanupNotice: '임시 파일 정리가 보류되었습니다. 앱이 시작될 때 안전하게 다시 시도합니다.', retentionNotice: '기록 보관 설정을 확인하는 중입니다. 확인 전에는 기록을 자동 삭제하지 않습니다.', updateNotice: (version: string) => `새 버전 ${version}를 사용할 수 있습니다.`, updateAction: '업데이트', releaseAction: '릴리스 페이지 열기', updating: '다운로드 및 서명 확인 후 설치 중…', updateFailed: '업데이트 설치에 실패했습니다. 다시 시도해 주세요.', releaseUnavailable: '이 릴리스는 안전하게 열 수 없습니다.', settingsLocked: '번역 또는 취소 처리 중에는 설정을 열 수 없습니다.' }
-    : { navigation: 'Main views', translate: 'Text', capture: 'Image & screen', documents: 'Documents', history:'History', settings: 'Settings', openMenu: 'Open menu', closeMenu: 'Close menu', accountMenu: 'Account menu', notificationPanel: 'Notifications', notifications: (count: number) => `${count} notifications`, cleanupNotice: 'Temporary-file cleanup is pending and will be retried safely at startup.', retentionNotice: 'History retention is being verified. No history is automatically deleted until then.', updateNotice: (version: string) => `Version ${version} is available.`, updateAction: 'Update', releaseAction: 'Open release page', updating: 'Downloading, verifying, and installing…', updateFailed: 'The update could not be installed. Try again.', releaseUnavailable: 'This release cannot be opened safely.', settingsLocked: 'Settings are unavailable while translation or cancellation is in progress.' };
+    ? { navigation: '주요 화면', translate: '텍스트', capture: '이미지·화면', documents: '문서', history:'기록', settings: '설정', openMenu: '메뉴 열기', closeMenu: '메뉴 닫기', accountMenu: '계정 메뉴', notificationPanel: '알림', notifications: (count: number) => `알림 ${count}개`, dismissNotification: '확인', cleanupNotice: '임시 파일 정리가 보류되었습니다. 앱이 시작될 때 안전하게 다시 시도합니다.', retentionNotice: '기록 보관 설정을 확인하는 중입니다. 확인 전에는 기록을 자동 삭제하지 않습니다.', updateNotice: (version: string) => `새 버전 ${version}를 사용할 수 있습니다.`, updateAction: '업데이트', releaseAction: '릴리스 페이지 열기', updating: '다운로드 및 서명 확인 후 설치 중…', updateFailed: '업데이트 설치에 실패했습니다. 다시 시도해 주세요.', releaseUnavailable: '이 릴리스는 안전하게 열 수 없습니다.', settingsLocked: '번역 또는 취소 처리 중에는 설정을 열 수 없습니다.' }
+    : { navigation: 'Main views', translate: 'Text', capture: 'Image & screen', documents: 'Documents', history:'History', settings: 'Settings', openMenu: 'Open menu', closeMenu: 'Close menu', accountMenu: 'Account menu', notificationPanel: 'Notifications', notifications: (count: number) => `${count} notifications`, dismissNotification: 'Dismiss', cleanupNotice: 'Temporary-file cleanup is pending and will be retried safely at startup.', retentionNotice: 'History retention is being verified. No history is automatically deleted until then.', updateNotice: (version: string) => `Version ${version} is available.`, updateAction: 'Update', releaseAction: 'Open release page', updating: 'Downloading, verifying, and installing…', updateFailed: 'The update could not be installed. Try again.', releaseUnavailable: 'This release cannot be opened safely.', settingsLocked: 'Settings are unavailable while translation or cancellation is in progress.' };
 
   const installAvailableUpdate = async () => {
     if (!availableUpdate?.version) return;
@@ -132,7 +147,7 @@ export function App({ locale }: { locale?: AppLocale }) {
       onAction: canOpenManualRelease || canInstallSignedUpdate ? () => void installAvailableUpdate() : undefined,
       status: availableUpdate.manualOnly && !availableUpdate.releaseUrl ? labels.releaseUnavailable : updateStatus,
     }] : []),
-  ];
+  ].filter((notification) => !dismissedNotificationIds.has(notification.id));
 
   const closeMenu = useCallback(() => {
     menuButtonRef.current?.focus();
@@ -141,6 +156,9 @@ export function App({ locale }: { locale?: AppLocale }) {
   const navigate = useCallback((view: AppView, destination?: SettingsDestination) => {
     if (view === 'settings' && translationActive) return;
     if (destination) setSettingsDestination(destination);
+    if (view === 'translate' || view === 'capture' || view === 'documents') {
+      setMountedViews((current) => current.has(view) ? current : new Set(current).add(view));
+    }
     setActiveView(view);
   }, [translationActive]);
   const consumeImportedTranslation = useCallback(() => setImportedTranslation(undefined), []);
@@ -159,6 +177,7 @@ export function App({ locale }: { locale?: AppLocale }) {
           menuButtonRef={menuButtonRef}
           notificationCount={notifications.length}
           notificationsOpen={notificationsOpen}
+          statusMessage={translationActive ? labels.settingsLocked : undefined}
           onNavigate={navigate}
           onToggleNotifications={() => {
             setMenuOpen(false);
@@ -178,19 +197,28 @@ export function App({ locale }: { locale?: AppLocale }) {
           />
         )}
         {notificationsOpen && notifications.length > 0 && (
-          <AppNotificationPopover label={labels.notificationPanel} notifications={notifications} onClose={() => setNotificationsOpen(false)} />
+          <AppNotificationPopover
+            label={labels.notificationPanel}
+            dismissLabel={labels.dismissNotification}
+            notifications={notifications}
+            onClose={() => setNotificationsOpen(false)}
+            onDismiss={(id) => {
+              setDismissedNotificationIds((current) => new Set(current).add(id));
+              if (notifications.length === 1) setNotificationsOpen(false);
+            }}
+          />
         )}
       </div>
       <RecoveryPrompt
         locale={accountLocale}
         onContinue={(value) => {
           setRecovery(value);
+          setMountedViews((current) => current.has('documents') ? current : new Set(current).add('documents'));
           setActiveView('documents');
         }}
       />
-      {translationActive && <p id="settings-navigation-status" className="navigation-note" role="status">{labels.settingsLocked}</p>}
-      {activeView === 'translate' ? (
-        <div id="app-panel-translate" role="tabpanel" aria-labelledby="app-tab-translate">
+      {mountedViews.has('translate') && (
+        <div id="app-panel-translate" className="app-workspace-panel" role="tabpanel" aria-labelledby="app-tab-translate" hidden={activeView !== 'translate'}>
           <TextWorkspace
             locale={locale}
             importedTranslation={importedTranslation}
@@ -199,21 +227,24 @@ export function App({ locale }: { locale?: AppLocale }) {
             onActivityChange={setTranslationActive}
           />
         </div>
-      ) : activeView === 'capture' ? (
-        <div id="app-panel-capture" role="tabpanel" aria-labelledby="app-tab-capture">
+      )}
+      {mountedViews.has('capture') && (
+        <div id="app-panel-capture" className="app-workspace-panel" role="tabpanel" aria-labelledby="app-tab-capture" hidden={activeView !== 'capture'}>
           <CaptureWorkspace locale={accountLocale} onTranslationComplete={acceptCaptureTranslation} />
         </div>
-      ) : activeView === 'documents' ? (
-        <div id="app-panel-documents" role="tabpanel" aria-labelledby="app-tab-documents">
-          <DocumentWorkspace locale={accountLocale} recovery={recovery} onRecoveryConsumed={()=>setRecovery(undefined)} />
+      )}
+      {mountedViews.has('documents') && (
+        <div id="app-panel-documents" className="app-workspace-panel" role="tabpanel" aria-labelledby="app-tab-documents" hidden={activeView !== 'documents'}>
+          <DocumentWorkspace locale={accountLocale} recovery={recovery} onRecoveryConsumed={()=>setRecovery(undefined)} active={activeView === 'documents'} />
         </div>
-      ) : activeView === 'history' ? (
+      )}
+      {activeView === 'history' ? (
         <div id="app-panel-history" role="tabpanel" aria-labelledby="app-tab-history"><HistoryView locale={accountLocale}/></div>
-      ) : (
+      ) : activeView === 'settings' ? (
         <div id="app-panel-settings" role="tabpanel" aria-label={labels.settings}>
           <SettingsView locale={locale} initialCategory={settingsDestination} onPreferencesLoaded={acceptPreferences} onPreferencesSaved={acceptPreferences} />
         </div>
-      )}
+      ) : null}
     </main>
   );
 }

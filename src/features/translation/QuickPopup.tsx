@@ -118,13 +118,16 @@ function PopupRequest({ payload, pinned, onPin }: { payload: PopupPayload; pinne
 
   return <section className="quick-popup" aria-label="SmartCAT quick translation">
     <header className="quick-popup-header">
-      <div><strong>SmartCAT</strong><span>{sourceLanguage} → {targetLanguage} · {payload.profileName}</span></div>
+      <div>
+        <strong>SmartCAT</strong>
+        <span>{sourceLanguage} → {targetLanguage} · {payload.profileName}</span>
+        <SecretModeSwitch locale={payload.locale} value={secret} onChange={setSecret} compact />
+      </div>
       <div className="quick-popup-header-actions">
         <button data-popup-action type="button" aria-pressed={pinned} aria-label={pinned ? text.unpin : text.pin} title={pinned ? text.unpin : text.pin} onClick={onPin}>{pinned ? '●' : '○'}</button>
         <button data-popup-action type="button" aria-label={text.close} title={text.close} onClick={() => void invoke('close_quick_popup')}>×</button>
       </div>
     </header>
-    <SecretModeSwitch locale={payload.locale} value={secret} onChange={setSecret}/>
     <div className="quick-popup-content">
       {payload.request && <article><h2>{text.source}</h2><p>{payload.request.text}</p></article>}
       <article aria-live="polite" aria-busy={state.status === 'running'}>

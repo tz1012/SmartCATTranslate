@@ -40,6 +40,7 @@ test.beforeEach(async ({ page }) => {
       },
     };
     browserWindow.__TAURI_INTERNALS__ = {
+      metadata: { currentWindow: { label: 'main' }, currentWebview: { label: 'main' } },
       transformCallback: (callback: (data: unknown) => void) => {
         callbackId += 1;
         callbacks.set(callbackId, callback);
@@ -54,8 +55,13 @@ test.beforeEach(async ({ page }) => {
           return handler;
         }
         if (command === 'plugin:event|unlisten') return null;
+        if (command === 'plugin:app|version') return '0.1.6';
         if (command === 'get_settings') return structuredClone(settings);
         if (command === 'get_account') return { account: { state: 'signedIn', emailHint: 'an***@example.com', plan: 'Plus' }, loginPending: false };
+        if (command === 'get_lifecycle_status') return { launchAtLoginAvailable: true, launchAtLoginEnabled: false, hotkeysPaused: false };
+        if (command === 'get_privacy_status') return { cleanupPending: false, retentionPending: false };
+        if (command === 'check_for_update') return { available: false, version: null };
+        if (command === 'list_available_models' || command === 'list_hotkeys' || command === 'list_blocked_apps' || command === 'list_history' || command === 'list_recoverable_jobs') return [];
         if (command === 'get_rate_limits') return { primaryUsedPercent: null, primaryResetsAt: null, secondaryUsedPercent: null, secondaryResetsAt: null };
         if (command === 'translate_text') {
           browserWindow.__translationRequest = args?.request;
@@ -71,6 +77,7 @@ test.beforeEach(async ({ page }) => {
           return 'e2e-job';
         }
         if (command === 'cancel_translation') return true;
+        if (command === 'save_history_record') return 'e2e-history-record';
         throw new Error(`Unexpected command: ${command}`);
       },
     };
@@ -111,4 +118,13 @@ test('sends the exact request, streams, copies and lays out the panes responsive
     expect(Math.abs(result!.y - source!.y)).toBeLessThan(2);
   }
   await expect(page.locator('main')).toHaveAttribute('data-theme', 'light');
+
+  await page.getByRole('button', { name: '메뉴 열기' }).click();
+  await page.getByRole('button', { name: '일반 설정' }).click();
+  await expect(page.getByRole('heading', { name: '설정' })).toBeVisible();
+  await expect(page.locator('#app-panel-translate')).toBeHidden();
+
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('heading', { name: '설정' })).toHaveCount(0);
+  await expect(page.locator('#app-panel-translate')).toBeVisible();
 });

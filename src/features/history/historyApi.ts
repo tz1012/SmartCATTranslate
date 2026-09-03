@@ -11,7 +11,11 @@ export type HistoryRecord = {
   displayName: string | null;
   warningCount: number;
 };
-export type HistoryPage = { records: HistoryRecord[]; nextCursor: string | null };
+export type HistoryPage = {
+  records: HistoryRecord[];
+  nextCursor: string | null;
+  unreadableCount: number;
+};
 export type NewHistoryRecord = Omit<HistoryRecord, 'id' | 'createdAt'> & { secret: boolean };
 export type RecoverableJob = {
   recordId: string;

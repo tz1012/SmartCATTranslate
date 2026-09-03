@@ -10,6 +10,8 @@ import { ModelSelector, modelChoiceValue } from './ModelSelector';
 import { UpdatePanel } from './UpdatePanel';
 import { createUuidV4 } from './uuid';
 import { HotkeySettings } from '../hotkeys/HotkeySettings';
+import type { HotkeyBinding } from '../hotkeys/types';
+import type { BlockedApp } from '../hotkeys/hotkeyApi';
 import { SettingsCategories, type SettingsCategory } from './SettingsCategories';
 
 export type AppLocale = 'ko' | 'en';
@@ -53,6 +55,8 @@ export interface AppSettings {
   closeBehavior: CloseBehavior;
   quickAccessPosition: QuickAccessPosition;
   historyRetentionDays: number;
+  hotkeys: HotkeyBinding[];
+  blockedApps: BlockedApp[];
 }
 
 const copy = {
@@ -319,7 +323,12 @@ export function SettingsView({
           </>}
 
           {category === 'shortcuts' && <>
-            <HotkeySettings locale={locale} defaultProfileId={settings.defaultProfileId} />
+            <HotkeySettings
+              locale={locale}
+              defaultProfileId={settings.defaultProfileId}
+              onHotkeysChange={(hotkeys) => editSettings((current) => ({ ...current, hotkeys }))}
+              onBlockedAppsChange={(blockedApps) => editSettings((current) => ({ ...current, blockedApps }))}
+            />
             <label className="settings-check"><input type="checkbox" checked={hotkeysPaused} onChange={(event) => {
               const paused = event.target.checked;
               setHotkeysPaused(paused);
