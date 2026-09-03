@@ -164,6 +164,7 @@ export function App({ locale }: { locale?: AppLocale }) {
           menuButtonRef={menuButtonRef}
           notificationCount={notifications.length}
           notificationsOpen={notificationsOpen}
+          statusMessage={translationActive ? labels.settingsLocked : undefined}
           onNavigate={navigate}
           onToggleNotifications={() => {
             setMenuOpen(false);
@@ -203,7 +204,6 @@ export function App({ locale }: { locale?: AppLocale }) {
           setActiveView('documents');
         }}
       />
-      {translationActive && <p id="settings-navigation-status" className="navigation-note" role="status">{labels.settingsLocked}</p>}
       {mountedViews.has('translate') && (
         <div id="app-panel-translate" role="tabpanel" aria-labelledby="app-tab-translate" hidden={activeView !== 'translate'}>
           <TextWorkspace

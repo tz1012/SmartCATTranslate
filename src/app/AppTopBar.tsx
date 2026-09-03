@@ -21,6 +21,7 @@ export function AppTopBar({
   menuButtonRef,
   notificationCount,
   notificationsOpen,
+  statusMessage,
   onNavigate,
   onToggleNotifications,
   onToggleMenu,
@@ -31,6 +32,7 @@ export function AppTopBar({
   menuButtonRef: RefObject<HTMLButtonElement | null>;
   notificationCount: number;
   notificationsOpen: boolean;
+  statusMessage?: string;
   onNavigate: (view: AppView) => void;
   onToggleNotifications: () => void;
   onToggleMenu: () => void;
@@ -55,22 +57,25 @@ export function AppTopBar({
       >
         <span aria-hidden="true">☰</span>
       </button>
-      <nav className="app-primary-tabs" role="tablist" aria-label={labels.navigation}>
-        {tabs.map(([view, label, icon]) => (
-          <button
-            key={view}
-            id={`app-tab-${view}`}
-            type="button"
-            role="tab"
-            aria-selected={activeView === view}
-            aria-controls={`app-panel-${view}`}
-            onClick={() => onNavigate(view)}
-          >
-            <span aria-hidden="true">{icon}</span>
-            {label}
-          </button>
-        ))}
-      </nav>
+      <div className="app-primary-navigation">
+        <nav className="app-primary-tabs" role="tablist" aria-label={labels.navigation}>
+          {tabs.map(([view, label, icon]) => (
+            <button
+              key={view}
+              id={`app-tab-${view}`}
+              type="button"
+              role="tab"
+              aria-selected={activeView === view}
+              aria-controls={`app-panel-${view}`}
+              onClick={() => onNavigate(view)}
+            >
+              <span aria-hidden="true">{icon}</span>
+              {label}
+            </button>
+          ))}
+        </nav>
+        {statusMessage && <span id="settings-navigation-status" className="app-navigation-note" role="status">{statusMessage}</span>}
+      </div>
       <button
         type="button"
         className="app-notification-trigger"

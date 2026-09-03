@@ -370,7 +370,12 @@ describe('App', () => {
     await user.click(screen.getByRole('button', { name: '메뉴 열기' }));
     const settingsButton = screen.getByRole('button', { name: '일반 설정' });
     await waitFor(() => expect(settingsButton).toBeDisabled());
-    expect(screen.getByText('번역 또는 취소 처리 중에는 설정을 열 수 없습니다.')).toBeVisible();
+    const navigation = screen.getByRole('tablist', { name: '주요 화면' });
+    const navigationStatus = screen.getByText('번역 또는 취소 처리 중에는 설정을 열 수 없습니다.');
+    expect(navigationStatus).toBeVisible();
+    expect(navigationStatus).toHaveClass('app-navigation-note');
+    expect(navigation.nextElementSibling).toBe(navigationStatus);
+    expect(navigationStatus.closest('.app-shell-header')).not.toBeNull();
     await user.click(settingsButton);
     expect(source).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: '설정' })).not.toBeInTheDocument();
