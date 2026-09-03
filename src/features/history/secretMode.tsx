@@ -39,21 +39,23 @@ export function SecretModeSwitch({
   locale,
   value,
   onChange,
+  compact = false,
 }: {
   locale: 'ko' | 'en';
   value: boolean;
   onChange: (value: boolean) => void;
+  compact?: boolean;
 }) {
   const ko = locale === 'ko';
   return (
-    <label className="secret-mode-switch">
+    <label className={`secret-mode-switch${compact ? ' secret-mode-switch-compact' : ''}`}>
       <input
         type="checkbox"
         checked={value}
         onChange={(event) => onChange(event.target.checked)}
       />
       <strong>{ko ? '시크릿 번역' : 'Secret translation'}</strong>
-      <span>
+      {!compact && <span>
         {value
           ? ko
             ? '디스크에 저장하지 않음 · 앱 종료 시 복구 정보 삭제'
@@ -61,7 +63,7 @@ export function SecretModeSwitch({
           : ko
             ? '로컬 암호화 기록 사용'
             : 'Encrypted local history enabled'}
-      </span>
+      </span>}
     </label>
   );
 }

@@ -273,7 +273,7 @@ body:has(.quick-popup-shell) { margin: 0; overflow: hidden; background: transpar
 .quick-popup-shell { min-height: 100vh; padding: 0; color: #152238; background: #f8fbff; font-family: Inter, "Segoe UI", sans-serif; }
 .quick-popup { height: 100vh; display: grid; grid-template-rows: auto 1fr auto; border: 1px solid #c7d4e5; border-radius: 12px; overflow: hidden; box-shadow: 0 16px 42px rgb(18 44 75 / 22%); }
 .quick-popup-header { display: flex; justify-content: space-between; gap: 1rem; align-items: center; padding: .7rem .85rem; border-bottom: 1px solid #dce5f0; background: #fff; user-select: none; }
-.quick-popup-header > div:first-child { min-width: 0; display: flex; gap: .65rem; align-items: baseline; }
+.quick-popup-header > div:first-child { min-width: 0; display: flex; gap: .65rem; align-items: center; flex-wrap: wrap; }
 .quick-popup-header span { color: #5a6a7e; font-size: .78rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .quick-popup-header-actions, .quick-popup-actions { display: flex; gap: .4rem; }
 .quick-popup-header button { width: 2rem; height: 2rem; padding: 0; border: 0; background: transparent; font-size: 1.2rem; }
@@ -374,6 +374,9 @@ main[data-theme="dark"] .document-progress { color: #dce8f5; background: #223149
 .secret-mode-switch input { width:auto;min-height:auto; }
 .secret-mode-switch span { color:#64748b;font-size:.82rem; }
 .secret-mode-switch:has(input:checked) { border-color:#7c3aed;background:#f5f3ff; }
+.secret-mode-switch-compact { flex:0 0 auto;display:inline-flex;gap:.3rem;padding:0;border:0;background:transparent;font-size:.7rem;white-space:nowrap; }
+.secret-mode-switch-compact strong { font-size:.7rem; }
+.secret-mode-switch-compact:has(input:checked) { border-color:transparent;background:transparent;color:#6d28d9; }
 .history-view,.history-view ol,.history-view li { display:grid;gap:.7rem; }
 .history-view>header,.history-view li>header,.history-view li>div,.recovery-prompt>div { display:flex;align-items:center;justify-content:space-between;gap:.6rem;flex-wrap:wrap; }
 .history-view ol { list-style:none;padding:0; }

@@ -566,6 +566,22 @@ describe('TextWorkspace', () => {
     expect(screen.getByLabelText('번역문')).toHaveValue('');
   });
 
+  it('copies an available translation with Ctrl+Enter instead of starting another job', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    render(<TextWorkspace />);
+    const source = await screen.findByLabelText('원문');
+    await userEvent.type(source, 'Hello');
+    await userEvent.click(screen.getByRole('button', { name: '번역' }));
+    emitTranslation({ type: 'completed', jobId: 'job-1', result: { translatedText: '안녕하세요', detectedLanguage: 'en' } });
+
+    source.focus();
+    await userEvent.keyboard('{Control>}{Enter}{/Control}');
+
+    expect(writeText).toHaveBeenCalledWith('안녕하세요');
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === 'translate_text')).toHaveLength(1);
+  });
+
   it('announces fixed copy and native save failures while treating save cancellation as neutral', async () => {
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: vi.fn().mockRejectedValue(new Error('private copy detail')) } });
     let saveResult: unknown = { status: 'cancelled' };

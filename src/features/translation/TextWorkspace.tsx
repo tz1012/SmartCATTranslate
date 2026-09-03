@@ -336,6 +336,12 @@ export function TextWorkspace({
 
   return (
     <section className="text-workspace" aria-label={labels.workspace} onKeyDownCapture={(event) => {
+      if ((event.ctrlKey || event.metaKey) && event.key === 'Enter' && displayedText) {
+        event.preventDefault();
+        event.stopPropagation();
+        void copyResult();
+        return;
+      }
       if (event.key === 'Escape' && activityActive) {
         event.preventDefault();
         void cancel();

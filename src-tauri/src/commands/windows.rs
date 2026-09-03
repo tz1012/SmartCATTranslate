@@ -16,8 +16,8 @@ use crate::{
     commands::settings::open_store,
     core::types::{GlossaryMapping, TranslationMode, TranslationModel, TranslationRequest},
     hotkeys::{
-        Blocklist, ClipboardGuard, HotkeyAction, NativeController, SelectedTextAcquirer,
-        SequenceEngine,
+        Blocklist, ClipboardGuard, HotkeyAction, KeyCode, NativeController, PhysicalKey,
+        SelectedTextAcquirer, SequenceEngine, Trigger,
     },
     settings::types::{AppLocale, AppSettings, SavedProfile},
 };
@@ -170,7 +170,10 @@ async fn process_activation<R: Runtime>(app: tauri::AppHandle<R>, binding_id: Uu
         ClipboardGuard::new(Arc::new(NativeClipboard), Arc::new(NativeCopy)),
     );
     let captured = acquirer
-        .capture_selected_text(Duration::from_millis(650), false)
+        .capture_selected_text(
+            Duration::from_millis(650),
+            trigger_already_copied(&binding.trigger),
+        )
         .await;
     let payload = match captured {
         Ok(selection) => QuickPopupPayload {
@@ -292,4 +295,40 @@ fn windows_popup_position() -> Option<(i32, i32)> {
         .min(info.rcWork.bottom - 360)
         .max(info.rcWork.top + 16);
     Some((x, y))
+}
+
+fn trigger_already_copied(trigger: &Trigger) -> bool {
+    let chord = match trigger {
+        Trigger::Chord { chord } => chord,
+        Trigger::Sequence { steps, .. } => match steps.last() {
+            Some(chord) => chord,
+            None => return false,
+        },
+    };
+    let copy_modifier = chord.modifiers.ctrl ^ chord.modifiers.meta;
+    copy_modifier
+        && !chord.modifiers.alt
+        && !chord.modifiers.shift
+        && chord.key == KeyCode::Physical(PhysicalKey::KeyC)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::trigger_already_copied;
+    use crate::hotkeys::parse_trigger;
+
+    #[test]
+    fn recognizes_copy_chord_at_end_of_trigger() {
+        assert!(trigger_already_copied(
+            &parse_trigger("Ctrl+C, Ctrl+C").unwrap()
+        ));
+        assert!(trigger_already_copied(&parse_trigger("Ctrl+C").unwrap()));
+        assert!(trigger_already_copied(&parse_trigger("Meta+C").unwrap()));
+        assert!(!trigger_already_copied(
+            &parse_trigger("Ctrl+Alt+C").unwrap()
+        ));
+        assert!(!trigger_already_copied(
+            &parse_trigger("Ctrl+C, T").unwrap()
+        ));
+    }
 }

@@ -45,6 +45,7 @@ pub struct HistoryRecord {
 pub struct HistoryPage {
     pub records: Vec<HistoryRecord>,
     pub next_cursor: Option<String>,
+    pub unreadable_count: u32,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -178,39 +179,45 @@ impl HistoryStore {
         let next_cursor = has_more
             .then(|| values.last().map(|value| format_cursor(&value.1, &value.0)))
             .flatten();
-        let records = values
-            .into_iter()
-            .map(
-                |(
+        let mut records = Vec::with_capacity(values.len());
+        let mut unreadable_count = 0;
+        for (
+            id,
+            created_at,
+            kind,
+            source_language,
+            target_language,
+            source,
+            result,
+            display_name,
+            warning_count,
+        ) in values
+        {
+            let decrypted = (|| {
+                Ok(HistoryRecord {
+                    source: self.crypto.open_json(&source, &aad(&id, "source"))?,
+                    result: self.crypto.open_json(&result, &aad(&id, "result"))?,
+                    display_name: display_name
+                        .map(|value| self.crypto.open_json(&value, &aad(&id, "display_name")))
+                        .transpose()?,
                     id,
                     created_at,
                     kind,
                     source_language,
                     target_language,
-                    source,
-                    result,
-                    display_name,
                     warning_count,
-                )| {
-                    Ok(HistoryRecord {
-                        source: self.crypto.open_json(&source, &aad(&id, "source"))?,
-                        result: self.crypto.open_json(&result, &aad(&id, "result"))?,
-                        display_name: display_name
-                            .map(|value| self.crypto.open_json(&value, &aad(&id, "display_name")))
-                            .transpose()?,
-                        id,
-                        created_at,
-                        kind,
-                        source_language,
-                        target_language,
-                        warning_count,
-                    })
-                },
-            )
-            .collect::<Result<Vec<_>, HistoryError>>()?;
+                })
+            })();
+            match decrypted {
+                Ok(record) => records.push(record),
+                Err(HistoryError::Crypto(_)) => unreadable_count += 1,
+                Err(error) => return Err(error),
+            }
+        }
         Ok(HistoryPage {
             records,
             next_cursor,
+            unreadable_count,
         })
     }
 
@@ -325,4 +332,52 @@ fn parse_cursor(value: &str) -> Result<(String, String), HistoryError> {
         return Err(HistoryError::Invalid);
     }
     Ok((created_at.to_owned(), id.to_owned()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+    use zeroize::Zeroizing;
+
+    fn record(source: &str) -> NewHistoryRecord {
+        NewHistoryRecord {
+            kind: "text".to_owned(),
+            source_language: Some("en".to_owned()),
+            target_language: "ko".to_owned(),
+            source: source.to_owned(),
+            result: format!("translated {source}"),
+            display_name: None,
+            warning_count: 0,
+            secret: false,
+        }
+    }
+
+    #[test]
+    fn list_keeps_readable_records_when_one_encrypted_payload_is_damaged() {
+        let root = tempdir().unwrap();
+        let database = StorageDatabase::open(&root.path().join("history.sqlite3")).unwrap();
+        let crypto = Arc::new(CryptoBox::from_zeroizing(Zeroizing::new([7_u8; 32])));
+        let store = HistoryStore::new(database.clone(), crypto);
+        store.configure_retention(30).unwrap();
+        let damaged_id = store.save(record("damaged")).unwrap().unwrap();
+        let readable_id = store.save(record("readable")).unwrap().unwrap();
+        database
+            .0
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE history SET source_blob=?1 WHERE id=?2",
+                params![b"invalid envelope".as_slice(), damaged_id],
+            )
+            .unwrap();
+
+        let page = store
+            .list(50, None)
+            .expect("one damaged record must not hide readable history");
+
+        assert_eq!(page.records.len(), 1);
+        assert_eq!(page.records[0].id, readable_id);
+        assert_eq!(page.unreadable_count, 1);
+    }
 }
