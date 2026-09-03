@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { invoke } from '@tauri-apps/api/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -47,6 +47,8 @@ const defaultSettings: AppSettings = {
   closeBehavior: 'keepInTray',
   quickAccessPosition: 'popup',
   historyRetentionDays: 30,
+  hotkeys: [],
+  blockedApps: [],
 };
 
 function mockCommands(settings: AppSettings = defaultSettings, models: unknown[] = []) {
@@ -65,6 +67,36 @@ afterEach(() => {
 });
 
 describe('SettingsView', () => {
+  it('keeps a newly saved shortcut in subsequent settings saves', async () => {
+    const initialSettings = { ...defaultSettings, hotkeys: [], blockedApps: [] };
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      if (command === 'get_settings') return structuredClone(initialSettings);
+      if (command === 'list_available_models' || command === 'list_hotkeys' || command === 'list_blocked_apps') return [];
+      if (command === 'get_lifecycle_status') return { launchAtLoginAvailable: true, launchAtLoginEnabled: false, hotkeysPaused: false };
+      if (command === 'suspend_hotkeys') return undefined;
+      if (command === 'analyze_hotkey') return { level: 'none', causes: [], alternatives: [], canForce: false };
+      if (command === 'save_hotkey') return [(args as { binding: unknown }).binding];
+      if (command === 'save_settings') return structuredClone((args as { settings: AppSettings }).settings);
+      throw new Error(`unexpected command: ${command}`);
+    });
+    const user = userEvent.setup();
+    render(<SettingsView initialCategory="shortcuts" />);
+
+    await user.click(await screen.findByRole('button', { name: '새 단축키 녹화' }));
+    const recorder = screen.getByRole('group', { name: '단축키 녹화' });
+    fireEvent.keyDown(recorder, { key: 't', code: 'KeyT', ctrlKey: true, altKey: true, shiftKey: true });
+    await user.click(screen.getByRole('button', { name: '완료' }));
+    await user.click(await screen.findByRole('button', { name: '저장' }));
+    expect(await screen.findByText('단축키를 저장했습니다.')).toBeVisible();
+
+    await user.click(screen.getByRole('button', { name: '설정 저장' }));
+    expect(invoke).toHaveBeenCalledWith('save_settings', {
+      settings: expect.objectContaining({
+        hotkeys: [expect.objectContaining({ action: 'translateSelection' })],
+      }),
+    });
+  });
+
   it('shows Windows shortcut guidance without macOS Accessibility instructions', async () => {
     Object.defineProperty(navigator, 'platform', { configurable: true, value: 'Win32' });
     Object.defineProperty(navigator, 'userAgent', { configurable: true, value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' });

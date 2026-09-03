@@ -53,6 +53,8 @@ const settings: AppSettings = {
   closeBehavior: 'keepInTray',
   quickAccessPosition: 'popup',
   historyRetentionDays: 30,
+  hotkeys: [],
+  blockedApps: [],
 };
 
 function signedInCommands() {

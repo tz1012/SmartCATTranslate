@@ -7,7 +7,12 @@ import { detectDesktopPlatform } from '../../lib/platform';
 
 const emptyReport: ConflictReport = { level: 'none', causes: [], alternatives: [], canForce: false };
 
-export function HotkeySettings({ locale, defaultProfileId }: { locale: 'ko' | 'en'; defaultProfileId: string }) {
+export function HotkeySettings({ locale, defaultProfileId, onHotkeysChange, onBlockedAppsChange }: {
+  locale: 'ko' | 'en';
+  defaultProfileId: string;
+  onHotkeysChange?: (bindings: HotkeyBinding[]) => void;
+  onBlockedAppsChange?: (blockedApps: BlockedApp[]) => void;
+}) {
   const ko = locale === 'ko';
   const platform = detectDesktopPlatform();
   const [bindings, setBindings] = useState<HotkeyBinding[]>([]);
@@ -42,7 +47,9 @@ export function HotkeySettings({ locale, defaultProfileId }: { locale: 'ko' | 'e
     if (!trigger) return;
     try {
       const matching = bindings.find((binding) => binding.action === 'translateSelection');
-      setBindings(await saveHotkey({ id: matching?.id ?? createUuidV4(), trigger, action: 'translateSelection', profileId: matching?.profileId ?? defaultProfileId, force }));
+      const saved = await saveHotkey({ id: matching?.id ?? createUuidV4(), trigger, action: 'translateSelection', profileId: matching?.profileId ?? defaultProfileId, force });
+      setBindings(saved);
+      onHotkeysChange?.(saved);
       setForceWarning(false); setStatus(ko ? '단축키를 저장했습니다.' : 'Shortcut saved.');
     } catch { setStatus(ko ? '단축키를 저장하지 못했습니다.' : 'Could not save shortcut.'); }
   };
@@ -52,10 +59,10 @@ export function HotkeySettings({ locale, defaultProfileId }: { locale: 'ko' | 'e
     const cleanIdentity = identity.trim();
     if (!cleanIdentity) return;
     const entry: BlockedApp = { platform, executable: platform === 'windows' ? cleanIdentity : null, bundleId: platform === 'macos' ? cleanIdentity : null, catalogName: appName.trim() || cleanIdentity };
-    try { setBlockedApps(await saveBlockedApps([...blockedApps, entry])); setAppName(''); setIdentity(''); } catch { setStatus(ko ? '차단 프로그램을 추가하지 못했습니다.' : 'Could not add blocked app.'); }
+    try { const saved = await saveBlockedApps([...blockedApps, entry]); setBlockedApps(saved); onBlockedAppsChange?.(saved); setAppName(''); setIdentity(''); } catch { setStatus(ko ? '차단 프로그램을 추가하지 못했습니다.' : 'Could not add blocked app.'); }
   };
   const removeBlocked = async (index: number) => {
-    try { setBlockedApps(await saveBlockedApps(blockedApps.filter((_, itemIndex) => itemIndex !== index))); } catch { setStatus(ko ? '차단 프로그램을 삭제하지 못했습니다.' : 'Could not remove blocked app.'); }
+    try { const saved = await saveBlockedApps(blockedApps.filter((_, itemIndex) => itemIndex !== index)); setBlockedApps(saved); onBlockedAppsChange?.(saved); } catch { setStatus(ko ? '차단 프로그램을 삭제하지 못했습니다.' : 'Could not remove blocked app.'); }
   };
 
   return <fieldset className="hotkey-settings">

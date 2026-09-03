@@ -128,6 +128,7 @@ main {
 
 main > [role="tabpanel"] { flex: 1; min-height: 0; overflow: auto; }
 #app-panel-translate { display: flex; overflow: hidden; }
+.app-workspace-panel[hidden] { display: none !important; }
 #app-panel-translate .text-workspace { overflow: auto; }
 
 .language-bar {

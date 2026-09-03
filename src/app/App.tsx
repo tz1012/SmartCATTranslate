@@ -36,7 +36,20 @@ export function App({ locale }: { locale?: AppLocale }) {
   const startupUpdateCheck = useRef<Promise<UpdateCheckResult> | null>(null);
   const [translationActive, setTranslationActive] = useState(false);
   const [importedTranslation, setImportedTranslation] = useState<CompletedTextTranslation>();
+  const previousView = useRef<Exclude<AppView, 'settings'>>('translate');
   const accountLocale = locale ?? savedLocale;
+  useEffect(() => {
+    if (activeView !== 'settings') previousView.current = activeView;
+  }, [activeView]);
+  useEffect(() => {
+    if (activeView !== 'settings') return;
+    const leaveSettings = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented || menuOpen || notificationsOpen) return;
+      setActiveView(previousView.current);
+    };
+    window.addEventListener('keydown', leaveSettings);
+    return () => window.removeEventListener('keydown', leaveSettings);
+  }, [activeView, menuOpen, notificationsOpen]);
   useEffect(() => {
     let disposed = false;
     let retry: number | undefined;
@@ -205,7 +218,7 @@ export function App({ locale }: { locale?: AppLocale }) {
         }}
       />
       {mountedViews.has('translate') && (
-        <div id="app-panel-translate" role="tabpanel" aria-labelledby="app-tab-translate" hidden={activeView !== 'translate'}>
+        <div id="app-panel-translate" className="app-workspace-panel" role="tabpanel" aria-labelledby="app-tab-translate" hidden={activeView !== 'translate'}>
           <TextWorkspace
             locale={locale}
             importedTranslation={importedTranslation}
@@ -216,12 +229,12 @@ export function App({ locale }: { locale?: AppLocale }) {
         </div>
       )}
       {mountedViews.has('capture') && (
-        <div id="app-panel-capture" role="tabpanel" aria-labelledby="app-tab-capture" hidden={activeView !== 'capture'}>
+        <div id="app-panel-capture" className="app-workspace-panel" role="tabpanel" aria-labelledby="app-tab-capture" hidden={activeView !== 'capture'}>
           <CaptureWorkspace locale={accountLocale} onTranslationComplete={acceptCaptureTranslation} />
         </div>
       )}
       {mountedViews.has('documents') && (
-        <div id="app-panel-documents" role="tabpanel" aria-labelledby="app-tab-documents" hidden={activeView !== 'documents'}>
+        <div id="app-panel-documents" className="app-workspace-panel" role="tabpanel" aria-labelledby="app-tab-documents" hidden={activeView !== 'documents'}>
           <DocumentWorkspace locale={accountLocale} recovery={recovery} onRecoveryConsumed={()=>setRecovery(undefined)} active={activeView === 'documents'} />
         </div>
       )}
