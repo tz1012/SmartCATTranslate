@@ -9,11 +9,13 @@ const copy = {
   ko: {
     menu: '앱 메뉴', general: '일반 설정', translation: '번역 설정', hotkeys: '단축키',
     privacy: '개인정보·기록', updates: '업데이트', about: '앱 정보', quit: '종료',
+    accountDetails: 'ChatGPT 계정 정보',
     product: 'SmartCAT Translate', versionUnavailable: '버전을 확인할 수 없습니다.', settingsLocked: '번역 중에는 설정을 열 수 없습니다.',
   },
   en: {
     menu: 'App menu', general: 'General settings', translation: 'Translation settings', hotkeys: 'Shortcuts',
     privacy: 'Privacy & history', updates: 'Updates', about: 'About', quit: 'Quit',
+    accountDetails: 'ChatGPT account details',
     product: 'SmartCAT Translate', versionUnavailable: 'Version unavailable', settingsLocked: 'Settings are unavailable while translating.',
   },
 } as const;
@@ -33,10 +35,27 @@ export function AppMenuOverlay({
 }) {
   const labels = copy[locale];
   const panelRef = useRef<HTMLElement>(null);
+  const accountAutoHideTimer = useRef<number | undefined>(undefined);
   const [showAbout, setShowAbout] = useState(false);
+  const [showAccount, setShowAccount] = useState(true);
   const [version, setVersion] = useState<
     { status: 'loading' } | { status: 'success'; value: string } | { status: 'failed' }
   >({ status: 'loading' });
+
+  useEffect(() => {
+    accountAutoHideTimer.current = window.setTimeout(() => setShowAccount(false), 3_500);
+    return () => {
+      if (accountAutoHideTimer.current !== undefined) window.clearTimeout(accountAutoHideTimer.current);
+    };
+  }, []);
+
+  const revealAccount = () => {
+    if (accountAutoHideTimer.current !== undefined) {
+      window.clearTimeout(accountAutoHideTimer.current);
+      accountAutoHideTimer.current = undefined;
+    }
+    setShowAccount(true);
+  };
 
   useEffect(() => {
     let mounted = true;
@@ -97,7 +116,31 @@ export function AppMenuOverlay({
       aria-label={labels.menu}
       tabIndex={-1}
     >
-      <AccountPanel locale={locale} />
+      <div
+        className="app-account-anchor"
+        onMouseEnter={revealAccount}
+        onMouseLeave={() => setShowAccount(false)}
+        onFocusCapture={revealAccount}
+        onBlurCapture={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setShowAccount(false);
+        }}
+      >
+        <button
+          type="button"
+          className="app-account-icon"
+          aria-label={labels.accountDetails}
+          aria-expanded={showAccount}
+          onClick={revealAccount}
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="8" r="3.25" />
+            <path d="M5.75 19c.55-3.2 2.65-5 6.25-5s5.7 1.8 6.25 5" />
+          </svg>
+        </button>
+        <div className="app-account-popover" hidden={!showAccount}>
+          <AccountPanel locale={locale} />
+        </div>
+      </div>
       <nav aria-label={labels.menu}>
         <button type="button" disabled={settingsLocked} onClick={() => openSettings('general')}><i aria-hidden="true">⚙</i><span>{labels.general}</span></button>
         <button type="button" disabled={settingsLocked} onClick={() => openSettings('translation')}><i aria-hidden="true">⌁</i><span>{labels.translation}</span></button>

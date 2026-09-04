@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
@@ -46,6 +46,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   cleanup();
   vi.clearAllMocks();
 });
@@ -69,6 +70,31 @@ describe('App version', () => {
 });
 
 describe('App menu overlay', () => {
+  it('auto-hides account details without moving menu actions and restores them from the account icon', () => {
+    vi.useFakeTimers();
+    render(
+      <AppMenuOverlay
+        locale="ko"
+        settingsLocked={false}
+        onClose={vi.fn()}
+        onNavigate={vi.fn()}
+      />,
+    );
+
+    const accountDetails = screen.getByRole('complementary', { name: 'ChatGPT 계정' });
+    const accountIcon = screen.getByRole('button', { name: 'ChatGPT 계정 정보' });
+    const generalSettings = screen.getByRole('button', { name: '일반 설정' });
+    expect(accountDetails).toBeVisible();
+    expect(generalSettings).toBeVisible();
+
+    act(() => vi.advanceTimersByTime(3_500));
+    expect(accountDetails).not.toBeVisible();
+    expect(generalSettings).toBeVisible();
+
+    fireEvent.mouseEnter(accountIcon);
+    expect(accountDetails).toBeVisible();
+  });
+
   it('keeps account details hidden until the hamburger button opens the overlay', async () => {
     render(<App />);
     await screen.findByLabelText('원문');
