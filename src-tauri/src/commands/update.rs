@@ -544,25 +544,33 @@ fn map_check_error(error: tauri_plugin_updater::Error) -> String {
 
 fn should_fallback_to_public_release(error: &tauri_plugin_updater::Error) -> bool {
     use tauri_plugin_updater::Error;
-    matches!(error, Error::Reqwest(_) | Error::Network(_))
+    match error {
+        Error::Reqwest(error) => error.is_connect() || error.is_timeout(),
+        Error::Network(_) => true,
+        _ => false,
+    }
 }
 
 async fn signed_feed_is_missing_or_unreachable() -> bool {
+    signed_feed_is_missing_or_unreachable_at(SIGNED_RELEASE_METADATA_URL).await
+}
+
+async fn signed_feed_is_missing_or_unreachable_at(url: &str) -> bool {
     let Ok(client) = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
+        .redirect(reqwest::redirect::Policy::limited(3))
         .timeout(Duration::from_secs(10))
         .build()
     else {
         return true;
     };
     match client
-        .get(SIGNED_RELEASE_METADATA_URL)
+        .get(url)
         .header(reqwest::header::USER_AGENT, "SmartCAT-Translate")
         .send()
         .await
     {
         Ok(response) => signed_feed_status_allows_public_fallback(response.status().as_u16()),
-        Err(_) => true,
+        Err(error) => error.is_connect() || error.is_timeout(),
     }
 }
 
@@ -692,6 +700,51 @@ mod tests {
     };
     use std::sync::atomic::AtomicBool;
 
+    fn redirecting_feed(final_status: u16, reason: &'static str) -> String {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for (index, stream) in listener.incoming().take(2).enumerate() {
+                let mut stream = stream.unwrap();
+                let mut request = [0_u8; 1024];
+                let _ = stream.read(&mut request);
+                let response = if index == 0 {
+                    "HTTP/1.1 302 Found\r\nLocation: /tagged/latest.json\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned()
+                } else {
+                    format!(
+                        "HTTP/1.1 {final_status} {reason}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    )
+                };
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+        });
+        format!("http://{address}/latest.json")
+    }
+
+    fn looping_feed() -> String {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().take(5) {
+                let mut stream = stream.unwrap();
+                let mut request = [0_u8; 1024];
+                let _ = stream.read(&mut request);
+                stream
+                    .write_all(
+                        b"HTTP/1.1 302 Found\r\nLocation: /loop\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .unwrap();
+            }
+        });
+        format!("http://{address}/latest.json")
+    }
+
     #[test]
     fn only_one_installer_can_run_and_the_guard_releases_afterward() {
         let installing = AtomicBool::new(false);
@@ -744,6 +797,36 @@ mod tests {
         for status in [200, 302, 401, 403, 429, 500] {
             assert!(!signed_feed_status_allows_public_fallback(status));
         }
+    }
+
+    #[tokio::test]
+    async fn signed_feed_probe_follows_redirect_before_classifying_status() {
+        let missing = redirecting_feed(404, "Not Found");
+        assert!(super::signed_feed_is_missing_or_unreachable_at(&missing).await);
+
+        let forbidden = redirecting_feed(403, "Forbidden");
+        assert!(!super::signed_feed_is_missing_or_unreachable_at(&forbidden).await);
+    }
+
+    #[tokio::test]
+    async fn signed_feed_probe_does_not_treat_redirect_loop_as_unavailable() {
+        assert!(!super::signed_feed_is_missing_or_unreachable_at(&looping_feed()).await);
+    }
+
+    #[tokio::test]
+    async fn updater_redirect_error_does_not_fall_back_directly() {
+        let error = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::limited(1))
+            .build()
+            .unwrap()
+            .get(looping_feed())
+            .send()
+            .await
+            .unwrap_err();
+        assert!(error.is_redirect());
+        assert!(!should_fallback_to_public_release(
+            &tauri_plugin_updater::Error::Reqwest(error)
+        ));
     }
 
     #[test]
