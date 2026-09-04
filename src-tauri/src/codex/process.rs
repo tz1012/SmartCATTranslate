@@ -825,7 +825,7 @@ impl ProcessRuntimeSession {
             "params": {
                 "clientInfo": {
                     "name": "smartcat_translate",
-                    "title": "SmartCAT Translate",
+                    "title": "BYOK Translator",
                     "version": env!("CARGO_PKG_VERSION")
                 }
             }

@@ -154,7 +154,7 @@ export async function createArtifactEvidence({
         metadata: {
           component: {
             type: "application",
-            name: "SmartCAT Translate release artifacts",
+            name: "BYOK Translator release artifacts",
           },
         },
         components,

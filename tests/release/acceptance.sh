@@ -35,7 +35,7 @@ if [[ "$mode" == --ci-ephemeral ]]; then
   set +e; security find-generic-password -s com.smartcat.translate -a local-data-key >/dev/null 2>&1; keychain_status=$?; set -e
   [[ $keychain_status -eq 44 ]] || { [[ $keychain_status -eq 0 ]] && echo 'GitHub runner Keychain already contains the SmartCAT key.' >&2 || echo 'Unable to prove the SmartCAT Keychain item is absent.' >&2; exit 1; }
   app_name="$(basename "$app")"
-  [[ ! -e "/Applications/$app_name" && ! -e "$runner_home/Applications/$app_name" ]] || { echo 'GitHub runner already has SmartCAT Translate installed.' >&2; exit 1; }
+  [[ ! -e "/Applications/$app_name" && ! -e "$runner_home/Applications/$app_name" ]] || { echo 'GitHub runner already has BYOK Translator installed.' >&2; exit 1; }
 fi
 ditto "$app" "$copied"; copied_by_this_run=true
 if [[ "$mode" != --ci-ephemeral ]]; then echo "Dry acceptance passed; app copy retained at $root and was not launched."; exit 0; fi

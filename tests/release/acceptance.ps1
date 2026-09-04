@@ -37,11 +37,17 @@ try {
     $credentialListing = cmdkey.exe "/list:$credentialTarget" 2>$null | Out-String
     if ($credentialListing -match [Regex]::Escape($credentialTarget)) { throw 'GitHub runner Credential Manager already contains the SmartCAT key.' }
     $existingInstall = @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*') |
-      ForEach-Object { Get-ItemProperty -Path $_ -ErrorAction SilentlyContinue } | Where-Object DisplayName -EQ 'SmartCAT Translate'
-    if ($existingInstall) { throw 'GitHub runner already has SmartCAT Translate installed.' }
+      ForEach-Object { Get-ItemProperty -Path $_ -ErrorAction SilentlyContinue } | Where-Object DisplayName -EQ 'BYOK Translator'
+    if ($existingInstall) { throw 'GitHub runner already has BYOK Translator installed.' }
     $process = Start-Process msiexec.exe -ArgumentList @('/i', $msi, '/qn', "INSTALLDIR=$install", '/norestart', '/l*v', (Join-Path $root 'install.log')) -Wait -PassThru -WindowStyle Hidden
     if ($process.ExitCode -ne 0) { throw "MSI installation failed: $($process.ExitCode)" }
     $installedByThisRun = $true
+    $installedEntries = @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*') |
+      ForEach-Object { Get-ItemProperty -Path $_ -ErrorAction SilentlyContinue } | Where-Object DisplayName -EQ 'BYOK Translator'
+    if (@($installedEntries).Count -ne 1) { throw 'Expected exactly one BYOK Translator uninstall entry.' }
+    $legacyEntries = @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*') |
+      ForEach-Object { Get-ItemProperty -Path $_ -ErrorAction SilentlyContinue } | Where-Object DisplayName -EQ 'SmartCAT Translate'
+    if ($legacyEntries) { throw 'Legacy SmartCAT Translate uninstall entry remained after installation.' }
     $exe = Get-ChildItem -LiteralPath $install -Recurse -File -Filter '*.exe' | Where-Object Name -NotMatch 'uninstall|setup' | Select-Object -First 1
     if (-not $exe) { throw 'Installed application executable was not found in the disposable root.' }
     Assert-Signed $exe.FullName

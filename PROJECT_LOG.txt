@@ -1231,3 +1231,8 @@ TDD와 검증
 - 요약: fix: updater-redirect-fallback
 - 변경 파일: PROJECT_LOG.txt, src-tauri/src/commands/update.rs
 - 검증: cargo test && cargo fmt
+
+[2026-09-04 22:23 Asia/Seoul] 변경 기록
+- 요약: feature: byok-translator-rebrand
+- 변경 파일: .github/workflows/release.yml, CHANGELOG.md, DECISIONS.txt, PROJECT_LOG.txt, RECORDING_POLICY.txt, index.html, package.json, scripts/generate-sbom.mjs, scripts/release-evidence.mjs, scripts/workflow-policy.mjs, src-tauri/Cargo.lock, src-tauri/Cargo.toml, src-tauri/Info.plist, src-tauri/capabilities/default.json, src-tauri/icons, src-tauri/src/codex/process.rs, src-tauri/src/commands/capture.rs, src-tauri/src/lib.rs, src-tauri/src/lifecycle.rs, src-tauri/tauri.conf.json, src-tauri/test-support/fake_codex_process.rs, src-tauri/windows/rebrand-migration.nsh, src/app/App.test.tsx, src/app/AppMenuOverlay.test.tsx, src/app/AppMenuOverlay.tsx, src/features/hotkeys/HotkeySettings.test.tsx, src/features/hotkeys/HotkeySettings.tsx, src/features/translation/QuickPopup.test.tsx, src/features/translation/QuickPopup.tsx, tests/release/acceptance.ps1, tests/release/acceptance.sh
+- 검증: pnpm test && pnpm build && cargo test && cargo fmt

@@ -1,9 +1,9 @@
 [package]
 name = "smartcat-translate"
 default-run = "smartcat-translate"
-version = "0.1.9"
-description = "SmartCAT Translate"
-authors = ["SmartCAT Translate"]
+version = "0.2.0"
+description = "BYOK Translator"
+authors = ["BYOK Translator"]
 edition = "2021"
 
 [features]

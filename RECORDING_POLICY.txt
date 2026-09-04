@@ -1,4 +1,4 @@
-SmartCAT Translate 자동 기록 정책
+BYOK Translator 자동 기록 정책
 =================================
 
 목적

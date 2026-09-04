@@ -17,7 +17,7 @@ if (ecosystem === 'npm') {
 components = [...new Map(components.map((value) => [`${value.name}@${value.version}`, value])).values()].sort((a,b) => `${a.name}@${a.version}`.localeCompare(`${b.name}@${b.version}`));
 if (components.length < 2) throw new Error('sbom_components_insufficient');
 await mkdir(dirname(output), { recursive: true });
-const jsonText = `${JSON.stringify({ $schema:'http://cyclonedx.org/schema/bom-1.6.schema.json', bomFormat:'CycloneDX', specVersion:'1.6', version:1, metadata:{component:{type:'application',name:'SmartCAT Translate'}}, components }, null, 2)}\n`;
+const jsonText = `${JSON.stringify({ $schema:'http://cyclonedx.org/schema/bom-1.6.schema.json', bomFormat:'CycloneDX', specVersion:'1.6', version:1, metadata:{component:{type:'application',name:'BYOK Translator'}}, components }, null, 2)}\n`;
 await validateCycloneDx16(jsonText);
 await writeFile(output, jsonText);
 
