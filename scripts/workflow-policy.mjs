@@ -19,7 +19,7 @@ requireText(cargoManifest, 'default-run = "smartcat-translate"', 'cargo_default_
 requireText(cargoManifest, 'name = "verify-updater-key"', 'updater_verifier_binary_missing');
 if (config.bundle?.windows?.wix?.upgradeCode !== '2063c4c4-cb9f-5032-8350-bbaa135460c1') fail('legacy_wix_upgrade_code_missing');
 if (config.bundle?.windows?.nsis?.installerHooks !== './windows/rebrand-migration.nsh') fail('nsis_rebrand_migration_hook_missing');
-for (const value of ['SmartCAT Translate', 'BYOK Translator', 'InstallLocation', 'smartcat-translate.exe', 'SetOutPath "$INSTDIR"', 'DeleteRegKey']) requireText(rebrandMigrationHook, value, `nsis_rebrand_migration_missing:${value}`);
+for (const value of ['SmartCAT Translate', 'BYOK Translator', 'InstallLocation', 'smartcat-translate.exe', 'SetOutPath "$INSTDIR"', 'SetShellVarContext current', 'IsShortcutTarget', 'UnpinShortcut "$SMPROGRAMS\\SmartCAT Translate.lnk"', 'Delete "$SMPROGRAMS\\SmartCAT Translate.lnk"', 'UnpinShortcut "$DESKTOP\\SmartCAT Translate.lnk"', 'Delete "$DESKTOP\\SmartCAT Translate.lnk"', 'IfErrors byok_rebrand_postinstall_done', 'SHChangeNotify', 'DeleteRegKey']) requireText(rebrandMigrationHook, value, `nsis_rebrand_migration_missing:${value}`);
 for (const [name, source] of [['ci', ci], ['release', release]]) {
   const document = parseDocument(source, { prettyErrors: true });
   if (document.errors.length) fail(`${name}_yaml_invalid:${document.errors[0].message}`);
