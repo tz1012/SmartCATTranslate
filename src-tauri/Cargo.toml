@@ -23,7 +23,6 @@ bench = false
 [[bin]]
 name = "verify-updater-key"
 path = "release-support/verify_updater_key.rs"
-test = false
 bench = false
 
 [build-dependencies]
