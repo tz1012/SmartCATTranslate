@@ -67,6 +67,19 @@ afterEach(() => {
 });
 
 describe('SettingsView', () => {
+  it('places the shared secret translation option in privacy settings', async () => {
+    localStorage.removeItem('smartcat.secretMode');
+    mockCommands();
+    const user = userEvent.setup();
+
+    render(<SettingsView initialCategory="privacy" />);
+
+    const secretMode = await screen.findByRole('checkbox', { name: /시크릿 번역/ });
+    expect(secretMode).not.toBeChecked();
+    await user.click(secretMode);
+    expect(localStorage.getItem('smartcat.secretMode')).toBe('true');
+  });
+
   it('keeps a newly saved shortcut in subsequent settings saves', async () => {
     const initialSettings = { ...defaultSettings, hotkeys: [], blockedApps: [] };
     vi.mocked(invoke).mockImplementation(async (command, args) => {

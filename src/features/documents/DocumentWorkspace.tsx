@@ -7,7 +7,7 @@ import { DocumentOptions } from './DocumentOptions';
 import { DocumentReport } from './DocumentReport';
 import type { ChosenDocument, DocumentJobEvent, DocumentOptions as Options, DocumentProgress, DocumentReport as Report, DocumentResultPreview, PreparedDocumentRecovery } from './types';
 import type { AppSettings } from '../settings/SettingsView';
-import { SecretModeSwitch,useSecretMode } from '../history/secretMode';
+import { useSecretMode } from '../history/secretMode';
 
 const defaults: Options = { includeComments: true, includeNotes: true, includeHidden: false, wrapText: true, targetLanguage: 'ko', sourceLanguage: null, profileId: null, model: null, quality: null, pdfForceOcr: false, pdfFit: true, preserveAnnotations: true, secret: false, outputDirectory: null };
 const stages: Record<string, { ko: string; en: string }> = { inspect: { ko: '문서 검사', en: 'Inspecting' }, extract: { ko: '텍스트 추출', en: 'Extracting' }, ocr: { ko: '로컬 OCR', en: 'Local OCR' }, translate: { ko: '안전하게 번역', en: 'Translating safely' }, reflow: { ko: '서식 재배치', en: 'Reflowing' }, save: { ko: '새 파일 저장', en: 'Saving copy' }, validate: { ko: '결과 다시 열어 검증', en: 'Validating output' }, completed: { ko: '완료', en: 'Completed' } };
@@ -33,7 +33,6 @@ export function DocumentWorkspace({ locale,recovery,onRecoveryConsumed,active=tr
   return <section className="document-workspace" aria-labelledby="document-title">
     <h2 id="document-title">{ko ? '서식 유지 문서 번역' : 'Format-preserving document translation'}</h2>
     <p>{ko ? 'DOCX, PPTX, XLSX, PDF를 검사하고 원본을 건드리지 않은 새 번역 파일을 만듭니다.' : 'Inspect DOCX, PPTX, XLSX and PDF, then create a translated copy without changing the original.'}</p>
-    <SecretModeSwitch locale={locale} value={secret} onChange={setSecret}/>
     {secret&&<p className="document-risk" role="status">{ko?'시크릿 문서 작업은 앱을 다시 시작한 뒤 복구할 수 없습니다.':'Secret document jobs cannot be recovered after restarting the app.'}</p>}
     <div className="document-picker" aria-label={ko ? '문서를 끌어 놓거나 선택하세요' : 'Drop or choose a document'}><button type="button" className="primary-action" onClick={() => void choose()} disabled={busy}>{ko ? '문서 선택' : 'Choose document'}</button>{chosen && <div role="status"><strong>{chosen.manifest.fileName}</strong><span className="format-badge">{chosen.manifest.format.toUpperCase()}</span><span>{formatSummary}</span>{chosen.manifest.hasSignatures && <span className="document-risk">{ko ? '전자서명 있음' : 'Contains signatures'}</span>}</div>}</div>
     <DocumentOptions locale={locale} value={options} format={chosen?.manifest.format} disabled={busy} profiles={settings?.profiles.map(({id,name})=>({id,name})) ?? []} savedModel={settings?.selectedModel.type === 'specific' ? settings.selectedModel.id : undefined} onChange={setOptions}/>

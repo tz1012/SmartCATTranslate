@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { TranslationRequest } from '../../lib/types';
-import { SecretModeSwitch,useSecretMode } from '../history/secretMode';
+import { useSecretMode } from '../history/secretMode';
 import { saveHistoryRecord } from '../history/historyApi';
 import { useTranslationJob } from './useTranslationJob';
 
@@ -77,7 +77,7 @@ function PopupRequest({ payload, pinned, onPin }: { payload: PopupPayload; pinne
   const [speaking, setSpeaking] = useState(false);
   const started = useRef(false);
   const text = labels[payload.locale];
-  const [secret,setSecret]=useSecretMode();
+  const [secret]=useSecretMode();
   const savedHistoryJob=useRef<string|undefined>(undefined);
   const activeSecret=useRef(false);
 
@@ -121,7 +121,6 @@ function PopupRequest({ payload, pinned, onPin }: { payload: PopupPayload; pinne
       <div>
         <strong>SmartCAT</strong>
         <span>{sourceLanguage} → {targetLanguage} · {payload.profileName}</span>
-        <SecretModeSwitch locale={payload.locale} value={secret} onChange={setSecret} compact />
       </div>
       <div className="quick-popup-header-actions">
         <button data-popup-action type="button" aria-pressed={pinned} aria-label={pinned ? text.unpin : text.pin} title={pinned ? text.unpin : text.pin} onClick={onPin}>{pinned ? '●' : '○'}</button>
