@@ -16,6 +16,8 @@ const CONSENT_TTL: Duration = Duration::from_secs(15 * 60);
 const PUBLIC_RELEASE_API: &str =
     "https://api.github.com/repos/tz1012/SmartCATTranslate/releases?per_page=100";
 const PUBLIC_RELEASE_PATH_PREFIX: &str = "/tz1012/SmartCATTranslate/releases/tag/app-v";
+const SIGNED_RELEASE_METADATA_URL: &str =
+    "https://github.com/tz1012/SmartCATTranslate/releases/latest/download/latest.json";
 
 #[derive(Default)]
 pub struct UpdateState {
@@ -147,12 +149,23 @@ pub async fn check_for_update(
     if require_configured().is_err() {
         return check_public_release(&app).await;
     }
-    let update = app
+    let update = match app
         .updater()
         .map_err(|_| "updater_not_configured".to_owned())?
         .check()
         .await
-        .map_err(map_check_error)?;
+    {
+        Ok(update) => update,
+        Err(tauri_plugin_updater::Error::ReleaseNotFound)
+            if signed_feed_is_missing_or_unreachable().await =>
+        {
+            return check_public_release(&app).await;
+        }
+        Err(error) if should_fallback_to_public_release(&error) => {
+            return check_public_release(&app).await;
+        }
+        Err(error) => return Err(map_check_error(error)),
+    };
     let Some(update) = update else {
         return Ok(UpdateCheckResult {
             available: false,
@@ -529,6 +542,34 @@ fn map_check_error(error: tauri_plugin_updater::Error) -> String {
     }
 }
 
+fn should_fallback_to_public_release(error: &tauri_plugin_updater::Error) -> bool {
+    use tauri_plugin_updater::Error;
+    matches!(error, Error::Reqwest(_) | Error::Network(_))
+}
+
+async fn signed_feed_is_missing_or_unreachable() -> bool {
+    let Ok(client) = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(10))
+        .build()
+    else {
+        return true;
+    };
+    match client
+        .get(SIGNED_RELEASE_METADATA_URL)
+        .header(reqwest::header::USER_AGENT, "SmartCAT-Translate")
+        .send()
+        .await
+    {
+        Ok(response) => signed_feed_status_allows_public_fallback(response.status().as_u16()),
+        Err(_) => true,
+    }
+}
+
+fn signed_feed_status_allows_public_fallback(status: u16) -> bool {
+    status == 404
+}
+
 fn map_download_error(error: tauri_plugin_updater::Error) -> String {
     use tauri_plugin_updater::Error;
     match error {
@@ -645,7 +686,9 @@ pub fn open_update_release(app: AppHandle, url: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        acquire_install_guard, is_allowed_release_url, select_public_release, PublicRelease,
+        acquire_install_guard, is_allowed_release_url, select_public_release,
+        should_fallback_to_public_release, signed_feed_status_allows_public_fallback,
+        PublicRelease,
     };
     use std::sync::atomic::AtomicBool;
 
@@ -673,6 +716,34 @@ mod tests {
         assert!(!is_allowed_release_url(
             "https://user@github.com/tz1012/SmartCATTranslate/releases/tag/app-v0.1.4"
         ));
+    }
+
+    #[test]
+    fn only_signed_feed_transport_failures_fall_back_directly() {
+        use tauri_plugin_updater::Error;
+
+        assert!(should_fallback_to_public_release(&Error::Network(
+            "signed feed unavailable".to_owned()
+        )));
+        assert!(!should_fallback_to_public_release(&Error::ReleaseNotFound));
+        assert!(!should_fallback_to_public_release(
+            &Error::AuthenticationFailed
+        ));
+        assert!(!should_fallback_to_public_release(&Error::SignatureUtf8(
+            "invalid signature".to_owned()
+        )));
+        assert!(!should_fallback_to_public_release(&Error::Serialization(
+            serde_json::from_str::<serde_json::Value>("{").unwrap_err()
+        )));
+        assert!(!should_fallback_to_public_release(&Error::UnsupportedArch));
+    }
+
+    #[test]
+    fn only_confirmed_missing_signed_feed_status_falls_back() {
+        assert!(signed_feed_status_allows_public_fallback(404));
+        for status in [200, 302, 401, 403, 429, 500] {
+            assert!(!signed_feed_status_allows_public_fallback(status));
+        }
     }
 
     #[test]
