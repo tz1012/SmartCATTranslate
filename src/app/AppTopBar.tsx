@@ -10,7 +10,6 @@ export type AppTopBarLabels = {
   history: string;
   openMenu: string;
   closeMenu: string;
-  accountMenu: string;
   notifications: (count: number) => string;
 };
 
@@ -45,7 +44,7 @@ export function AppTopBar({
   ];
 
   return (
-    <header className="app-shell-header">
+    <header className={`app-shell-header${statusMessage ? ' has-status' : ''}`}>
       <button
         ref={menuButtonRef}
         type="button"
@@ -74,8 +73,8 @@ export function AppTopBar({
             </button>
           ))}
         </nav>
-        {statusMessage && <span id="settings-navigation-status" className="app-navigation-note" role="status">{statusMessage}</span>}
       </div>
+      {statusMessage && <span id="settings-navigation-status" className="app-navigation-note" role="status">{statusMessage}</span>}
       <button
         type="button"
         className="app-notification-trigger"
@@ -88,17 +87,6 @@ export function AppTopBar({
           <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
         {notificationCount > 0 && <i aria-hidden="true">{notificationCount}</i>}
-      </button>
-      <button
-        type="button"
-        className="app-account-trigger"
-        aria-label={labels.accountMenu}
-        aria-controls="app-menu-overlay"
-        aria-expanded={menuOpen}
-        onClick={onToggleMenu}
-      >
-        <span aria-hidden="true">A</span>
-        <i aria-hidden="true" />
       </button>
     </header>
   );

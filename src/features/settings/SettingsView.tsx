@@ -12,6 +12,7 @@ import { createUuidV4 } from './uuid';
 import { HotkeySettings } from '../hotkeys/HotkeySettings';
 import type { HotkeyBinding } from '../hotkeys/types';
 import type { BlockedApp } from '../hotkeys/hotkeyApi';
+import { SecretModeSwitch, useSecretMode } from '../history/secretMode';
 import { SettingsCategories, type SettingsCategory } from './SettingsCategories';
 
 export type AppLocale = 'ko' | 'en';
@@ -121,6 +122,7 @@ export function SettingsView({
   const [loadFailed, setLoadFailed] = useState(false);
   const [launchAtLoginAvailable, setLaunchAtLoginAvailable] = useState(true);
   const [hotkeysPaused, setHotkeysPaused] = useState(false);
+  const [secretMode, setSecretMode] = useSecretMode();
   const [category, setCategory] = useState<SettingsCategory>(initialCategory);
   const settingsRevision = useRef(0);
   const saveGeneration = useRef(0);
@@ -337,6 +339,7 @@ export function SettingsView({
           </>}
 
           {category === 'privacy' && <div className="settings-form-grid">
+            <SecretModeSwitch locale={locale} value={secretMode} onChange={setSecretMode} />
             <label>{labels.retention}<span className="settings-inline-input"><input type="number" min="1" max="365" value={settings.historyRetentionDays} onChange={(event) => editSettings((current) => ({ ...current, historyRetentionDays: Math.min(365, Math.max(1, Number(event.target.value) || 1)) }))} /><span>{labels.retentionUnit}</span></span></label>
             <label>{labels.close}<select value={settings.closeBehavior} onChange={(event) => void updateLifecycle('set_close_behavior', { closeBehavior: event.target.value as CloseBehavior })}>
               <option value="keepInTray">{labels.keepInTray}</option><option value="quit">{labels.quit}</option><option value="askEveryTime">{labels.askEveryTime}</option>

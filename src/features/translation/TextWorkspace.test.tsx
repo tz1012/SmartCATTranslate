@@ -109,6 +109,13 @@ afterEach(() => {
 });
 
 describe('TextWorkspace', () => {
+  it('does not place the global secret translation option in the workspace', async () => {
+    render(<TextWorkspace locale="ko" />);
+
+    await screen.findByLabelText('원문');
+    expect(screen.queryByRole('checkbox', { name: /시크릿 번역/ })).not.toBeInTheDocument();
+  });
+
   it('shows an imported completed capture without starting or recording a second text job', async () => {
     render(<TextWorkspace locale="en" importedTranslation={{
       id: 'capture-job',

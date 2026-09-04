@@ -8,7 +8,7 @@ import { languageLabel, SUPPORTED_LANGUAGES } from '../settings/languages';
 import { useTranslationJob } from './useTranslationJob';
 import { saveTranslationText } from './translationApi';
 import { saveHistoryRecord, type NewHistoryRecord } from '../history/historyApi';
-import { SecretModeSwitch, useSecretMode } from '../history/secretMode';
+import { useSecretMode } from '../history/secretMode';
 
 const MAX_SOURCE_CHARS = 200_000;
 const MAX_SOURCE_BYTES = 1_000_000;
@@ -98,7 +98,7 @@ export function TextWorkspace({
   const [failedHistoryJobs, setFailedHistoryJobs] = useState<Set<string>>(() => new Set());
   const [editRevision, setEditRevision] = useState(0);
   const [composing, setComposing] = useState(false);
-  const [secret,setSecret]=useSecretMode();
+  const [secret]=useSecretMode();
   const savedHistoryJob=useRef<string|undefined>(undefined);
   const pendingHistory=useRef<Map<string,NewHistoryRecord>>(new Map());
   const activeSecret=useRef(false);
@@ -348,7 +348,6 @@ export function TextWorkspace({
       }
     }}>
       {loadError && <p role="alert">{labels.loadError}</p>}
-      <SecretModeSwitch locale={locale} value={secret} onChange={setSecret}/>
       <div className="language-bar">
         <label>{labels.sourceLanguage}
           <select

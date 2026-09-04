@@ -83,6 +83,7 @@ describe('App', () => {
     expect(screen.queryByText(notice)).not.toBeInTheDocument();
     const button = screen.getByRole('button', { name: '알림 1개' });
     expect(button).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('button', { name: '계정 메뉴' })).not.toBeInTheDocument();
 
     await userEvent.click(button);
     expect(screen.getByRole('dialog', { name: '알림' })).toHaveTextContent(notice);
@@ -378,7 +379,7 @@ describe('App', () => {
     const navigationStatus = screen.getByText('번역 또는 취소 처리 중에는 설정을 열 수 없습니다.');
     expect(navigationStatus).toBeVisible();
     expect(navigationStatus).toHaveClass('app-navigation-note');
-    expect(navigation.nextElementSibling).toBe(navigationStatus);
+    expect(navigation.closest('.app-primary-navigation')?.nextElementSibling).toBe(navigationStatus);
     expect(navigationStatus.closest('.app-shell-header')).not.toBeNull();
     await user.click(settingsButton);
     expect(source).toBeInTheDocument();
