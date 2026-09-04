@@ -35,6 +35,7 @@ use crate::platform::macos::MacForegroundAppProvider as NativeForeground;
 use crate::platform::windows::WindowsForegroundAppProvider as NativeForeground;
 
 const OVERLAY_PREFIX: &str = "capture-overlay-";
+const CAPTURE_WINDOW_TITLE: &str = "BYOK Translator Capture";
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -124,7 +125,7 @@ pub async fn start_screen_capture<R: Runtime>(
             percent_encode(&monitor.id)
         );
         let built = WebviewWindowBuilder::new(&app, &label, WebviewUrl::App(query.into()))
-            .title("SmartCAT Capture")
+            .title(CAPTURE_WINDOW_TITLE)
             .decorations(false)
             .transparent(true)
             .always_on_top(true)
@@ -799,9 +800,14 @@ mod tests {
     use super::{
         is_overlay_label_for_session, overlay_label, overlay_session_id,
         safe_capture_session_reason, session_teardown_policy, CaptureFailurePolicy,
-        SessionTeardownPolicy,
+        SessionTeardownPolicy, CAPTURE_WINDOW_TITLE,
     };
     use uuid::Uuid;
+
+    #[test]
+    fn capture_window_uses_the_byok_translator_brand() {
+        assert_eq!(CAPTURE_WINDOW_TITLE, "BYOK Translator Capture");
+    }
 
     #[test]
     fn capture_session_reason_allows_only_safe_capture_codes() {

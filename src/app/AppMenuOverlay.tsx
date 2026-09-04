@@ -10,13 +10,13 @@ const copy = {
     menu: '앱 메뉴', general: '일반 설정', translation: '번역 설정', hotkeys: '단축키',
     privacy: '개인정보·기록', updates: '업데이트', about: '앱 정보', quit: '종료',
     accountDetails: 'ChatGPT 계정 정보',
-    product: 'SmartCAT Translate', versionUnavailable: '버전을 확인할 수 없습니다.', settingsLocked: '번역 중에는 설정을 열 수 없습니다.',
+    product: 'BYOK Translator', versionUnavailable: '버전을 확인할 수 없습니다.', settingsLocked: '번역 중에는 설정을 열 수 없습니다.',
   },
   en: {
     menu: 'App menu', general: 'General settings', translation: 'Translation settings', hotkeys: 'Shortcuts',
     privacy: 'Privacy & history', updates: 'Updates', about: 'About', quit: 'Quit',
     accountDetails: 'ChatGPT account details',
-    product: 'SmartCAT Translate', versionUnavailable: 'Version unavailable', settingsLocked: 'Settings are unavailable while translating.',
+    product: 'BYOK Translator', versionUnavailable: 'Version unavailable', settingsLocked: 'Settings are unavailable while translating.',
   },
 } as const;
 

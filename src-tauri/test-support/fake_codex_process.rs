@@ -36,7 +36,7 @@ fn main() {
         "\"method\":\"initialize\"",
         "\"id\":0",
         "\"name\":\"smartcat_translate\"",
-        "\"title\":\"SmartCAT Translate\"",
+        "\"title\":\"BYOK Translator\"",
     ] {
         if !initialize.contains(required) {
             std::process::exit(12);

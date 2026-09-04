@@ -277,7 +277,7 @@ describe('App', () => {
       throw new Error(`unexpected command: ${command}`);
     });
     render(<App />);
-    expect(screen.queryByRole('heading', { name: 'SmartCAT Translate' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'BYOK Translator' })).not.toBeInTheDocument();
     expect(await screen.findByLabelText('원문')).toBeVisible();
     expect(screen.getByLabelText('번역문')).toBeVisible();
     const navigation = screen.getByRole('tablist', { name: '주요 화면' });

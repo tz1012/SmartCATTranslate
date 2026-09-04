@@ -240,6 +240,6 @@ jobs:
       - name: Create draft release only after every platform succeeds
         env: { GH_TOKEN: "${{ github.token }}", RELEASE_TAG: "${{ needs.gates.outputs.release_tag }}" }
         run: |
-          gh release create "$RELEASE_TAG" --draft --title "SmartCAT Translate $RELEASE_TAG" --notes-file CHANGELOG.md
+          gh release create "$RELEASE_TAG" --draft --title "BYOK Translator $RELEASE_TAG" --notes-file CHANGELOG.md
           find release-assets -type f -print0 | xargs -0 gh release upload "$RELEASE_TAG" --clobber
           gh release upload "$RELEASE_TAG" CHANGELOG.md --clobber

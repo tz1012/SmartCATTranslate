@@ -168,7 +168,7 @@ pub fn setup(app: &mut App<Wry>) -> tauri::Result<()> {
     let icon = app.default_window_icon().cloned();
     let mut tray = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
-        .tooltip("SmartCAT Translate")
+        .tooltip("BYOK Translator")
         .show_menu_on_left_click(true)
         .on_menu_event(|app, event| match event.id().as_ref() {
             QUICK_ID => {
@@ -239,14 +239,14 @@ fn ask_close_action<R: Runtime>(app: AppHandle<R>, locale: AppLocale) {
     }
     let (title, message, keep, quit, cancel) = match locale {
         AppLocale::Ko => (
-            "SmartCAT Translate 닫기",
+            "BYOK Translator 닫기",
             "앱을 트레이에 유지할까요?",
             "트레이에 유지",
             "앱 종료",
             "취소",
         ),
         AppLocale::En => (
-            "Close SmartCAT Translate",
+            "Close BYOK Translator",
             "Keep the app available in the tray?",
             "Keep in tray",
             "Quit app",

@@ -116,10 +116,10 @@ function PopupRequest({ payload, pinned, onPin }: { payload: PopupPayload; pinne
   useEffect(() => () => { if (typeof speechSynthesis !== 'undefined') speechSynthesis.cancel(); }, []);
   useEffect(()=>{if(state.status!=='completed'||savedHistoryJob.current===state.jobId||!payload.request)return;savedHistoryJob.current=state.jobId;void saveHistoryRecord({kind:'popup',sourceLanguage:payload.request.profile.sourceLanguage,targetLanguage:payload.request.profile.targetLanguage,source:payload.request.text,result:state.text,displayName:null,warningCount:0,secret:activeSecret.current}).catch(()=>undefined);},[payload.request,state]);
 
-  return <section className="quick-popup" aria-label="SmartCAT quick translation">
+  return <section className="quick-popup" aria-label="BYOK Translator quick translation">
     <header className="quick-popup-header">
       <div>
-        <strong>SmartCAT</strong>
+        <strong>BYOK Translator</strong>
         <span>{sourceLanguage} → {targetLanguage} · {payload.profileName}</span>
       </div>
       <div className="quick-popup-header-actions">

@@ -1,4 +1,4 @@
-SmartCAT Translate 설계 결정 기록
+BYOK Translator 설계 결정 기록
 =================================
 
 [D-001] ChatGPT 계정 연결

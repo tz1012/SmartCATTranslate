@@ -3,6 +3,6 @@
 <plist version="1.0">
 <dict>
   <key>NSScreenCaptureUsageDescription</key>
-  <string>SmartCAT Translate needs screen recording access only when you choose a region to translate.</string>
+  <string>BYOK Translator needs screen recording access only when you choose a region to translate.</string>
 </dict>
 </plist>

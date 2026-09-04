@@ -43,7 +43,7 @@ pub fn run() {
                     let _ = app
                         .dialog()
                         .message("Secure local storage is unavailable. Enable Windows Credential Manager or unlock macOS Keychain, then restart the app.")
-                        .title("SmartCAT Translate")
+                        .title("BYOK Translator")
                         .kind(MessageDialogKind::Error)
                         .blocking_show();
                     crate::core::diagnostics::DiagnosticEvent::new(
@@ -209,7 +209,7 @@ pub fn run() {
             commands::update::open_update_release,
         ])
         .build(tauri::generate_context!())
-        .expect("failed to run SmartCAT Translate");
+        .expect("failed to run BYOK Translator");
     app.run(|app_handle, event| {
         if let tauri::RunEvent::WindowEvent { label, event, .. } = &event {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

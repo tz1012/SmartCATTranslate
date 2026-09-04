@@ -16,6 +16,18 @@ afterEach(() => {
 });
 
 describe('HotkeySettings', () => {
+  it('uses the BYOK Translator name in the English blocked-app explanation', async () => {
+    invoke.mockImplementation((command: string) => {
+      if (command === 'list_hotkeys' || command === 'list_blocked_apps') return Promise.resolve([]);
+      if (command === 'suspend_hotkeys') return Promise.resolve();
+      throw new Error(`unexpected command: ${command}`);
+    });
+
+    render(<HotkeySettings locale="en" defaultProfileId="profile-1" />);
+
+    expect(await screen.findByText('BYOK Translator will not read selections or open a popup in these apps.')).toBeVisible();
+  });
+
   it('ignores a previous conflict result after a new recording starts', async () => {
     let finishAnalysis!: (report: ConflictReport) => void;
     const pendingAnalysis = new Promise<ConflictReport>((resolve) => {

@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default capabilities for SmartCAT Translate",
+  "description": "Default capabilities for BYOK Translator",
   "windows": ["main", "quick-popup", "capture-overlay-*"],
   "permissions": ["core:default"]
 }

@@ -12,10 +12,14 @@ const licensePolicy = await readFile('scripts/license-policy.mjs', 'utf8');
 const sbomGenerator = await readFile('scripts/generate-sbom.mjs', 'utf8');
 const windowsAcceptance = await readFile('tests/release/acceptance.ps1', 'utf8');
 const macAcceptance = await readFile('tests/release/acceptance.sh', 'utf8');
+const rebrandMigrationHook = await readFile('src-tauri/windows/rebrand-migration.nsh', 'utf8');
 const appSource = await readFile('src/app/App.tsx', 'utf8');
 const rustRuntime = `${await readFile('src-tauri/src/lib.rs', 'utf8')}\n${await readFile('src-tauri/src/commands/update.rs', 'utf8')}`;
 requireText(cargoManifest, 'default-run = "smartcat-translate"', 'cargo_default_run_missing');
 requireText(cargoManifest, 'name = "verify-updater-key"', 'updater_verifier_binary_missing');
+if (config.bundle?.windows?.wix?.upgradeCode !== '2063c4c4-cb9f-5032-8350-bbaa135460c1') fail('legacy_wix_upgrade_code_missing');
+if (config.bundle?.windows?.nsis?.installerHooks !== './windows/rebrand-migration.nsh') fail('nsis_rebrand_migration_hook_missing');
+for (const value of ['SmartCAT Translate', 'BYOK Translator', 'InstallLocation', 'smartcat-translate.exe', 'SetOutPath "$INSTDIR"', 'DeleteRegKey']) requireText(rebrandMigrationHook, value, `nsis_rebrand_migration_missing:${value}`);
 for (const [name, source] of [['ci', ci], ['release', release]]) {
   const document = parseDocument(source, { prettyErrors: true });
   if (document.errors.length) fail(`${name}_yaml_invalid:${document.errors[0].message}`);

@@ -65,7 +65,7 @@ describe('App version', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'About' }));
 
-    expect(screen.getByText('SmartCAT Translate 0.1.4')).toBeVisible();
+    expect(screen.getByText('BYOK Translator 0.1.4')).toBeVisible();
   });
 });
 
@@ -99,7 +99,7 @@ describe('App menu overlay', () => {
     render(<App />);
     await screen.findByLabelText('원문');
 
-    expect(screen.queryByRole('heading', { name: 'SmartCAT Translate' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'BYOK Translator' })).not.toBeInTheDocument();
     expect(screen.queryByRole('complementary', { name: 'ChatGPT 계정' })).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByRole('button', { name: '메뉴 열기' }));
@@ -135,7 +135,7 @@ describe('App menu overlay', () => {
 
     await userEvent.click(screen.getByRole('button', { name: '앱 정보' }));
 
-    expect(await screen.findByText('SmartCAT Translate 0.1.1')).toBeVisible();
+    expect(await screen.findByText('BYOK Translator 0.1.1')).toBeVisible();
   });
 
   it('shows a localized unavailable status when the app version cannot be read', async () => {
