@@ -4,6 +4,10 @@
 
 ## 미출시
 
+### BYOK Translator 0.2.1
+
+- Windows 업그레이드 후 작업표시줄에 이전 `E` 아이콘이 남지 않도록 옛 시작 메뉴·바탕 화면 바로가기를 정리하고 셸 아이콘 캐시 갱신을 요청합니다.
+
 ### BYOK Translator 0.2.0
 
 - 제품 표시 이름을 `SmartCAT Translate`에서 `BYOK Translator`로 변경했습니다.
