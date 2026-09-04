@@ -1226,3 +1226,8 @@ TDD와 검증
 - 요약: fix: update-check-fallback
 - 변경 파일: CHANGELOG.md, PROJECT_LOG.txt, package.json, src-tauri/Cargo.lock, src-tauri/Cargo.toml, src-tauri/src/commands/update.rs, src-tauri/tauri.conf.json
 - 검증: pnpm test && pnpm build && cargo test && pnpm privacy:check
+
+[2026-09-04 21:45 Asia/Seoul] 변경 기록
+- 요약: fix: updater-redirect-fallback
+- 변경 파일: PROJECT_LOG.txt, src-tauri/src/commands/update.rs
+- 검증: cargo test && cargo fmt
