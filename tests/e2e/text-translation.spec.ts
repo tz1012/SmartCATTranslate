@@ -10,6 +10,7 @@ test.beforeEach(async ({ page }) => {
       __TAURI_EVENT_PLUGIN_INTERNALS__: Record<string, unknown>;
       __copied?: string;
       __translationRequest?: unknown;
+      __holdTranslation?: boolean;
     };
     const settings = {
       schemaVersion: 1,
@@ -65,6 +66,7 @@ test.beforeEach(async ({ page }) => {
         if (command === 'get_rate_limits') return { primaryUsedPercent: null, primaryResetsAt: null, secondaryUsedPercent: null, secondaryResetsAt: null };
         if (command === 'translate_text') {
           browserWindow.__translationRequest = args?.request;
+          if (browserWindow.__holdTranslation) return 'e2e-job';
           setTimeout(() => {
             emit('translation-event', { type: 'delta', jobId: 'e2e-job', text: '서식을 ' });
             emit('translation-event', { type: 'delta', jobId: 'e2e-job', text: '유지하세요' });
@@ -127,4 +129,69 @@ test('sends the exact request, streams, copies and lays out the panes responsive
   await page.keyboard.press('Escape');
   await expect(page.getByRole('heading', { name: '설정' })).toHaveCount(0);
   await expect(page.locator('#app-panel-translate')).toBeVisible();
+});
+
+test('keeps the character count above the footer in a compact window', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop-1100x760', 'desktop minimum-window regression');
+  await page.setViewportSize({ width: 760, height: 520 });
+  await page.goto('/');
+
+  const counter = page.locator('.source-pane small');
+  const footer = page.locator('.workspace-footer');
+  await expect(counter).toBeVisible();
+  const counterBox = await counter.boundingBox();
+  const footerBox = await footer.boundingBox();
+  expect(counterBox).not.toBeNull();
+  expect(footerBox).not.toBeNull();
+  expect(counterBox!.y + counterBox!.height).toBeLessThanOrEqual(footerBox!.y + 1);
+});
+
+test('keeps the idle notification button compact at the right edge', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop-1100x760', 'desktop minimum-window regression');
+  await page.setViewportSize({ width: 760, height: 520 });
+  await page.goto('/');
+
+  const header = page.locator('.app-shell-header');
+  const notification = page.getByRole('button', { name: '알림' });
+  const [headerBox, notificationBox] = await Promise.all([
+    header.boundingBox(),
+    notification.boundingBox(),
+  ]);
+
+  expect(headerBox).not.toBeNull();
+  expect(notificationBox).not.toBeNull();
+  expect(notificationBox!.width).toBeLessThanOrEqual(60);
+  expect(Math.abs(notificationBox!.x + notificationBox!.width - (headerBox!.x + headerBox!.width))).toBeLessThanOrEqual(1);
+});
+
+test('keeps the translation notice clear of History and reserves the right edge for notifications', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop-1100x760', 'desktop minimum-window regression');
+  await page.setViewportSize({ width: 760, height: 520 });
+  await page.goto('/');
+  await page.evaluate(() => { (window as Window & { __holdTranslation?: boolean }).__holdTranslation = true; });
+  await page.getByRole('textbox', { name: '원문', exact: true }).fill('Hello world');
+  await page.getByRole('button', { name: '번역', exact: true }).click();
+
+  const history = page.getByRole('tab', { name: '기록' });
+  const status = page.getByText('번역 또는 취소 처리 중에는 설정을 열 수 없습니다.');
+  await expect(history).toBeVisible();
+  await expect(status).toBeVisible();
+  const historyBox = await history.boundingBox();
+  const statusBox = await status.boundingBox();
+  expect(historyBox).not.toBeNull();
+  expect(statusBox).not.toBeNull();
+  expect(historyBox!.x + historyBox!.width).toBeLessThanOrEqual(statusBox!.x + 1);
+  const statusMetrics = await status.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return { height: element.getBoundingClientRect().height, lineHeight: Number.parseFloat(style.lineHeight), whiteSpace: style.whiteSpace };
+  });
+  expect(statusMetrics.whiteSpace).toBe('normal');
+  expect(statusMetrics.height).toBeGreaterThan(statusMetrics.lineHeight * 1.5);
+
+  await expect(page.getByRole('button', { name: '계정 메뉴' })).toHaveCount(0);
+  const headerBox = await page.locator('.app-shell-header').boundingBox();
+  const notificationBox = await page.getByRole('button', { name: /알림 \d+개/ }).boundingBox();
+  expect(headerBox).not.toBeNull();
+  expect(notificationBox).not.toBeNull();
+  expect(Math.abs((notificationBox!.x + notificationBox!.width) - (headerBox!.x + headerBox!.width))).toBeLessThanOrEqual(1);
 });
