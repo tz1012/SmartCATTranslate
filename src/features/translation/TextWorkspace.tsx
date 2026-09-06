@@ -102,6 +102,7 @@ export function TextWorkspace({
   const savedHistoryJob=useRef<string|undefined>(undefined);
   const pendingHistory=useRef<Map<string,NewHistoryRecord>>(new Map());
   const activeSecret=useRef(false);
+  const activeSource=useRef('');
   const accountGeneration = useRef(0);
   const autoStartTimer = useRef<number | undefined>(undefined);
   const startedRevision = useRef(0);
@@ -189,6 +190,11 @@ export function TextWorkspace({
     effectiveProfile.sourceLanguage?.toLowerCase() === effectiveProfile.targetLanguage.toLowerCase()
     || (effectiveProfile.sourceLanguage === null && detectedLanguage?.toLowerCase() === effectiveProfile.targetLanguage.toLowerCase())
   ));
+  const pendingCleanup = state.status === 'failed' && Boolean(state.pendingCleanup);
+  const activityActive = state.status === 'running' || pendingCleanup;
+  const disabled = loadError || !effectiveProfile || accountPhase !== 'signedIn' || listenerState !== 'ready' || pendingCleanup;
+  const copyShortcutLabel = navigator.platform.includes('Mac') ? '⌘+Enter' : 'Ctrl+Enter';
+  const copyShortcutKeys = navigator.platform.includes('Mac') ? 'Meta+Enter' : 'Control+Enter';
 
   const runText = (text: string, mode: TranslationMode = 'translate', useDetectedLanguage = true) => {
     setNotice('');
@@ -200,12 +206,13 @@ export function TextWorkspace({
       setValidationError(labels.tooLarge);
       return;
     }
-    if (!effectiveProfile || accountPhase !== 'signedIn' || listenerState !== 'ready') return;
+    if (!effectiveProfile || accountPhase !== 'signedIn' || listenerState !== 'ready' || activityActive) return;
     const sourceMatchesTarget = effectiveProfile.sourceLanguage?.toLowerCase() === effectiveProfile.targetLanguage.toLowerCase()
       || (useDetectedLanguage && effectiveProfile.sourceLanguage === null && detectedLanguage?.toLowerCase() === effectiveProfile.targetLanguage.toLowerCase());
     if (mode === 'translate' && sourceMatchesTarget) return;
     setValidationError('');
     activeSecret.current=secret;
+    activeSource.current=text;
     void start({ text, profile: effectiveProfile, field, glossary, mode, secret });
   };
 
@@ -277,10 +284,6 @@ export function TextWorkspace({
     : importedResult !== null || state.status === 'completed' ? labels.completed
       : accountPhase === 'signedIn' ? labels.ready
         : accountPhase === 'signedOut' ? labels.signedOut : labels.checking);
-  const pendingCleanup = state.status === 'failed' && Boolean(state.pendingCleanup);
-  const activityActive = state.status === 'running' || pendingCleanup;
-  const disabled = loadError || !effectiveProfile || accountPhase !== 'signedIn' || listenerState !== 'ready' || pendingCleanup;
-
   const persistHistory = useCallback(async (jobId: string, record: NewHistoryRecord) => {
     setFailedHistoryJobs((current) => {
       if (!current.has(jobId)) return current;
@@ -329,7 +332,7 @@ export function TextWorkspace({
 
   useEffect(() => {
     if (state.status !== 'completed' || !state.jobId || savedHistoryJob.current === state.jobId || pendingHistory.current.has(state.jobId) || !effectiveProfile) return;
-    const record: NewHistoryRecord = { kind: 'text', sourceLanguage: effectiveProfile.sourceLanguage, targetLanguage: effectiveProfile.targetLanguage, source, result: state.text, displayName: null, warningCount: 0, secret: activeSecret.current };
+    const record: NewHistoryRecord = { kind: 'text', sourceLanguage: effectiveProfile.sourceLanguage, targetLanguage: effectiveProfile.targetLanguage, source: activeSource.current, result: state.text, displayName: null, warningCount: 0, secret: activeSecret.current };
     pendingHistory.current.set(state.jobId, record);
     void persistHistory(state.jobId, record);
   }, [effectiveProfile, persistHistory, source, state]);
@@ -393,17 +396,14 @@ export function TextWorkspace({
             id="translation-source"
             aria-label={labels.source}
             value={source}
-            readOnly={activityActive}
             onCompositionStart={() => setComposing(true)}
             onCompositionEnd={() => setComposing(false)}
             onChange={(event) => {
-              if (activityActive) return;
               clearBoundResult();
               setSource(event.target.value);
               setEditRevision((revision) => revision + 1);
             }}
             onPaste={(event) => {
-              if (activityActive) return;
               event.preventDefault();
               const pasted = event.clipboardData.getData('text');
               const start = event.currentTarget.selectionStart;
@@ -413,10 +413,10 @@ export function TextWorkspace({
               setSource(nextSource);
               setEditRevision((revision) => {
                 const nextRevision = revision + 1;
-                startedRevision.current = nextRevision;
+                if (!activityActive) startedRevision.current = nextRevision;
                 return nextRevision;
               });
-              runText(nextSource, 'translate', false);
+              if (!activityActive) runText(nextSource, 'translate', false);
             }}
             onKeyDown={(event) => {
               if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') { event.preventDefault(); run(); }
@@ -440,7 +440,7 @@ export function TextWorkspace({
           >
             {state.status === 'running' ? labels.cancel : labels.translate}
           </button>
-          <button type="button" onClick={() => void copyResult()} disabled={!displayedText}>{labels.copyResult}</button>
+          <button type="button" aria-label={labels.copyResult} aria-keyshortcuts={copyShortcutKeys} title={`${labels.copyResult} (${copyShortcutLabel})`} onClick={() => void copyResult()} disabled={!displayedText}>{labels.copyResult} <kbd aria-hidden="true">{copyShortcutLabel}</kbd></button>
           <button type="button" onClick={() => void saveResult()} disabled={!displayedText}>{labels.saveResult}</button>
           <button type="button" onClick={clearAll} disabled={state.status === 'running' || pendingCleanup || (!source && !displayedText)}>{labels.clear}</button>
           <div className="workspace-status" aria-live="polite" role="status">{status}</div>

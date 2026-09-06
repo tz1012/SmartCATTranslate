@@ -215,6 +215,7 @@ textarea {
   padding: 0.75rem 0.9rem;
   border-top: 1px solid #e4eaf1;
 }
+.workspace-actions kbd { margin-left: 0.35rem; font: inherit; font-size: 0.75em; color: #748196; }
 .workspace-footer { position: sticky; z-index: 15; bottom: 0; display: grid; border-top: 1px solid #e4eaf1; background: #fff; box-shadow: 0 -8px 18px rgb(23 32 51 / 5%); }
 .workspace-footer .workspace-actions { border-top: 0; }
 .workspace-footer > [role="alert"] { margin: 0; padding: 0 0.9rem 0.65rem; color: #b42318; }
