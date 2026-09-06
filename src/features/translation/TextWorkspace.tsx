@@ -200,20 +200,21 @@ export function TextWorkspace({
     setNotice('');
     if (!text.trim()) {
       setValidationError(labels.empty);
-      return;
+      return false;
     }
     if (!sourceWithinBounds(text)) {
       setValidationError(labels.tooLarge);
-      return;
+      return false;
     }
-    if (!effectiveProfile || accountPhase !== 'signedIn' || listenerState !== 'ready' || activityActive) return;
+    if (!effectiveProfile || accountPhase !== 'signedIn' || listenerState !== 'ready' || activityActive) return false;
     const sourceMatchesTarget = effectiveProfile.sourceLanguage?.toLowerCase() === effectiveProfile.targetLanguage.toLowerCase()
       || (useDetectedLanguage && effectiveProfile.sourceLanguage === null && detectedLanguage?.toLowerCase() === effectiveProfile.targetLanguage.toLowerCase());
-    if (mode === 'translate' && sourceMatchesTarget) return;
+    if (mode === 'translate' && sourceMatchesTarget) return false;
     setValidationError('');
     activeSecret.current=secret;
     activeSource.current=text;
     void start({ text, profile: effectiveProfile, field, glossary, mode, secret });
+    return true;
   };
 
   const run = (mode: TranslationMode = 'translate') => {
@@ -222,8 +223,7 @@ export function TextWorkspace({
       autoStartTimer.current = undefined;
     }
     setImportedResult(null);
-    startedRevision.current = editRevision;
-    runText(source, mode);
+    if (runText(source, mode)) startedRevision.current = editRevision;
   };
 
   const clearBoundResult = () => {
@@ -314,6 +314,7 @@ export function TextWorkspace({
       setNotice('');
       setValidationError('');
       activeSecret.current = secret;
+      activeSource.current = source;
       void start({ text: source, profile: effectiveProfile, field, glossary, mode: 'translate', secret });
     }, AUTO_TRANSLATE_DEBOUNCE_MS);
     return () => {
