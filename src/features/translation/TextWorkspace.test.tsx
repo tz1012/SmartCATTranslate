@@ -587,6 +587,10 @@ describe('TextWorkspace', () => {
 
     expect(writeText).toHaveBeenCalledWith('안녕하세요');
     expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === 'translate_text')).toHaveLength(1);
+    const copyButton = screen.getByRole('button', { name: '번역문 복사' });
+    const mac = navigator.platform.includes('Mac');
+    expect(copyButton).toHaveAttribute('aria-keyshortcuts', mac ? 'Meta+Enter' : 'Control+Enter');
+    expect(copyButton).toHaveTextContent(mac ? '⌘+Enter' : 'Ctrl+Enter');
   });
 
   it('announces fixed copy and native save failures while treating save cancellation as neutral', async () => {
@@ -618,7 +622,7 @@ describe('TextWorkspace', () => {
     expect(screen.queryByText(/private (copy|save) detail/)).not.toBeInTheDocument();
   });
 
-  it('keeps source focus with readOnly and cancels on Escape after the keyboard start shortcut', async () => {
+  it('keeps source focus editable and cancels on Escape after the keyboard start shortcut', async () => {
     const user = userEvent.setup();
     const activity: boolean[] = [];
     render(<TextWorkspace onActivityChange={(active) => activity.push(active)} />);
@@ -627,13 +631,96 @@ describe('TextWorkspace', () => {
     source.focus();
     await user.keyboard('{Control>}{Enter}{/Control}');
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('translate_text', expect.anything()));
-    expect(source).toHaveAttribute('readonly');
+    expect(source).not.toHaveAttribute('readonly');
     expect(source).toHaveFocus();
     await user.keyboard('{Escape}');
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('cancel_translation', { jobId: 'job-1' }));
     expect(activity.at(-1)).toBe(true);
     emitTranslation({ type: 'failed', jobId: 'job-1', code: 'translation_cancelled', message: 'private' });
     await waitFor(() => expect(activity.at(-1)).toBe(false));
+  });
+
+  it('keeps the running request snapshot while accepting edits for the next translation', async () => {
+    let translationStarts = 0;
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'get_settings') return structuredClone(settings);
+      if (command === 'get_account') return { account: { state: 'signedIn' }, loginPending: false };
+      if (command === 'translate_text') return `job-${++translationStarts}`;
+      if (command === 'save_history_record') return 'history-record';
+      throw new Error(`unexpected command: ${command}`);
+    });
+    render(<TextWorkspace />);
+    const source = await screen.findByLabelText('원문');
+    fireEvent.change(source, { target: { value: 'First source' } });
+    fireEvent.click(screen.getByRole('button', { name: '번역' }));
+    await waitFor(() => expect(translationStarts).toBe(1));
+
+    fireEvent.change(source, { target: { value: 'Edited while running' } });
+    expect(source).toHaveValue('Edited while running');
+    emitTranslation({ type: 'completed', jobId: 'job-1', result: { translatedText: '첫 결과', detectedLanguage: 'en' } });
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('save_history_record', { record: expect.objectContaining({
+      source: 'First source',
+      result: '첫 결과',
+    }) }));
+    await waitFor(() => expect(translationStarts).toBe(2), { timeout: 1_000 });
+    expect(invoke).toHaveBeenCalledWith('translate_text', { request: expect.objectContaining({ text: 'Edited while running' }) });
+    emitTranslation({ type: 'completed', jobId: 'job-2', result: { translatedText: '수정 결과', detectedLanguage: 'en' } });
+    await waitFor(() => expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === 'save_history_record')).toHaveLength(2));
+    const records = vi.mocked(invoke).mock.calls
+      .filter(([command]) => command === 'save_history_record')
+      .map(([, args]) => (args as { record: { source: string; result: string } }).record);
+    expect(records).toEqual([
+      expect.objectContaining({ source: 'First source', result: '첫 결과' }),
+      expect.objectContaining({ source: 'Edited while running', result: '수정 결과' }),
+    ]);
+  });
+
+  it('does not consume a pending edit when Ctrl+Enter is pressed during an active job', async () => {
+    let translationStarts = 0;
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'get_settings') return structuredClone(settings);
+      if (command === 'get_account') return { account: { state: 'signedIn' }, loginPending: false };
+      if (command === 'translate_text') return `job-${++translationStarts}`;
+      if (command === 'save_history_record') return 'history-record';
+      throw new Error(`unexpected command: ${command}`);
+    });
+    render(<TextWorkspace />);
+    const source = await screen.findByLabelText('원문');
+    fireEvent.change(source, { target: { value: 'First source' } });
+    fireEvent.click(screen.getByRole('button', { name: '번역' }));
+    await waitFor(() => expect(translationStarts).toBe(1));
+
+    fireEvent.change(source, { target: { value: 'Pending edit' } });
+    fireEvent.keyDown(source, { key: 'Enter', ctrlKey: true });
+    emitTranslation({ type: 'completed', jobId: 'job-1', result: { translatedText: '첫 결과', detectedLanguage: 'en' } });
+
+    await waitFor(() => expect(translationStarts).toBe(2), { timeout: 1_000 });
+    expect(invoke).toHaveBeenLastCalledWith('translate_text', { request: expect.objectContaining({ text: 'Pending edit' }) });
+  });
+
+  it('accepts a paste during an active job and translates the pasted edit next', async () => {
+    let translationStarts = 0;
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'get_settings') return structuredClone(settings);
+      if (command === 'get_account') return { account: { state: 'signedIn' }, loginPending: false };
+      if (command === 'translate_text') return `job-${++translationStarts}`;
+      if (command === 'save_history_record') return 'history-record';
+      throw new Error(`unexpected command: ${command}`);
+    });
+    render(<TextWorkspace />);
+    const source = await screen.findByLabelText('원문') as HTMLTextAreaElement;
+    fireEvent.change(source, { target: { value: 'First' } });
+    fireEvent.click(screen.getByRole('button', { name: '번역' }));
+    await waitFor(() => expect(translationStarts).toBe(1));
+
+    source.setSelectionRange(source.value.length, source.value.length);
+    fireEvent.paste(source, { clipboardData: { getData: () => ' pasted' } });
+    expect(source).toHaveValue('First pasted');
+    emitTranslation({ type: 'completed', jobId: 'job-1', result: { translatedText: '첫 결과', detectedLanguage: 'en' } });
+
+    await waitFor(() => expect(translationStarts).toBe(2), { timeout: 1_000 });
+    expect(invoke).toHaveBeenLastCalledWith('translate_text', { request: expect.objectContaining({ text: 'First pasted' }) });
   });
 
   it('clears a completed result when the source changes', async () => {
