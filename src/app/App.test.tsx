@@ -6,7 +6,10 @@ import { StrictMode } from 'react';
 import { App } from './App';
 
 type EventHandler = (event: { payload: unknown }) => void;
-const eventBridge = vi.hoisted(() => ({ translation: null as EventHandler | null }));
+const eventBridge = vi.hoisted(() => ({
+  translation: null as EventHandler | null,
+  quickPopupOpenMain: null as EventHandler | null,
+}));
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -18,6 +21,7 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn(async (name: string, handler: EventHandler) => {
     if (name === 'translation-event') eventBridge.translation = handler;
+    if (name === 'quick-popup-open-main') eventBridge.quickPopupOpenMain = handler;
     return () => undefined;
   }),
 }));
@@ -28,6 +32,7 @@ vi.mock('@tauri-apps/api/webview', () => ({
 afterEach(() => {
   cleanup();
   eventBridge.translation = null;
+  eventBridge.quickPopupOpenMain = null;
   vi.clearAllMocks();
 });
 
@@ -117,6 +122,34 @@ describe('App', () => {
     await user.click(within(navigation).getByRole('tab', { name: '텍스트' }));
 
     expect(screen.getByLabelText('원문')).toHaveValue('메뉴를 바꿔도 남아야 합니다');
+  });
+
+  it('shows the quick popup source and translation in the main text workspace', async () => {
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'get_settings') return {
+        schemaVersion: 2, locale: 'ko', theme: 'light', defaultProfileId: 'default-profile',
+        profiles: [{ id: 'default-profile', name: '기본 프로필', field: 'general', profile: { sourceLanguage: null, targetLanguage: 'ko', quality: 'balanced', tone: 'natural', protectedTerms: [] } }],
+        glossary: [], selectedModel: { type: 'automatic' }, launchAtLogin: false, closeBehavior: 'keepInTray', quickAccessPosition: 'popup', historyRetentionDays: 30,
+      };
+      if (command === 'get_account') return { account: { state: 'signedIn' }, loginPending: false };
+      if (command === 'get_privacy_status') return { cleanupPending: false, retentionPending: false };
+      if (command === 'get_lifecycle_status') return { launchAtLoginAvailable: true, launchAtLoginEnabled: false, hotkeysPaused: false };
+      if (command === 'list_history') return { records: [], nextCursor: null };
+      if (command === 'list_recoverable_jobs') return [];
+      if (command === 'check_for_update') return { available: false, version: null };
+      throw new Error(`unexpected command: ${command}`);
+    });
+    render(<App />);
+    await screen.findByLabelText('원문');
+
+    act(() => eventBridge.quickPopupOpenMain?.({ payload: {
+      id: 'popup-request-1',
+      source: 'Find your next growth opportunity.',
+      translation: '다음 성장 기회를 찾아보세요.',
+    } }));
+
+    expect(screen.getByLabelText('원문')).toHaveValue('Find your next growth opportunity.');
+    expect(screen.getByLabelText('번역문')).toHaveValue('다음 성장 기회를 찾아보세요.');
   });
 
   it('preserves a selected document while switching between top-level views', async () => {

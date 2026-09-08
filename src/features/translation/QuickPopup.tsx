@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { emitTo, listen } from '@tauri-apps/api/event';
 import type { TranslationRequest } from '../../lib/types';
 import { useSecretMode } from '../history/secretMode';
 import { saveHistoryRecord } from '../history/historyApi';
@@ -112,6 +112,17 @@ function PopupRequest({ payload, pinned, onPin }: { payload: PopupPayload; pinne
     setSpeaking(true);
     speechSynthesis.speak(utterance);
   };
+  const openInMainWindow = async () => {
+    await invoke('open_main_window');
+    if (payload.request && state.text) {
+      await emitTo('main', 'quick-popup-open-main', {
+        id: payload.requestId,
+        source: payload.request.text,
+        translation: state.text,
+      });
+    }
+    await invoke('close_quick_popup');
+  };
 
   useEffect(() => () => { if (typeof speechSynthesis !== 'undefined') speechSynthesis.cancel(); }, []);
   useEffect(()=>{if(state.status!=='completed'||savedHistoryJob.current===state.jobId||!payload.request)return;savedHistoryJob.current=state.jobId;void saveHistoryRecord({kind:'popup',sourceLanguage:payload.request.profile.sourceLanguage,targetLanguage:payload.request.profile.targetLanguage,source:payload.request.text,result:state.text,displayName:null,warningCount:0,secret:activeSecret.current}).catch(()=>undefined);},[payload.request,state]);
@@ -140,7 +151,7 @@ function PopupRequest({ payload, pinned, onPin }: { payload: PopupPayload; pinne
       {errorCode && payload.request && <button data-popup-action type="button" onClick={retry}>{text.retry}</button>}
       <button data-popup-action type="button" disabled={!state.text} onClick={async () => { try { await navigator.clipboard.writeText(state.text); setCopied(true); } catch { /* platform denied copy */ } }}>{copied ? text.copied : text.copy}</button>
       <button data-popup-action type="button" disabled={!state.text || !voice} onClick={toggleSpeech}>{speaking ? text.stop : text.listen}</button>
-      <button data-popup-action type="button" onClick={() => void invoke('open_main_window')}>{text.open}</button>
+      <button data-popup-action type="button" onClick={() => void openInMainWindow()}>{text.open}</button>
     </footer>
   </section>;
 }

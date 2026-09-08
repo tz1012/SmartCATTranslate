@@ -80,6 +80,7 @@ export function App({ locale }: { locale?: AppLocale }) {
     let disposed = false;
     let stopSettings: (() => void) | undefined;
     let stopPrivacy: (() => void) | undefined;
+    let stopQuickPopupOpenMain: (() => void) | undefined;
     void listen('open-settings', () => {
       setMenuOpen(false);
       setActiveView('settings');
@@ -98,10 +99,19 @@ export function App({ locale }: { locale?: AppLocale }) {
       if (disposed) unlisten();
       else stopPrivacy = unlisten;
     });
+    void listen<CompletedTextTranslation>('quick-popup-open-main', (event) => {
+      setImportedTranslation(event.payload);
+      setMountedViews((current) => current.has('translate') ? current : new Set(current).add('translate'));
+      setActiveView('translate');
+    }).then((unlisten) => {
+      if (disposed) unlisten();
+      else stopQuickPopupOpenMain = unlisten;
+    });
     return () => {
       disposed = true;
       stopSettings?.();
       stopPrivacy?.();
+      stopQuickPopupOpenMain?.();
     };
   }, []);
   const acceptPreferences = useCallback((loadedLocale: AppLocale, loadedTheme: Theme) => {
