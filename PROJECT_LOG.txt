@@ -1256,3 +1256,8 @@ TDD와 검증
 - 요약: build: release-0-2-2
 - 변경 파일: CHANGELOG.md, PROJECT_LOG.txt, package.json, src-tauri/Cargo.lock, src-tauri/Cargo.toml, src-tauri/tauri.conf.json
 - 검증: pnpm test && pnpm build && cargo fmt && cargo check && pnpm records:test && pnpm privacy:check && pnpm release:assets:verify && pnpm release:workflow:check
+
+[2026-09-09 00:40 Asia/Seoul] 변경 기록
+- 요약: fix: quick-popup-main-handoff
+- 변경 파일: CHANGELOG.md, PROJECT_LOG.txt, package.json, src-tauri/Cargo.lock, src-tauri/Cargo.toml, src-tauri/tauri.conf.json, src/app/App.test.tsx, src/app/App.tsx, src/features/translation/QuickPopup.test.tsx, src/features/translation/QuickPopup.tsx
+- 검증: pnpm test && 129/129 passed && pnpm build && cargo fmt && cargo check && pnpm records:test && pnpm privacy:check && pnpm release:assets:verify && pnpm release:workflow:check
