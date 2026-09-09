@@ -496,7 +496,7 @@ async fn malicious_source_cannot_trigger_tools_or_escape_the_ephemeral_turn() {
 }
 
 #[tokio::test]
-async fn reasoning_items_do_not_get_misclassified_as_tool_use() {
+async fn reasoning_notifications_do_not_interrupt_translation() {
     let harness = spawn_fake_transport(|mut reader, mut writer| async move {
         let base = read_request(&mut reader).await;
         write_json_line(
@@ -530,6 +530,39 @@ async fn reasoning_items_do_not_get_misclassified_as_tool_use() {
             }),
         )
         .await;
+        for notification in [
+            json!({
+                "method": "item/reasoning/summaryPartAdded",
+                "params": {
+                    "threadId": "ephemeral",
+                    "turnId": "turn-1",
+                    "itemId": "reasoning-1",
+                    "summaryIndex": 0
+                }
+            }),
+            json!({
+                "method": "item/reasoning/summaryTextDelta",
+                "params": {
+                    "threadId": "ephemeral",
+                    "turnId": "turn-1",
+                    "itemId": "reasoning-1",
+                    "summaryIndex": 0,
+                    "delta": "Checking the translation."
+                }
+            }),
+            json!({
+                "method": "item/reasoning/textDelta",
+                "params": {
+                    "threadId": "ephemeral",
+                    "turnId": "turn-1",
+                    "itemId": "reasoning-1",
+                    "contentIndex": 0,
+                    "delta": "Internal reasoning."
+                }
+            }),
+        ] {
+            write_json_line(&mut writer, &notification).await;
+        }
         write_json_line(
             &mut writer,
             &json!({
@@ -571,7 +604,15 @@ async fn reasoning_items_do_not_get_misclassified_as_tool_use() {
         )
         .await;
 
-        let unsubscribe = read_request(&mut reader).await;
+        let mut unsubscribe = read_request(&mut reader).await;
+        if unsubscribe["method"] == "turn/interrupt" {
+            write_json_line(
+                &mut writer,
+                &json!({"id": unsubscribe["id"], "result": {}}),
+            )
+            .await;
+            unsubscribe = read_request(&mut reader).await;
+        }
         assert_eq!(unsubscribe["method"], "thread/unsubscribe");
         write_json_line(
             &mut writer,
@@ -1239,6 +1280,42 @@ async fn rejects_malformed_allowlisted_progress_notifications() {
             json!({
                 "method": "thread/tokenUsage/updated",
                 "params": {"threadId": 7, "turnId": false, "tokenUsage": valid_token_usage.clone()}
+            }),
+        ),
+        (
+            "reasoning summary part is missing its index",
+            json!({
+                "method": "item/reasoning/summaryPartAdded",
+                "params": {
+                    "threadId": "ephemeral",
+                    "turnId": "turn-1",
+                    "itemId": "reasoning-1"
+                }
+            }),
+        ),
+        (
+            "reasoning summary delta is missing text",
+            json!({
+                "method": "item/reasoning/summaryTextDelta",
+                "params": {
+                    "threadId": "ephemeral",
+                    "turnId": "turn-1",
+                    "itemId": "reasoning-1",
+                    "summaryIndex": 0
+                }
+            }),
+        ),
+        (
+            "reasoning text delta has the wrong content index type",
+            json!({
+                "method": "item/reasoning/textDelta",
+                "params": {
+                    "threadId": "ephemeral",
+                    "turnId": "turn-1",
+                    "itemId": "reasoning-1",
+                    "contentIndex": "0",
+                    "delta": "private-looking detail"
+                }
             }),
         ),
     ];
