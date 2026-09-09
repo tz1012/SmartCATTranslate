@@ -930,6 +930,18 @@ fn handle_event(
             }
             Ok(EventOutcome::Continue)
         }
+        "item/reasoning/summaryPartAdded" => {
+            validate_reasoning_notification(event, "summaryIndex", false)?;
+            Ok(EventOutcome::Continue)
+        }
+        "item/reasoning/summaryTextDelta" => {
+            validate_reasoning_notification(event, "summaryIndex", true)?;
+            Ok(EventOutcome::Continue)
+        }
+        "item/reasoning/textDelta" => {
+            validate_reasoning_notification(event, "contentIndex", true)?;
+            Ok(EventOutcome::Continue)
+        }
         "item/completed" => match item_type(event) {
             Some("userMessage" | "reasoning") => Ok(EventOutcome::Continue),
             Some("agentMessage") => {
@@ -1038,6 +1050,32 @@ fn validate_token_breakdown(breakdown: Option<&Value>) -> Result<(), Translation
     } else {
         Err(TranslationError::ProtocolViolation)
     }
+}
+
+fn validate_reasoning_notification(
+    event: &AppServerNotification,
+    index_field: &str,
+    requires_delta: bool,
+) -> Result<(), TranslationError> {
+    event
+        .params
+        .get("itemId")
+        .and_then(Value::as_str)
+        .filter(|item_id| !item_id.is_empty())
+        .ok_or(TranslationError::ProtocolViolation)?;
+    event
+        .params
+        .get(index_field)
+        .and_then(Value::as_u64)
+        .ok_or(TranslationError::ProtocolViolation)?;
+    if requires_delta {
+        event
+            .params
+            .get("delta")
+            .and_then(Value::as_str)
+            .ok_or(TranslationError::ProtocolViolation)?;
+    }
+    Ok(())
 }
 
 fn thread_event_scope(event: &AppServerNotification) -> Option<&str> {

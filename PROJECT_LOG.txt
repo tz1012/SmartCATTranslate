@@ -1261,3 +1261,8 @@ TDD와 검증
 - 요약: fix: quick-popup-main-handoff
 - 변경 파일: CHANGELOG.md, PROJECT_LOG.txt, package.json, src-tauri/Cargo.lock, src-tauri/Cargo.toml, src-tauri/tauri.conf.json, src/app/App.test.tsx, src/app/App.tsx, src/features/translation/QuickPopup.test.tsx, src/features/translation/QuickPopup.tsx
 - 검증: pnpm test && 129/129 passed && pnpm build && cargo fmt && cargo check && pnpm records:test && pnpm privacy:check && pnpm release:assets:verify && pnpm release:workflow:check
+
+[2026-09-09 22:00 Asia/Seoul] 변경 기록
+- 요약: fix: reasoning-notification-protocol
+- 변경 파일: CHANGELOG.md, PROJECT_LOG.txt, package.json, src-tauri/Cargo.lock, src-tauri/Cargo.toml, src-tauri/tauri.conf.json, src-tauri/src/codex/translation.rs, src-tauri/tests/translation_coordinator.rs
+- 검증: reasoning 알림 회귀 테스트 RED→GREEN, translation_coordinator 40/40, Rust lib 111/111, pnpm build, cargo build --release
